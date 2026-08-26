@@ -1,8 +1,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-
-import Database from "better-sqlite3";
 
 import type { ActionCard, ActionCardRecord } from "../../shared/types.ts";
 
@@ -24,17 +23,89 @@ type ScreenshotAnalysisInput = {
 };
 
 export class MailuoDb {
-  private readonly db: Database.Database;
+  private readonly db: DatabaseSync;
 
   constructor(databasePath = process.env.DATABASE_PATH?.trim() || defaultDatabasePath) {
     mkdirSync(dirname(databasePath), { recursive: true });
-    this.db = new Database(databasePath);
-    this.db.pragma("foreign_keys = ON");
+    this.db = new DatabaseSync(databasePath);
+    const originalPrepare = this.db.prepare.bind(this.db);
+    this.db.prepare = ((sql: string) => this.normalizeStatement(originalPrepare(sql))) as DatabaseSync["prepare"];
+    this.db.exec("PRAGMA foreign_keys = ON");
     this.initializeSchema();
   }
 
   private initializeSchema() {
     this.db.exec(readFileSync(schemaPath, "utf8"));
+  }
+
+  private normalizeQueryResult<T>(value: T): T {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.normalizeQueryResult(item)) as T;
+    }
+
+    if (value && typeof value === "object" && Object.getPrototypeOf(value) === null) {
+      return { ...value } as T;
+    }
+
+    return value;
+  }
+
+  private normalizeStatement(statement: StatementSync): StatementSync {
+    const originalAll = statement.all.bind(statement);
+    statement.all = ((...args: Parameters<StatementSync["all"]>) =>
+      this.normalizeQueryResult(originalAll(...args))) as StatementSync["all"];
+
+    const originalGet = statement.get.bind(statement);
+    statement.get = ((...args: Parameters<StatementSync["get"]>) =>
+      this.normalizeQueryResult(originalGet(...args))) as StatementSync["get"];
+
+    const originalIterate = statement.iterate.bind(statement);
+    statement.iterate = ((...args: Parameters<StatementSync["iterate"]>) => {
+      const iterator = originalIterate(...args);
+      const self = this;
+
+      return (function* () {
+        for (const row of iterator) {
+          yield self.normalizeQueryResult(row);
+        }
+      })();
+    }) as StatementSync["iterate"];
+
+    return statement;
+  }
+
+  private withTransaction<T>(callback: () => T): T {
+    this.db.exec("BEGIN");
+
+    try {
+      const result = callback();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // Preserve the original failure if rollback itself also fails.
+      }
+
+      throw error;
+    }
+  }
+
+  private toSafeInteger(value: number | bigint, fieldName: string): number {
+    if (typeof value === "bigint") {
+      if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) {
+        throw new RangeError(`SQLite ${fieldName} exceeds Number safe integer range: ${value}`);
+      }
+
+      return Number(value);
+    }
+
+    if (!Number.isSafeInteger(value)) {
+      throw new RangeError(`SQLite ${fieldName} is not a safe integer: ${value}`);
+    }
+
+    return value;
   }
 
   createScreenshot(input: ScreenshotInsertInput) {
@@ -45,7 +116,7 @@ export class MailuoDb {
     );
     const result = statement.run(input.imagePath, input.userNote ?? null, uploadedAt);
     return {
-      id: Number(result.lastInsertRowid),
+      id: this.toSafeInteger(result.lastInsertRowid, "lastInsertRowid"),
       image_path: input.imagePath,
       user_note: input.userNote ?? null,
       raw_extraction: null,
@@ -72,7 +143,7 @@ export class MailuoDb {
        ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
 
-    const records = this.db.transaction(() => {
+    return this.withTransaction(() => {
       updateScreenshot.run(JSON.stringify(input.rawExtraction), input.screenshotId);
 
       return input.cards.map((card) => {
@@ -88,7 +159,7 @@ export class MailuoDb {
 
         return {
           ...card,
-          id: Number(result.lastInsertRowid),
+          id: this.toSafeInteger(result.lastInsertRowid, "lastInsertRowid"),
           screenshot_id: input.screenshotId,
           status: "pending" as const,
           created_at: createdAt,
@@ -97,8 +168,6 @@ export class MailuoDb {
         };
       });
     });
-
-    return records();
   }
 
   getScreenshotById(screenshotId: number) {
@@ -186,18 +255,21 @@ export class MailuoDb {
        WHERE id = ?`,
     );
 
-    return this.db.transaction(() => {
+    return this.withTransaction(() => {
       // simplified: action_cards.screenshot_id does not cascade, so M1 upload cleanup deletes
       // pending cards first and then the screenshot row synchronously. M2 should retain failed
       // uploads in an explicit processing/retry state instead of removing them.
-      const deletedCardCount = deleteCards.run(screenshotId).changes;
-      const deletedScreenshotCount = deleteScreenshot.run(screenshotId).changes;
+      const deletedCardCount = this.toSafeInteger(deleteCards.run(screenshotId).changes, "changes");
+      const deletedScreenshotCount = this.toSafeInteger(
+        deleteScreenshot.run(screenshotId).changes,
+        "changes",
+      );
 
       return {
         deletedCardCount,
         deletedScreenshot: deletedScreenshotCount > 0,
       };
-    })();
+    });
   }
 
   getNativeDatabase() {
