@@ -12,6 +12,7 @@ import Fastify, {
   type FastifyReply,
   type FastifyRequest,
 } from "fastify";
+import { z } from "zod";
 
 import type {
   ActionCard,
@@ -21,10 +22,24 @@ import type {
   ScreenshotUploadResponse,
 } from "../../shared/types.ts";
 import {
+  executeCard as defaultExecuteCard,
+  ExecuteError,
+  rejectCard as defaultRejectCard,
+} from "./agent/execute.ts";
+import {
+  generateInsights as defaultGenerateInsights,
+  type InsightGenerationResult,
+} from "./agent/insight.ts";
+import {
   perceiveScreenshot as defaultPerceiveScreenshot,
   type PerceptionResult,
 } from "./agent/perceive.ts";
 import { proposeCards as defaultProposeCards } from "./agent/propose.ts";
+import {
+  resolveParticipants as defaultResolveParticipants,
+  type ParticipantResolution,
+  type ResolvableContact,
+} from "./agent/resolve.ts";
 import { MailuoDb } from "./db.ts";
 import {
   ConfigurationError,
@@ -51,7 +66,41 @@ type PerceiveScreenshotFn = (
 ) => Promise<PerceptionResult>;
 type ProposeCardsFn = (
   extraction: PerceptionResult,
+  resolutions?: ParticipantResolution[],
+  contacts?: ResolvableContact[],
 ) => ActionCard[] | Promise<ActionCard[]>;
+type ResolveParticipantsFn = typeof defaultResolveParticipants;
+type ExecuteCardFn = typeof defaultExecuteCard;
+type RejectCardFn = typeof defaultRejectCard;
+type GenerateInsightsFn = typeof defaultGenerateInsights;
+
+const ConfirmCardBodySchema = z
+  .object({
+    payload: z.unknown().optional(),
+    resolved_contact_id: z.number().int().positive().optional(),
+  })
+  .strict();
+
+type ConfirmCardBody = z.infer<typeof ConfirmCardBodySchema>;
+
+type ConfirmCardResponse = {
+  executed: true;
+  card: ReturnType<MailuoDb["getStoredActionCardById"]> extends infer T
+    ? Exclude<T, null>
+    : never;
+  affected_contact_ids: number[];
+  observation_ids: number[];
+  meeting_id?: number;
+  insight_status: "ok" | "failed";
+  insight_error?: string;
+  insights: InsightGenerationResult["generated"];
+};
+
+type RejectCardResponse = {
+  card: ReturnType<MailuoDb["getStoredActionCardById"]> extends infer T
+    ? Exclude<T, null>
+    : never;
+};
 
 class HttpError extends Error {
   statusCode: number;
@@ -67,6 +116,10 @@ class HttpError extends Error {
 }
 
 function buildOperationalHttpError(error: Error): HttpError | null {
+  if (error instanceof ExecuteError) {
+    return new HttpError(error.statusCode, error.message, error.code, error.details);
+  }
+
   if (error instanceof ConfigurationError) {
     return new HttpError(500, error.message, error.code);
   }
@@ -104,6 +157,38 @@ function toHttpError(error: unknown): HttpError {
 
 function getScreenshotDirectory() {
   return process.env.SCREENSHOT_DIR?.trim() || defaultScreenshotDir;
+}
+
+function getPublicErrorMessage(error: unknown, fallbackMessage: string): string {
+  const httpError = toHttpError(error);
+  return httpError.message === "Unexpected server error" ? fallbackMessage : httpError.message;
+}
+
+function parsePositiveId(rawValue: string | undefined, entityName: string): number {
+  const parsed = Number(rawValue);
+
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new HttpError(400, `Invalid ${entityName} id`, "INVALID_ID");
+  }
+
+  return parsed;
+}
+
+function parseConfirmCardBody(body: unknown): ConfirmCardBody {
+  const parsed = ConfirmCardBodySchema.safeParse(body ?? {});
+
+  if (!parsed.success) {
+    throw new HttpError(422, "Invalid request body", "INVALID_REQUEST_BODY", parsed.error.issues);
+  }
+
+  return parsed.data;
+}
+
+function listResolvableContacts(db: MailuoDb): ResolvableContact[] {
+  return db.listContacts().map(
+    ({ observation_count: _observationCount, last_interaction_at: _lastInteractionAt, ...contact }) =>
+      contact,
+  );
 }
 
 async function sendError(reply: FastifyReply, error: unknown) {
@@ -250,7 +335,11 @@ type BuildAppOptions = {
   db?: MailuoDb;
   createDb?: () => MailuoDb;
   perceiveScreenshot?: PerceiveScreenshotFn;
+  resolveParticipants?: ResolveParticipantsFn;
   proposeCards?: ProposeCardsFn;
+  executeCard?: ExecuteCardFn;
+  rejectCard?: RejectCardFn;
+  generateInsights?: GenerateInsightsFn;
 };
 
 async function cleanupPartialScreenshotUpload(
@@ -277,7 +366,11 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const ownsDb = options.db === undefined;
   const db = options.db ?? options.createDb?.() ?? new MailuoDb();
   const perceiveScreenshot = options.perceiveScreenshot ?? defaultPerceiveScreenshot;
+  const resolveParticipants = options.resolveParticipants ?? defaultResolveParticipants;
   const proposeCards = options.proposeCards ?? defaultProposeCards;
+  const executeCard = options.executeCard ?? defaultExecuteCard;
+  const rejectCard = options.rejectCard ?? defaultRejectCard;
+  const generateInsights = options.generateInsights ?? defaultGenerateInsights;
   const app = Fastify({ logger: true });
 
   app.register(multipart);
@@ -311,10 +404,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const screenshot = db.createScreenshot({ imagePath, userNote: note ?? null });
       screenshotId = screenshot.id;
       const extraction = await perceiveScreenshot({ imagePath, imageMimeType, note });
+      const contacts = listResolvableContacts(db);
+      const resolutions = await resolveParticipants({ extraction, contacts });
       const cards = db.saveScreenshotAnalysis({
         screenshotId: screenshot.id,
         rawExtraction: extraction,
-        cards: await Promise.resolve(proposeCards(extraction)),
+        cards: await Promise.resolve(proposeCards(extraction, resolutions, contacts)),
       });
 
       const payload: ApiSuccess<ScreenshotUploadResponse> = {
@@ -329,6 +424,137 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     } catch (error) {
       await cleanupPartialScreenshotUpload(db, screenshotId, imagePath, request);
       request.log.error({ err: error }, "Failed to process screenshot upload");
+      return sendError(reply, error);
+    }
+  });
+
+  app.post("/api/cards/:id/confirm", async (request, reply) => {
+    try {
+      const cardId = parsePositiveId((request.params as { id?: string }).id, "card");
+      const body = parseConfirmCardBody(request.body);
+      const execution = executeCard({
+        db,
+        cardId,
+        payload: body.payload,
+        resolvedContactId: body.resolved_contact_id,
+      });
+
+      try {
+        const insightResult = await generateInsights({
+          db,
+          contactIds: execution.affectedContactIds,
+        });
+        const payload: ApiSuccess<ConfirmCardResponse> = {
+          ok: true,
+          data: {
+            executed: true,
+            card: execution.confirmedCard,
+            affected_contact_ids: execution.affectedContactIds,
+            observation_ids: execution.observationIds,
+            ...(execution.meetingId != null ? { meeting_id: execution.meetingId } : {}),
+            insight_status: "ok",
+            insights: insightResult.generated,
+          },
+        };
+
+        return reply.send(payload);
+      } catch (error) {
+        request.log.error({ err: error, cardId }, "Failed to generate insights");
+        const payload: ApiSuccess<ConfirmCardResponse> = {
+          ok: true,
+          data: {
+            executed: true,
+            card: execution.confirmedCard,
+            affected_contact_ids: execution.affectedContactIds,
+            observation_ids: execution.observationIds,
+            ...(execution.meetingId != null ? { meeting_id: execution.meetingId } : {}),
+            insight_status: "failed",
+            insight_error: getPublicErrorMessage(error, "Unexpected insight generation error"),
+            insights: [],
+          },
+        };
+
+        return reply.send(payload);
+      }
+    } catch (error) {
+      request.log.error({ err: error }, "Failed to confirm action card");
+      return sendError(reply, error);
+    }
+  });
+
+  app.post("/api/cards/:id/reject", async (request, reply) => {
+    try {
+      const cardId = parsePositiveId((request.params as { id?: string }).id, "card");
+      const card = rejectCard({ db, cardId });
+      const payload: ApiSuccess<RejectCardResponse> = {
+        ok: true,
+        data: { card },
+      };
+
+      return reply.send(payload);
+    } catch (error) {
+      request.log.error({ err: error }, "Failed to reject action card");
+      return sendError(reply, error);
+    }
+  });
+
+  app.get("/api/contacts", async (_request, reply) => {
+    const payload = {
+      ok: true,
+      data: db.listContacts(),
+    } satisfies ApiSuccess<ReturnType<MailuoDb["listContacts"]>>;
+
+    return reply.send(payload);
+  });
+
+  app.get("/api/contacts/:id", async (request, reply) => {
+    try {
+      const contactId = parsePositiveId((request.params as { id?: string }).id, "contact");
+      const detail = db.getContactDetail(contactId);
+
+      if (!detail) {
+        throw new HttpError(404, `Contact ${contactId} not found`, "NOT_FOUND");
+      }
+
+      const payload = {
+        ok: true,
+        data: detail,
+      } satisfies ApiSuccess<NonNullable<ReturnType<MailuoDb["getContactDetail"]>>>;
+
+      return reply.send(payload);
+    } catch (error) {
+      return sendError(reply, error);
+    }
+  });
+
+  app.get("/api/meetings", async (_request, reply) => {
+    const payload = {
+      ok: true,
+      data: db.listMeetings(),
+    } satisfies ApiSuccess<ReturnType<MailuoDb["listMeetings"]>>;
+
+    return reply.send(payload);
+  });
+
+  app.get("/api/screenshots/:id", async (request, reply) => {
+    try {
+      const screenshotId = parsePositiveId(
+        (request.params as { id?: string }).id,
+        "screenshot",
+      );
+      const detail = db.getScreenshotDetail(screenshotId);
+
+      if (!detail) {
+        throw new HttpError(404, `Screenshot ${screenshotId} not found`, "NOT_FOUND");
+      }
+
+      const payload = {
+        ok: true,
+        data: detail,
+      } satisfies ApiSuccess<NonNullable<ReturnType<MailuoDb["getScreenshotDetail"]>>>;
+
+      return reply.send(payload);
+    } catch (error) {
       return sendError(reply, error);
     }
   });

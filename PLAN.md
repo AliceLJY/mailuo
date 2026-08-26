@@ -143,9 +143,13 @@ POST /api/screenshots
                   b. 未命中 → 取库内全部联系人的 (name, aliases, company) 摘要 +
                      新人名+上下文，交给 deepseek 判：same_as:<id> / new / unsure(候选列表)
                   c. unsure → 卡片带 disambiguation 候选，让用户裁决
-  → [3 propose]   抽取结果 → action cards（三类），每张带 confidence + source_quote。
+  → [3 propose]   抽取结果 → action cards（四类），每张带 confidence + source_quote。
                   规则：库里没有的人 → create_contact；已有的人出现字段变化 → update_contact
-                  （payload 里带 {field: {old, new}}）；约定/会议 → create_meeting。
+                  （payload 里带 {field: {old, new}}）；约定/会议 → create_meeting；
+                  record_interaction 只给两类人：已归并到现有联系人的，或同一截图里已有
+                  create_contact/disambiguation 卡、后续确认后会落到某个联系人的。
+                  若后者尚未先确认建档/合并，record_interaction confirm 必须报依赖错误，
+                  不自动连带确认前置卡。
   → 返回 { screenshot_id, cards: [...] }（同步，10-30s，app 端转圈）
 
 POST /api/cards/:id/confirm   （body 可带用户编辑后的 payload / 裁决后的 contact_id）
@@ -226,7 +230,7 @@ UI 基调：微信绿系配色致敬场景，卡片圆角阴影，不引 UI 库�
 
 **M2 完整 agent 环**
 - 内容：resolve（含 disambiguation）、confirm/execute、insight 生成、其余 API。
-- 验收：`npm run cli -- e2e ../fixtures/screenshot-2.png` 走完 上传→自动确认→洞察 全链路；单测覆盖 execute 的三种卡片类型 + status_change 留痕 + 别名回写。
+- 验收：`npm run cli -- e2e ../fixtures/screenshot-2.png` 走完 上传→自动确认→洞察 全链路；单测覆盖 execute 的四种卡片类型 + status_change 留痕 + 别名回写。
 
 **M3 App MVP**
 - 内容：四个页面 + API 对接 + loading/error 态。

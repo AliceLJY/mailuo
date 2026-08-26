@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS screenshots (
 CREATE TABLE IF NOT EXISTS action_cards (
   id INTEGER PRIMARY KEY,
   screenshot_id INTEGER NOT NULL REFERENCES screenshots(id),
-  type TEXT NOT NULL CHECK(type IN ('create_contact','update_contact','create_meeting')),
+  type TEXT NOT NULL CHECK(type IN ('create_contact','update_contact','create_meeting','record_interaction')),
   payload TEXT NOT NULL,
   confidence TEXT NOT NULL CHECK(confidence IN ('high','medium','low')),
   source_quote TEXT NOT NULL,
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS meetings (
   time_iso TEXT,
   time_text TEXT NOT NULL,
   location TEXT,
-  participant_ids TEXT NOT NULL DEFAULT '[]',
+  participants TEXT NOT NULL DEFAULT '[]',
   agenda TEXT,
   source_screenshot_id INTEGER REFERENCES screenshots(id),
   status TEXT NOT NULL DEFAULT 'upcoming',

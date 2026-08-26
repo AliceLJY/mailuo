@@ -13,6 +13,43 @@ function formatShanghaiDateTime(now: Date): string {
   return formatter.format(now).replace(' ', 'T') + '+08:00';
 }
 
+export type EntityResolutionContactSummary = {
+  id: number;
+  canonical_name: string;
+  aliases: string[];
+  company: string | null;
+};
+
+export type InsightPromptContact = {
+  id: number;
+  canonical_name: string;
+  aliases: string[];
+  company: string | null;
+  title: string | null;
+  phone: string | null;
+  wechat_id: string | null;
+  tags: string[];
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type InsightPromptObservation = {
+  id: number;
+  kind: 'fact' | 'preference' | 'status_change' | 'interaction';
+  content: string;
+  source_quote: string | null;
+  observed_at: string;
+};
+
+export type InsightPromptSummary = {
+  id: number;
+  kind: 'relationship_read' | 'suggested_action' | 'conversation_hook';
+  content: string;
+  based_on: number[];
+  generated_at: string;
+};
+
 export function buildPerceptionSystemPrompt(now: Date): string {
   return [
     'You extract only evidence that is visible in the screenshot and optional user note.',
@@ -41,4 +78,70 @@ export function buildPerceptionUserPrompt(note?: string): string {
   }
 
   return lines.join('\n');
+}
+
+export function buildEntityResolutionPrompt(
+  participantContext: string,
+  contacts: EntityResolutionContactSummary[],
+): { systemPrompt: string; userPrompt: string } {
+  const contactSummaries = contacts.map((contact) => ({
+    id: contact.id,
+    canonical_name: contact.canonical_name,
+    aliases: contact.aliases,
+    company: contact.company,
+  }));
+
+  return {
+    systemPrompt: [
+      'You decide whether the participant in the screenshot matches an existing contact.',
+      'Use only the participant context and the provided contact summaries.',
+      'The only existing-contact fields you may use are id, canonical_name, aliases, and company.',
+      'Do not infer hidden identities, unstated aliases, or unstated company changes.',
+      'If the evidence is insufficient, choose unsure instead of guessing.',
+      'Return JSON only.',
+      'Schema requirements:',
+      '- same_as: {"decision":"same_as","contact_id":123}.',
+      '- new: {"decision":"new"}.',
+      '- unsure: {"decision":"unsure","candidate_ids":[123,456]}.',
+      '- Do not include null placeholders, empty arrays, or extra keys from other decisions.',
+    ].join('\n'),
+    userPrompt: [
+      'Participant context:',
+      participantContext.trim(),
+      'Existing contact summaries:',
+      JSON.stringify(contactSummaries, null, 2),
+    ].join('\n\n'),
+  };
+}
+
+export function buildInsightGenerationPrompt(input: {
+  contact: InsightPromptContact;
+  observations: InsightPromptObservation[];
+  recentInsights: InsightPromptSummary[];
+}): { systemPrompt: string; userPrompt: string } {
+  return {
+    systemPrompt: [
+      'You generate grounded relationship insights for one contact.',
+      'Use only the provided structured contact fields, observation timeline, and recent insight summaries.',
+      'Do not infer any fact or motivation that is not directly supported by the observations.',
+      'Return 1 to 3 insights when evidence supports them. If the evidence is thin, return fewer insights.',
+      'Every insight must cite one or more observation IDs in based_on. If you cannot ground an insight, do not output it.',
+      'Avoid repeating the same point already covered by the recent insight summaries unless the new observations materially change it.',
+      'Return JSON only.',
+      'Schema requirements:',
+      '- insights: array with 1 to 3 items.',
+      '- kind: "relationship_read" | "suggested_action" | "conversation_hook".',
+      '- content: concise plain text.',
+      '- based_on: array of observation IDs taken only from the supplied observation timeline.',
+    ].join('\n'),
+    userPrompt: JSON.stringify(
+      {
+        contact: input.contact,
+        observations: input.observations,
+        recent_insight_summaries: input.recentInsights,
+      },
+      null,
+      2,
+    ),
+  };
 }

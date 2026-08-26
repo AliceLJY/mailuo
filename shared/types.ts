@@ -23,12 +23,19 @@ export type CreateMeetingPayload = {
   agenda?: string;
 };
 
+export type RecordInteractionPayload = {
+  contact_id?: number;
+  contact_name: string;
+  summary: string;
+};
+
 export type ActionCardConfidence = "high" | "medium" | "low";
 export type ActionCardStatus = "pending" | "confirmed" | "rejected";
 export type ActionCardType =
   | "create_contact"
   | "update_contact"
-  | "create_meeting";
+  | "create_meeting"
+  | "record_interaction";
 
 export type ActionCardDisambiguation = {
   candidates: Array<{
@@ -61,10 +68,16 @@ export type CreateMeetingCard = ActionCardBase<
   CreateMeetingPayload
 >;
 
+export type RecordInteractionCard = ActionCardBase<
+  "record_interaction",
+  RecordInteractionPayload
+>;
+
 export type ActionCard =
   | CreateContactCard
   | UpdateContactCard
-  | CreateMeetingCard;
+  | CreateMeetingCard
+  | RecordInteractionCard;
 
 export type ActionCardRecord = ActionCard & {
   id: number;

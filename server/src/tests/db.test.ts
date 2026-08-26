@@ -49,7 +49,27 @@ test("initializes the full M1 schema", () => {
   }
 });
 
-test("stores screenshots, raw extraction, and generated cards", () => {
+test("stores M2 action card types and full meeting participants in schema", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const rows = db
+      .getNativeDatabase()
+      .prepare(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN ('action_cards', 'meetings') ORDER BY name",
+      )
+      .all() as Array<{ name: string; sql: string }>;
+    const byName = new Map(rows.map((row) => [row.name, row.sql]));
+
+    assert.match(byName.get("action_cards") ?? "", /record_interaction/);
+    assert.match(byName.get("meetings") ?? "", /\bparticipants\b/);
+    assert.doesNotMatch(byName.get("meetings") ?? "", /\bparticipant_ids\b/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("stores screenshots, raw extraction, and all action card types", () => {
   const { db, cleanup } = withTempDb();
 
   try {
@@ -71,6 +91,21 @@ test("stores screenshots, raw extraction, and generated cards", () => {
         source_quote: "我是未来科技的市场总监王磊",
       },
       {
+        type: "update_contact",
+        payload: {
+          contact_id: 1,
+          contact_name: "王磊",
+          changes: {
+            company: {
+              old: "旧公司",
+              new: "未来科技",
+            },
+          },
+        },
+        confidence: "medium",
+        source_quote: "王磊现在在未来科技",
+      },
+      {
         type: "create_meeting",
         payload: {
           title: "聊合作",
@@ -80,6 +115,15 @@ test("stores screenshots, raw extraction, and generated cards", () => {
         },
         confidence: "medium",
         source_quote: "下周三下午三点来我们公司聊合作",
+      },
+      {
+        type: "record_interaction",
+        payload: {
+          contact_name: "王磊",
+          summary: "确认下周继续推进合作",
+        },
+        confidence: "high",
+        source_quote: "下周继续推进合作",
       },
     ];
 
@@ -93,16 +137,20 @@ test("stores screenshots, raw extraction, and generated cards", () => {
     const savedScreenshot = db.getScreenshotById(screenshot.id);
     const listedCards = db.listActionCardsByScreenshotId(screenshot.id);
 
-    assert.equal(savedCards.length, 2);
+    assert.equal(savedCards.length, 4);
     assert.equal(savedScreenshot?.image_path, "/tmp/test-shot.png");
     assert.deepEqual(savedScreenshot?.raw_extraction, {
       participants: [{ name: "王磊" }],
       events: [],
     });
-    assert.equal(listedCards[0]?.type, "create_contact");
+    assert.deepEqual(
+      listedCards.map((card) => card.type),
+      ["create_contact", "update_contact", "create_meeting", "record_interaction"],
+    );
     assert.deepEqual(listedCards[0]?.payload, cards[0]?.payload);
-    assert.equal(listedCards[1]?.type, "create_meeting");
     assert.deepEqual(listedCards[1]?.payload, cards[1]?.payload);
+    assert.deepEqual(listedCards[2]?.payload, cards[2]?.payload);
+    assert.deepEqual(listedCards[3]?.payload, cards[3]?.payload);
   } finally {
     cleanup();
   }

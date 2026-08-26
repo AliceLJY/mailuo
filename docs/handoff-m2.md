@@ -14,20 +14,21 @@
      - create_contact：建档，截图里出现的称呼写进 aliases；若裁决为"合并到已有联系人"，则不建新档，新称呼追加进该联系人 aliases，卡片 payload 里的新字段按 update 语义写入；
      - update_contact：更新字段；**每个被覆盖的旧值写一条 Observation（kind=status_change，content 记"字段 X 由 A 变为 B"，带 source_quote）**；
      - create_meeting：落 meetings 表，participants 里未建档的人保留名字（不强制建档）；
-     - 任何卡确认后：本次截图中与该联系人相关的事实写 observations（kind 按性质选 fact/preference/interaction）；
+     - record_interaction：只给已建档联系人，或本截图里会先确认 create_contact/合并裁决的人；如果对应联系人还没落库，明确报依赖错误，不自动连带确认 create_contact；
+     - 任何卡确认后：本次截图中与该联系人相关的事实写 observations（kind 按性质选 fact/preference/interaction）；同一 `(screenshot_id, resolved contact_id)` 最多保留一条 interaction observation；
      - 全部写库操作走已有的 withTransaction。
    - `POST /api/cards/:id/reject`：status=rejected，零写入。
    - 已 confirmed/rejected 的卡再次操作 → 409 明确报错。
 3. **洞察生成**（`server/src/agent/insight.ts`，按 PLAN §4 [5]）：
-   - confirm 响应里同步返回：对本次涉及的每个 contact，取档案全量（结构化字段 + observations 时间线 + 近期 insights 摘要）+ 本次新增 → deepseek → 1-3 条洞察；
+   - owner 3A 语义：confirm 先提交 execute 事务，再尝试生成洞察；响应仍同步返回洞察结果或失败状态；
    - 每条必须带 `based_on`（引用 observation id 数组）；**模型给不出依据的条目直接丢弃，宁缺毋滥**；
    - kind 三选一：relationship_read / suggested_action / conversation_hook；
-   - 洞察入库 insights 表，同时返回给调用方。
+   - 洞察成功则入库 insights 表并返回；失败时仍返回 `{ok:true}` + `insight_status:"failed"` + `insight_error`，不回滚卡片状态，也不补单独 retry 端点（Future work 不做）。
 4. **API 补齐**（PLAN §6 剩余四个）：GET /api/contacts（含 observation 计数、最近互动时间）、GET /api/contacts/:id（字段 + observations 时间线 + insights）、GET /api/meetings（按时间排序）、GET /api/screenshots/:id（原图路径 + raw_extraction + 关联卡片）。统一 `{ok,data}/{ok,error}` 信封。
-5. **CLI e2e**：`npm run cli -- e2e <image路径>`——真调链路：extract → 全部卡片自动 confirm（unsure 自动选 new）→ 打印洞察。供 owner 注入 key 后做真调验收；缺 key 报错照旧清晰。
+5. **CLI e2e**：`npm run cli -- e2e <image路径>`——真调链路：extract → 全部卡片按依赖顺序自动 confirm（unsure 自动选 new）→ 打印洞察。若失败发生在 `createScreenshot` 之后但分析/卡片尚未落库，清掉这次孤儿 screenshot；一旦进入执行阶段，不回滚已执行卡。供 owner 注入 key 后做真调验收；缺 key 报错照旧清晰。
 6. **单测**（LLM 全 mock，用 fixtures/seed.sql 预置数据）：
    - resolve：精确命中 / LLM same_as / new / unsure 走 disambiguation 四条路；
-   - execute：三种卡片类型各一；update_contact 的 status_change 留痕；disambiguation 裁决"合并"后别名回写；重复 confirm 拒绝；
+   - execute：四种卡片类型各一；update_contact 的 status_change 留痕；disambiguation 裁决"合并"后别名回写；重复 confirm 拒绝；
    - insight：based_on 缺失的条目被丢弃；正常条目入库；
    - 一条 mock 全链路：extract 结果 → resolve → confirm → 断言 DB 终态（联系人/观测/会议/洞察都对）。
 
