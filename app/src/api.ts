@@ -1,5 +1,7 @@
 import Constants from "expo-constants";
+import { File as ExpoFile } from "expo-file-system";
 import * as Linking from "expo-linking";
+import { Platform } from "react-native";
 
 import type {
   ApiResponse,
@@ -75,17 +77,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return payload.data;
 }
 
-function buildUploadPart(asset: UploadImageAsset) {
-  const fileName =
+function resolveUploadFileName(asset: UploadImageAsset): string {
+  return (
     asset.fileName?.trim() ||
     asset.uri.split("/").filter(Boolean).at(-1) ||
-    `screenshot-${Date.now()}.jpg`;
+    `screenshot-${Date.now()}.jpg`
+  );
+}
 
-  return {
-    uri: asset.uri,
-    name: fileName,
-    type: asset.mimeType ?? "image/jpeg",
-  };
+// SDK 57 的全局 fetch 是 WinterCG 实现，不再接受 RN 老式 {uri,name,type} 上传对象
+// （报 "unsupported FormDataPart implementation"）；native 走 expo-file-system 的
+// 标准 File（实现 Blob 接口），web 走真 Blob。
+async function buildUploadBlob(asset: UploadImageAsset): Promise<Blob> {
+  if (Platform.OS === "web") {
+    const response = await fetch(asset.uri);
+    return await response.blob();
+  }
+
+  return new ExpoFile(asset.uri) as unknown as Blob;
 }
 
 export async function uploadScreenshot(input: {
@@ -93,7 +102,11 @@ export async function uploadScreenshot(input: {
   note?: string;
 }) {
   const formData = new FormData();
-  formData.append("image", buildUploadPart(input.asset) as unknown as Blob);
+  formData.append(
+    "image",
+    await buildUploadBlob(input.asset),
+    resolveUploadFileName(input.asset),
+  );
 
   if (input.note?.trim()) {
     formData.append("note", input.note.trim());

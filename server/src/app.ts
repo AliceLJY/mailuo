@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
+import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import type { Multipart, MultipartFile } from "@fastify/multipart";
 import Fastify, {
@@ -373,6 +374,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const generateInsights = options.generateInsights ?? defaultGenerateInsights;
   const app = Fastify({ logger: true });
 
+  // web 版（react-native-web）页面在 Metro 端口、API 在本端口，跨端口需 CORS；
+  // 单用户工具部署在 tailnet 内，origin 放开可接受
+  app.register(cors, { origin: true });
   app.register(multipart);
   app.addHook("onClose", async () => {
     if (ownsDb) {
