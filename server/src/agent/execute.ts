@@ -18,7 +18,11 @@ import {
   type StoredActionCard,
   type StoredActionCardRecord,
 } from "../db.ts";
-import { PerceptionResultSchema, type PerceptionResult } from "./perceive.ts";
+import {
+  isSelfName,
+  parseStoredPerceptionResult,
+  type PerceptionResult,
+} from "./perceive.ts";
 
 const FIELD_LABELS: Record<ContactEditableField, string> = {
   company: "公司",
@@ -203,6 +207,24 @@ function normalizeLookupValue(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
+function containsSelfName(values: Array<string | null | undefined>): boolean {
+  return values.some((value) => value != null && isSelfName(value));
+}
+
+function assertNoSelfContactNames(values: Array<string | null | undefined>) {
+  if (containsSelfName(values)) {
+    throw new ExecuteValidationError('create_contact cannot create or merge the self contact "我"');
+  }
+}
+
+function isHistoricalSelfContact(contact: Pick<ContactRecord, "canonical_name" | "aliases">): boolean {
+  return containsSelfName([contact.canonical_name, ...contact.aliases]);
+}
+
+function isSelfMeetingParticipantName(value: string): boolean {
+  return isSelfName(value);
+}
+
 function ensurePositiveSafeInteger(value: number | undefined, label: string): number | undefined {
   if (value == null) {
     return undefined;
@@ -224,6 +246,7 @@ function sanitizeCreateContactPayload(payload: CreateContactPayload): CreateCont
 
   const sanitized: CreateContactPayload = { name };
   const aliases = dedupeStrings(payload.aliases ?? []);
+  assertNoSelfContactNames([name, ...aliases]);
 
   if (aliases.length > 0) {
     sanitized.aliases = aliases.filter((alias) => alias !== name);
@@ -244,6 +267,10 @@ function sanitizeUpdateContactPayload(payload: UpdateContactPayload): UpdateCont
 
   if (!contactName) {
     throw new ExecuteValidationError("update_contact.contact_name must be non-empty");
+  }
+
+  if (isSelfName(contactName)) {
+    throw new ExecuteValidationError('update_contact cannot target the self contact "我"');
   }
 
   const changes: UpdateContactPayload["changes"] = {};
@@ -281,6 +308,10 @@ function sanitizeCreateMeetingPayload(payload: CreateMeetingPayload): CreateMeet
       throw new ExecuteValidationError("create_meeting participants require non-empty names");
     }
 
+    if (isSelfMeetingParticipantName(name)) {
+      return { name: "我" };
+    }
+
     const contactId = ensurePositiveSafeInteger(participant.contact_id, "participant.contact_id");
     return {
       ...(contactId ? { contact_id: contactId } : {}),
@@ -304,6 +335,10 @@ function sanitizeRecordInteractionPayload(payload: RecordInteractionPayload): Re
 
   if (!contactName || !summary) {
     throw new ExecuteValidationError("record_interaction requires non-empty contact_name and summary");
+  }
+
+  if (isSelfName(contactName)) {
+    throw new ExecuteValidationError('record_interaction cannot target the self contact "我"');
   }
 
   const contactId = ensurePositiveSafeInteger(payload.contact_id, "record_interaction.contact_id");
@@ -343,8 +378,7 @@ function validatePayloadForType(type: StoredActionCard["type"], payload: unknown
 }
 
 function parseRawExtraction(rawExtraction: unknown): PerceptionResult | null {
-  const result = PerceptionResultSchema.safeParse(rawExtraction);
-  return result.success ? result.data : null;
+  return parseStoredPerceptionResult(rawExtraction);
 }
 
 function collectRelatedParticipants(
@@ -642,7 +676,16 @@ function hydrateMeetingParticipants(args: {
   const { db, screenshotId, extraction, participants } = args;
 
   return participants.map((participant) => {
+    if (isSelfMeetingParticipantName(participant.name)) {
+      return { name: "我" };
+    }
+
     if (participant.contact_id != null) {
+      const contact = db.getContactById(participant.contact_id);
+      if (contact && isHistoricalSelfContact(contact)) {
+        return { name: "我" };
+      }
+
       return participant;
     }
 
@@ -655,6 +698,16 @@ function hydrateMeetingParticipants(args: {
 
     if (matchedContactIds.length !== 1) {
       return participant;
+    }
+
+    const matchedContact = db.getContactById(matchedContactIds[0]);
+
+    if (!matchedContact) {
+      throw new ExecuteDependencyError(`Contact ${matchedContactIds[0]} does not exist`);
+    }
+
+    if (isHistoricalSelfContact(matchedContact)) {
+      return { name: "我" };
     }
 
     return {
@@ -710,6 +763,7 @@ export function executeCard({ db, cardId, payload, resolvedContactId }: ExecuteC
           ...(typedPayload.aliases ?? []),
           ...relatedParticipants.names,
         ]);
+        assertNoSelfContactNames(screenshotNames);
 
         if (normalizedResolvedContactId != null) {
           const allowedIds = new Set(card.disambiguation?.candidates.map((candidate) => candidate.contact_id) ?? []);
@@ -723,6 +777,10 @@ export function executeCard({ db, cardId, payload, resolvedContactId }: ExecuteC
           const existingContact = db.getContactById(normalizedResolvedContactId);
           if (!existingContact) {
             throw new ExecuteDependencyError(`Contact ${normalizedResolvedContactId} does not exist`);
+          }
+
+          if (isHistoricalSelfContact(existingContact)) {
+            throw new ExecuteValidationError('create_contact cannot create or merge the self contact "我"');
           }
 
           const contactWithAliases = db.appendContactAliases(
@@ -805,6 +863,10 @@ export function executeCard({ db, cardId, payload, resolvedContactId }: ExecuteC
 
         if (!existingContact) {
           throw new ExecuteDependencyError(`Contact ${typedPayload.contact_id} does not exist`);
+        }
+
+        if (isHistoricalSelfContact(existingContact)) {
+          throw new ExecuteValidationError('update_contact cannot target the self contact "我"');
         }
 
         const relatedParticipants = collectRelatedParticipants(extraction, [
@@ -940,6 +1002,10 @@ export function executeCard({ db, cardId, payload, resolvedContactId }: ExecuteC
 
         if (!contact) {
           throw new ExecuteDependencyError(`Contact ${summaryContactId} does not exist`);
+        }
+
+        if (isHistoricalSelfContact(contact)) {
+          throw new ExecuteValidationError('record_interaction cannot target the self contact "我"');
         }
 
         const relatedParticipants = collectRelatedParticipants(extraction, [

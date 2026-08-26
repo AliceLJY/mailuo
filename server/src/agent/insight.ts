@@ -242,7 +242,7 @@ export async function generateInsights({
         },
       ],
       temperature: 0,
-      maxOutputTokens: 700,
+      maxOutputTokens: 2000,
       responseFormat: { type: 'json_object' },
     });
 

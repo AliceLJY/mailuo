@@ -100,6 +100,7 @@ test('mock e2e chain persists contacts, meetings, observations, and insights to 
         participants: [
           {
             name: '陈老师',
+            is_self: false,
             company: '山海文化',
             title: '内容合作负责人',
             confidence: 'high',
@@ -107,6 +108,7 @@ test('mock e2e chain persists contacts, meetings, observations, and insights to 
           },
           {
             name: '王磊',
+            is_self: false,
             company: '星火科技',
             title: '市场总监',
             notes: '更喜欢线下面聊',
@@ -120,6 +122,7 @@ test('mock e2e chain persists contacts, meetings, observations, and insights to 
             title: '聊合作',
             time_text: '下周三下午三点',
             time_iso: '2026-09-02T15:00:00+08:00',
+            has_time_signal: true,
             participant_names: ['陈老师', '王磊', '魏总'],
             confidence: 'high',
             source_quote: '下周三下午三点我们一起聊合作',

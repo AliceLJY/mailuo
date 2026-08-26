@@ -31,7 +31,7 @@ const schemaSql = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'
 class MockStructuredOutputProvider implements StructuredOutputProvider {
   readonly name = 'MockStructuredOutputProvider';
   readonly model = 'mock-model';
-  readonly calls: Array<{ messages: ChatMessage[] }> = [];
+  readonly calls: Array<{ messages: ChatMessage[]; maxOutputTokens?: number }> = [];
   private readonly responses: Array<unknown | Error>;
 
   constructor(responses: Array<unknown | Error>) {
@@ -43,7 +43,10 @@ class MockStructuredOutputProvider implements StructuredOutputProvider {
   }
 
   async generateStructuredOutput<T>(request: StructuredOutputRequest<T>): Promise<T> {
-    this.calls.push({ messages: request.messages });
+    this.calls.push({
+      messages: request.messages,
+      maxOutputTokens: request.maxOutputTokens,
+    });
     const next = this.responses.shift();
 
     if (!next) {
@@ -426,6 +429,11 @@ test('generateInsights drops ungrounded items, sanitizes based_on, and inserts v
     });
 
     assert.equal(provider.calls.length, 1);
+    assert.equal(provider.calls[0]?.maxOutputTokens, 2000);
+    assert.match(
+      String(provider.calls[0]?.messages[0]?.content ?? ''),
+      /within 120 Chinese characters/u,
+    );
     assert.deepEqual(result.requested_contact_ids, [contactId]);
     assert.deepEqual(result.processed_contact_ids, [contactId]);
     assert.deepEqual(result.skipped_contact_ids, []);
@@ -619,6 +627,7 @@ test('entity resolution and insight prompts stay grounded to the supplied eviden
 
   assert.match(insightPrompt.systemPrompt, /based_on/);
   assert.match(insightPrompt.systemPrompt, /If you cannot ground an insight, do not output it/);
+  assert.match(insightPrompt.systemPrompt, /within 120 Chinese characters/);
   assert.match(insightPrompt.userPrompt, /"phone": "13800001234"/);
   assert.match(insightPrompt.userPrompt, /"id": 101/);
   assert.match(insightPrompt.userPrompt, /"recent_insight_summaries"/);

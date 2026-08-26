@@ -35,15 +35,20 @@ class FakeStructuredOutputProvider implements StructuredOutputProvider {
   }
 }
 
-function buildExtraction(participantName = '王磊'): PerceptionResult {
+function buildExtraction(
+  participantName = '王磊',
+  participantOverrides: Partial<PerceptionResult['participants'][number]> = {},
+): PerceptionResult {
   return {
     participants: [
       {
         name: participantName,
+        is_self: false,
         company: '星火科技',
         title: '市场总监',
         confidence: 'high',
         source_quote: `我是星火科技的市场总监${participantName}`,
+        ...participantOverrides,
       },
     ],
     events: [
@@ -52,6 +57,7 @@ function buildExtraction(participantName = '王磊'): PerceptionResult {
         title: '聊合作',
         time_text: '明天下午两点',
         time_iso: '2026-08-27T14:00:00+08:00',
+        has_time_signal: true,
         location: '星火科技会议室',
         participant_names: [participantName, 'Alice'],
         confidence: 'medium',
@@ -125,6 +131,92 @@ test('resolveParticipants treats multiple exact matches as unsure without callin
       status: 'unsure',
       candidate_ids: [21, 22],
       source: 'exact_multiple',
+    },
+  ] satisfies ParticipantResolution[]);
+});
+
+test('resolveParticipants omits participants marked is_self from the result set', async () => {
+  const provider = new FakeStructuredOutputProvider([{ decision: 'same_as', contact_id: 71 }]);
+  const contacts: ResolvableContact[] = [
+    { id: 71, canonical_name: 'Alice', aliases: ['我'], company: 'OpenAI' },
+  ];
+
+  const resolutions = await resolveParticipants({
+    extraction: buildExtraction('Alice', { is_self: true }),
+    contacts,
+    provider,
+  });
+
+  assert.equal(provider.calls, 0);
+  assert.deepEqual(resolutions, [] satisfies ParticipantResolution[]);
+});
+
+test('resolveParticipants still resolves normal participants when a self participant appears first', async () => {
+  const provider = new FakeStructuredOutputProvider([{ decision: 'same_as', contact_id: 72 }]);
+  const contacts: ResolvableContact[] = [
+    { id: 71, canonical_name: 'Alice', aliases: ['我'], company: 'OpenAI' },
+    { id: 72, canonical_name: '王磊', aliases: ['William'], company: '星火科技' },
+  ];
+
+  const resolutions = await resolveParticipants({
+    extraction: {
+      participants: [
+        {
+          name: '  我  ',
+          is_self: false,
+          confidence: 'high',
+          source_quote: '我来处理',
+        },
+        {
+          name: 'Will',
+          is_self: false,
+          company: '星火科技',
+          title: '市场总监',
+          confidence: 'high',
+          source_quote: '我是星火科技的市场总监 Will',
+        },
+      ],
+      events: [
+        {
+          kind: 'meeting',
+          title: '聊合作',
+          time_text: '明天下午两点',
+          time_iso: '2026-08-27T14:00:00+08:00',
+          has_time_signal: true,
+          participant_names: ['我', 'Will'],
+          confidence: 'medium',
+          source_quote: '明天下午两点我和 Will 聊合作',
+        },
+      ],
+      facts: [
+        {
+          subject_name: 'Will',
+          field: 'phone',
+          value: '13800001234',
+          confidence: 'high',
+          source_quote: '电话 13800001234',
+        },
+      ],
+      quotes: [
+        {
+          speaker_name: 'Will',
+          text: '我是星火科技的市场总监 Will',
+          source_quote: '我是星火科技的市场总监 Will',
+        },
+      ],
+    },
+    contacts,
+    provider,
+  });
+
+  assert.equal(provider.calls, 1);
+  assert.deepEqual(resolutions, [
+    {
+      participant_name: 'Will',
+      normalized_name: 'will',
+      status: 'same_as',
+      contact_id: 72,
+      source: 'llm',
     },
   ] satisfies ParticipantResolution[]);
 });

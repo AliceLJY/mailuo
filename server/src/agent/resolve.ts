@@ -1,49 +1,22 @@
 import { z } from 'zod';
 
 import { createDeepSeekProvider } from '../llm/deepseek.ts';
-import * as promptBuilders from '../llm/prompts.ts';
+import { buildEntityResolutionPrompt } from '../llm/prompts.ts';
 import type { ChatMessage, StructuredOutputProvider } from '../llm/provider.ts';
 
-import type { PerceptionResult } from './perceive.ts';
+import { isSelfName, type PerceptionResult } from './perceive.ts';
 
 type ContactSummary = {
   id: number;
   canonical_name: string;
   aliases: string[];
-  company?: string | null;
+  company: string | null;
 };
 
 type ResolutionPromptBuilder = (
   participantContext: string,
   contactSummaries: ContactSummary[],
 ) => string | { systemPrompt: string; userPrompt: string };
-
-const fallbackEntityResolutionPrompt: ResolutionPromptBuilder = (
-  participantContext,
-  contactSummaries,
-) => ({
-  systemPrompt: [
-    'Resolve the participant against the candidate contacts.',
-    'Use only the participant context and the candidate contact summaries.',
-    'Return JSON only.',
-    'If exactly one contact matches, return {"decision":"same_as","contact_id":123}.',
-    'If none match, return {"decision":"new"}.',
-    'If multiple candidates remain plausible, return {"decision":"unsure","candidate_ids":[123,456]}.',
-  ].join('\n'),
-  userPrompt: [
-    'Participant context:',
-    participantContext,
-    'Candidate contact summaries:',
-    JSON.stringify(contactSummaries, null, 2),
-  ].join('\n\n'),
-});
-
-const buildEntityResolutionPrompt =
-  (
-    promptBuilders as typeof promptBuilders & {
-      buildEntityResolutionPrompt?: ResolutionPromptBuilder;
-    }
-  ).buildEntityResolutionPrompt ?? fallbackEntityResolutionPrompt;
 
 export type ResolvableContact = {
   id: number;
@@ -245,6 +218,10 @@ function formatParticipantContext(
   return lines.join('\n');
 }
 
+function isSelfParticipant(participant: PerceptionResult['participants'][number]): boolean {
+  return participant.is_self || isSelfName(participant.name);
+}
+
 function findExactMatches(
   participantName: string,
   contacts: ResolvableContact[],
@@ -283,7 +260,10 @@ export async function resolveParticipants({
   contacts,
   provider,
 }: ResolveParticipantsOptions): Promise<ParticipantResolution[]> {
-  const unresolvedParticipants = extraction.participants.filter(
+  const participants = extraction.participants.filter(
+    (participant) => !isSelfParticipant(participant),
+  );
+  const unresolvedParticipants = participants.filter(
     (participant) => findExactMatches(participant.name, contacts).length === 0,
   );
   const llmProvider =
@@ -292,8 +272,9 @@ export async function resolveParticipants({
       : undefined;
 
   return Promise.all(
-    extraction.participants.map(async (participant) => {
+    participants.map(async (participant) => {
       const normalizedName = normalizeComparableText(participant.name);
+
       const exactMatches = findExactMatches(participant.name, contacts);
 
       if (exactMatches.length === 1) {

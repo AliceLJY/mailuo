@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   ActionCardConflictError,
   ExecuteDependencyError,
+  ExecuteValidationError,
   executeCard,
   rejectCard,
 } from "../agent/execute.ts";
@@ -199,6 +200,157 @@ test("executeCard merges create_contact into an existing contact, appends aliase
   }
 });
 
+test('executeCard rejects create_contact cards for the self name "我" and leaves the card pending', () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const card = createPendingCard({
+      db,
+      rawExtraction: {
+        participants: [
+          {
+            name: '我',
+            aliases: ['Alice'],
+            confidence: 'high',
+            source_quote: '我来加一下自己',
+          },
+        ],
+        events: [],
+        facts: [],
+        quotes: [],
+      },
+      card: {
+        type: 'create_contact',
+        payload: {
+          name: ' 我 ',
+          aliases: ['Alice'],
+        },
+        confidence: 'high',
+        source_quote: '我来加一下自己',
+      },
+    });
+
+    assert.throws(
+      () => executeCard({ db, cardId: card.id }),
+      (error) => {
+        assert.ok(error instanceof ExecuteValidationError);
+        assert.equal(error.statusCode, 422);
+        assert.equal(error.message, 'create_contact cannot create or merge the self contact "我"');
+        return true;
+      },
+    );
+
+    assert.equal(countRows(db, 'contacts'), 0);
+    assert.equal(countRows(db, 'observations'), 0);
+    assert.equal(db.getStoredActionCardById(card.id)?.status, 'pending');
+  } finally {
+    cleanup();
+  }
+});
+
+test('executeCard rejects create_contact cards when any alias normalizes to "我"', () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const card = createPendingCard({
+      db,
+      rawExtraction: {
+        participants: [
+          {
+            name: "王磊",
+            aliases: ["我"],
+            confidence: "high",
+            source_quote: "他们有时直接叫我",
+          },
+        ],
+        events: [],
+        facts: [],
+        quotes: [],
+      },
+      card: {
+        type: "create_contact",
+        payload: {
+          name: "王磊",
+          aliases: [" 我 ", "老王"],
+        },
+        confidence: "high",
+        source_quote: "他们有时直接叫我",
+      },
+    });
+
+    assert.throws(
+      () => executeCard({ db, cardId: card.id }),
+      (error) => {
+        assert.ok(error instanceof ExecuteValidationError);
+        assert.equal(error.statusCode, 422);
+        assert.equal(error.message, 'create_contact cannot create or merge the self contact "我"');
+        return true;
+      },
+    );
+
+    assert.equal(countRows(db, "contacts"), 0);
+    assert.equal(countRows(db, "observations"), 0);
+    assert.equal(db.getStoredActionCardById(card.id)?.status, "pending");
+  } finally {
+    cleanup();
+  }
+});
+
+test('executeCard rejects create_contact merges that would append alias "我"', () => {
+  const { db, cleanup } = withTempDb();
+  seedDb(db);
+
+  try {
+    const beforeObservationCount = countRows(db, "observations");
+    const beforeAliases = db.getContactDetail(1)?.contact.aliases ?? [];
+    const card = createPendingCard({
+      db,
+      rawExtraction: {
+        participants: [
+          {
+            name: "陈老师",
+            aliases: ["我"],
+            confidence: "high",
+            source_quote: "也有人直接叫我",
+          },
+        ],
+        events: [],
+        facts: [],
+        quotes: [],
+      },
+      card: {
+        type: "create_contact",
+        payload: {
+          name: "陈老师",
+          aliases: ["我", "昕姐"],
+        },
+        confidence: "high",
+        source_quote: "也有人直接叫我",
+        disambiguation: {
+          candidates: [{ contact_id: 1, name: "陈昕", company: "云沐内容" }],
+        },
+      },
+    });
+
+    assert.throws(
+      () => executeCard({ db, cardId: card.id, resolvedContactId: 1 }),
+      (error) => {
+        assert.ok(error instanceof ExecuteValidationError);
+        assert.equal(error.statusCode, 422);
+        assert.equal(error.message, 'create_contact cannot create or merge the self contact "我"');
+        return true;
+      },
+    );
+
+    assert.equal(countRows(db, "contacts"), 2);
+    assert.equal(countRows(db, "observations"), beforeObservationCount);
+    assert.deepEqual(db.getContactDetail(1)?.contact.aliases, beforeAliases);
+    assert.equal(db.getStoredActionCardById(card.id)?.status, "pending");
+  } finally {
+    cleanup();
+  }
+});
+
 test("executeCard merge preserves omitted optional contact fields and skips bogus status_change rows", () => {
   const { db, cleanup } = withTempDb();
   seedDb(db);
@@ -318,6 +470,173 @@ test("executeCard uses the current DB value for update_contact status_change con
   }
 });
 
+test('executeCard rejects update_contact and record_interaction when they target a historical self contact', () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const selfContact = db.createContact({
+      canonicalName: "Alice",
+      aliases: [" 我 "],
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    });
+    const updateCard = createPendingCard({
+      db,
+      rawExtraction: {
+        participants: [],
+        events: [],
+        facts: [],
+        quotes: [],
+      },
+      card: {
+        type: "update_contact",
+        payload: {
+          contact_id: selfContact.id,
+          contact_name: "Alice",
+          changes: {
+            notes: {
+              old: null,
+              new: "不该写入 self 档案",
+            },
+          },
+        },
+        confidence: "high",
+        source_quote: "给自己加备注",
+      },
+    });
+    const interactionCard = createPendingCard({
+      db,
+      rawExtraction: {
+        participants: [],
+        events: [],
+        facts: [],
+        quotes: [],
+      },
+      card: {
+        type: "record_interaction",
+        payload: {
+          contact_id: selfContact.id,
+          contact_name: "Alice",
+          summary: "不该写入 self 互动",
+        },
+        confidence: "high",
+        source_quote: "今天我又补了一句",
+      },
+      imagePath: "/tmp/self-contact-interaction.png",
+    });
+
+    assert.throws(
+      () => executeCard({ db, cardId: updateCard.id }),
+      (error) => {
+        assert.ok(error instanceof ExecuteValidationError);
+        assert.equal(error.statusCode, 422);
+        assert.equal(error.message, 'update_contact cannot target the self contact "我"');
+        return true;
+      },
+    );
+    assert.throws(
+      () => executeCard({ db, cardId: interactionCard.id }),
+      (error) => {
+        assert.ok(error instanceof ExecuteValidationError);
+        assert.equal(error.statusCode, 422);
+        assert.equal(error.message, 'record_interaction cannot target the self contact "我"');
+        return true;
+      },
+    );
+
+    assert.equal(db.getContactDetail(selfContact.id)?.contact.notes, null);
+    assert.equal(countRows(db, "observations"), 0);
+    assert.equal(db.getStoredActionCardById(updateCard.id)?.status, "pending");
+    assert.equal(db.getStoredActionCardById(interactionCard.id)?.status, "pending");
+  } finally {
+    cleanup();
+  }
+});
+
+test('executeCard rejects update_contact and record_interaction when contact_name normalizes to "我" even with a normal contact_id', () => {
+  const { db, cleanup } = withTempDb();
+  seedDb(db);
+
+  try {
+    const beforeDetail = db.getContactDetail(1);
+    const beforeObservationCount = countRows(db, "observations");
+    const updateCard = createPendingCard({
+      db,
+      rawExtraction: {
+        participants: [],
+        events: [],
+        facts: [],
+        quotes: [],
+      },
+      card: {
+        type: "update_contact",
+        payload: {
+          contact_id: 1,
+          contact_name: " 我 ",
+          changes: {
+            notes: {
+              old: beforeDetail?.contact.notes ?? null,
+              new: "不该写入普通联系人",
+            },
+          },
+        },
+        confidence: "high",
+        source_quote: "给我自己补一句",
+      },
+    });
+    const interactionCard = createPendingCard({
+      db,
+      rawExtraction: {
+        participants: [],
+        events: [],
+        facts: [],
+        quotes: [],
+      },
+      card: {
+        type: "record_interaction",
+        payload: {
+          contact_id: 1,
+          contact_name: "我",
+          summary: "不该写入普通联系人互动",
+        },
+        confidence: "high",
+        source_quote: "我自己补一句互动",
+      },
+      imagePath: "/tmp/normalized-self-name-interaction.png",
+    });
+
+    assert.throws(
+      () => executeCard({ db, cardId: updateCard.id }),
+      (error) => {
+        assert.ok(error instanceof ExecuteValidationError);
+        assert.equal(error.statusCode, 422);
+        assert.equal(error.message, 'update_contact cannot target the self contact "我"');
+        return true;
+      },
+    );
+    assert.throws(
+      () => executeCard({ db, cardId: interactionCard.id }),
+      (error) => {
+        assert.ok(error instanceof ExecuteValidationError);
+        assert.equal(error.statusCode, 422);
+        assert.equal(error.message, 'record_interaction cannot target the self contact "我"');
+        return true;
+      },
+    );
+
+    const afterDetail = db.getContactDetail(1);
+    assert.ok(beforeDetail);
+    assert.ok(afterDetail);
+    assert.equal(afterDetail.contact.notes, beforeDetail.contact.notes);
+    assert.equal(afterDetail.contact.company, beforeDetail.contact.company);
+    assert.equal(countRows(db, "observations"), beforeObservationCount);
+    assert.equal(db.getStoredActionCardById(updateCard.id)?.status, "pending");
+    assert.equal(db.getStoredActionCardById(interactionCard.id)?.status, "pending");
+  } finally {
+    cleanup();
+  }
+});
+
 test("executeCard creates meetings and retains unresolved participant names", () => {
   const { db, cleanup } = withTempDb();
   seedDb(db);
@@ -358,6 +677,140 @@ test("executeCard creates meetings and retains unresolved participant names", ()
       { contact_id: 1, name: "陈老师" },
       { name: "魏总" },
     ]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('executeCard strips historical self contact_ids from meeting participants and renders them as "我"', () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const selfContact = db.createContact({
+      canonicalName: "Alice",
+      aliases: ["我"],
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    });
+    const card = createPendingCard({
+      db,
+      rawExtraction: {
+        participants: [
+          {
+            name: "Alice",
+            aliases: ["我"],
+            confidence: "high",
+            source_quote: "Alice 这边我来定时间",
+          },
+        ],
+        events: [],
+        facts: [],
+        quotes: [],
+      },
+      card: {
+        type: "create_meeting",
+        payload: {
+          title: "内部同步",
+          time_iso: "2026-09-02T15:00:00+08:00",
+          time_text: "下周三下午三点",
+          participants: [
+            { contact_id: selfContact.id, name: "Alice" },
+            { name: "魏总" },
+          ],
+        },
+        confidence: "medium",
+        source_quote: "下周三下午三点我和魏总内部同步",
+      },
+    });
+
+    const result = executeCard({ db, cardId: card.id });
+    const meetings = db.listMeetings();
+
+    assert.equal(result.meetingId != null, true);
+    assert.deepEqual(result.affectedContactIds, []);
+    assert.equal(countRows(db, "contacts"), 1);
+    assert.deepEqual(meetings[0]?.participants, [{ name: "我" }, { name: "魏总" }]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('executeCard strips sibling-resolved historical self contacts from meeting participants and renders them as "我"', () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const selfContact = db.createContact({
+      canonicalName: "Alice",
+      aliases: ["我"],
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    });
+    const screenshot = db.createScreenshot({
+      imagePath: "/tmp/meeting-sibling-self-shot.png",
+      uploadedAt: "2026-08-26T00:00:00.000Z",
+    });
+
+    db.getNativeDatabase()
+      .prepare("UPDATE screenshots SET raw_extraction = ? WHERE id = ?")
+      .run(
+        JSON.stringify({
+          participants: [
+            {
+              name: "Alice",
+              aliases: ["我"],
+              confidence: "high",
+              source_quote: "Alice 这边我来参加",
+            },
+          ],
+          events: [],
+          facts: [],
+          quotes: [],
+        }),
+        screenshot.id,
+      );
+
+    const siblingCreateCard = db.insertActionCard({
+      screenshotId: screenshot.id,
+      card: {
+        type: "create_contact",
+        payload: {
+          name: "Alice",
+        },
+        confidence: "high",
+        source_quote: "Alice 这边我来参加",
+      },
+      createdAt: "2026-08-26T00:01:00.000Z",
+    });
+    const meetingCard = db.insertActionCard({
+      screenshotId: screenshot.id,
+      card: {
+        type: "create_meeting",
+        payload: {
+          title: "内部同步",
+          time_iso: "2026-09-02T15:00:00+08:00",
+          time_text: "下周三下午三点",
+          participants: [{ name: "Alice" }, { name: "魏总" }],
+        },
+        confidence: "medium",
+        source_quote: "下周三下午三点 Alice 和魏总内部同步",
+      },
+      createdAt: "2026-08-26T00:02:00.000Z",
+    });
+
+    const confirmedSibling = db.confirmActionCardIfPending({
+      cardId: siblingCreateCard.id,
+      payload: siblingCreateCard.payload,
+      resolvedContactId: selfContact.id,
+      resolvedAt: "2026-08-26T00:01:30.000Z",
+    });
+    assert.ok(confirmedSibling);
+
+    const result = executeCard({ db, cardId: meetingCard.id });
+    const meetings = db.listMeetings();
+
+    assert.equal(result.meetingId != null, true);
+    assert.deepEqual(result.affectedContactIds, []);
+    assert.deepEqual(meetings[0]?.participants, [{ name: "我" }, { name: "魏总" }]);
   } finally {
     cleanup();
   }

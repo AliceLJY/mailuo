@@ -10,6 +10,7 @@ test('proposeCards creates contact and meeting cards from perception output', ()
     participants: [
       {
         name: '王磊',
+        is_self: false,
         company: '星火科技',
         title: '市场总监',
         confidence: 'high',
@@ -17,6 +18,7 @@ test('proposeCards creates contact and meeting cards from perception output', ()
       },
       {
         name: '李姐',
+        is_self: false,
         aliases: ['鲍总'],
         confidence: 'medium',
         source_quote: '李姐，下周三下午 3 点来我们公司聊合作。',
@@ -28,6 +30,7 @@ test('proposeCards creates contact and meeting cards from perception output', ()
         title: '聊合作',
         time_text: '下周三下午 3 点',
         time_iso: '2026-09-02T15:00:00+08:00',
+        has_time_signal: true,
         location: '我们公司',
         participant_names: ['李姐'],
         agenda: '合作沟通',
@@ -119,6 +122,7 @@ test('proposeCards creates update_contact, meeting contact ids, and one interact
     participants: [
       {
         name: '王磊',
+        is_self: false,
         company: '新公司',
         title: '市场总监',
         confidence: 'high',
@@ -131,6 +135,7 @@ test('proposeCards creates update_contact, meeting contact ids, and one interact
         title: '喝咖啡聊合作',
         time_text: '明天下午两点',
         time_iso: '2026-08-27T14:00:00+08:00',
+        has_time_signal: true,
         participant_names: ['王磊', '路人甲'],
         confidence: 'medium',
         source_quote: '明天下午两点一起喝咖啡聊合作',
@@ -207,17 +212,417 @@ test('proposeCards creates update_contact, meeting contact ids, and one interact
   });
 });
 
+test('proposeCards filters self participants out of cards and keeps self in meeting payload without contact_id', () => {
+  const extraction = {
+    participants: [
+      {
+        name: '我',
+        is_self: true,
+        company: 'Mailuo',
+        confidence: 'high',
+        source_quote: '我周五有空',
+      },
+      {
+        name: '王磊',
+        is_self: false,
+        company: '星火科技',
+        confidence: 'high',
+        source_quote: '王磊周五来找我聊合作',
+      },
+    ],
+    events: [
+      {
+        kind: 'meeting',
+        title: '聊合作',
+        time_text: '周五下午三点',
+        time_iso: '2026-08-28T15:00:00+08:00',
+        has_time_signal: true,
+        participant_names: ['我', '王磊'],
+        confidence: 'high',
+        source_quote: '周五下午三点我和王磊聊合作',
+      },
+    ],
+    facts: [],
+    quotes: [],
+  } as PerceptionResult;
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '我',
+      normalized_name: '我',
+      status: 'same_as',
+      contact_id: 99,
+      source: 'llm',
+    },
+    {
+      participant_name: '王磊',
+      normalized_name: '王磊',
+      status: 'same_as',
+      contact_id: 1,
+      source: 'exact',
+    },
+  ];
+  const contacts: ResolvableContact[] = [
+    {
+      id: 1,
+      canonical_name: '王磊',
+      aliases: [],
+      company: '星火科技',
+      title: null,
+      phone: null,
+      wechat_id: null,
+      notes: null,
+    },
+    {
+      id: 99,
+      canonical_name: 'Alice',
+      aliases: ['我'],
+      company: null,
+      title: null,
+      phone: null,
+      wechat_id: null,
+      notes: null,
+    },
+  ];
+
+  const cards = proposeCards(extraction, resolutions, contacts);
+
+  assert.deepEqual(cards, [
+    {
+      type: 'create_meeting',
+      payload: {
+        title: '聊合作',
+        time_iso: '2026-08-28T15:00:00+08:00',
+        time_text: '周五下午三点',
+        participants: [{ name: '我' }, { contact_id: 1, name: '王磊' }],
+      },
+      confidence: 'high',
+      source_quote: '周五下午三点我和王磊聊合作',
+    },
+    {
+      type: 'record_interaction',
+      payload: {
+        contact_id: 1,
+        contact_name: '王磊',
+        summary: '王磊周五来找我聊合作；公司 星火科技',
+      },
+      confidence: 'high',
+      source_quote: '王磊周五来找我聊合作',
+    },
+  ]);
+});
+
+test('proposeCards keeps duplicated structured facts out of notes updates for same_as contacts', () => {
+  const extraction: PerceptionResult = {
+    participants: [
+      {
+        name: '陈昕',
+        is_self: false,
+        company: '翎点科技',
+        confidence: 'high',
+        source_quote: '我刚跳槽去了翎点科技',
+      },
+    ],
+    events: [],
+    facts: [
+      {
+        subject_name: '陈昕',
+        field: 'other',
+        value: '我刚跳槽去了翎点科技',
+        confidence: 'medium',
+        source_quote: '我刚跳槽去了翎点科技',
+      },
+      {
+        subject_name: '陈昕',
+        field: 'notes',
+        value: '我刚跳槽去了翎点科技',
+        confidence: 'medium',
+        source_quote: '我刚跳槽去了翎点科技',
+      },
+      {
+        subject_name: '陈昕',
+        field: 'notes',
+        value: '现在负责华东区渠道',
+        confidence: 'medium',
+        source_quote: '我刚跳槽去了翎点科技',
+      },
+    ],
+    quotes: [],
+  };
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '陈昕',
+      normalized_name: '陈昕',
+      status: 'same_as',
+      contact_id: 7,
+      source: 'exact',
+    },
+  ];
+  const contacts: ResolvableContact[] = [
+    {
+      id: 7,
+      canonical_name: '陈昕',
+      aliases: [],
+      company: '云沐内容',
+      title: null,
+      phone: null,
+      wechat_id: null,
+      notes: '老同事',
+    },
+  ];
+
+  const cards = proposeCards(extraction, resolutions, contacts);
+  const updateCard = cards.find((card) => card.type === 'update_contact');
+
+  assert.ok(updateCard);
+  assert.deepEqual(updateCard.payload, {
+    contact_id: 7,
+    contact_name: '陈昕',
+    changes: {
+      company: { old: '云沐内容', new: '翎点科技' },
+      notes: { old: '老同事', new: '现在负责华东区渠道' },
+    },
+  });
+});
+
+test('proposeCards splits mixed participant notes and keeps only freeform tail for same_as contacts', () => {
+  const extraction: PerceptionResult = {
+    participants: [
+      {
+        name: '陈昕',
+        is_self: false,
+        company: '翎点科技',
+        notes: '跳槽去了翎点科技，现在负责华东区渠道',
+        confidence: 'high',
+        source_quote: '跳槽去了翎点科技，现在负责华东区渠道',
+      },
+    ],
+    events: [],
+    facts: [],
+    quotes: [],
+  };
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '陈昕',
+      normalized_name: '陈昕',
+      status: 'same_as',
+      contact_id: 7,
+      source: 'exact',
+    },
+  ];
+  const contacts: ResolvableContact[] = [
+    {
+      id: 7,
+      canonical_name: '陈昕',
+      aliases: [],
+      company: '云沐内容',
+      title: null,
+      phone: null,
+      wechat_id: null,
+      notes: '老同事',
+    },
+  ];
+
+  const cards = proposeCards(extraction, resolutions, contacts);
+  const updateCard = cards.find((card) => card.type === 'update_contact');
+
+  assert.ok(updateCard);
+  assert.deepEqual(updateCard.payload, {
+    contact_id: 7,
+    contact_name: '陈昕',
+    changes: {
+      company: { old: '云沐内容', new: '翎点科技' },
+      notes: { old: '老同事', new: '现在负责华东区渠道' },
+    },
+  });
+  assert.doesNotMatch(updateCard.payload.changes.notes?.new ?? '', /翎点科技/);
+});
+
+test('proposeCards keeps deterministic freeform tail from unpunctuated mixed participant notes', () => {
+  const extraction: PerceptionResult = {
+    participants: [
+      {
+        name: '陈昕',
+        is_self: false,
+        company: '翎点科技',
+        notes: '翎点科技市场负责人',
+        confidence: 'high',
+        source_quote: '翎点科技市场负责人',
+      },
+    ],
+    events: [],
+    facts: [],
+    quotes: [],
+  };
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '陈昕',
+      normalized_name: '陈昕',
+      status: 'same_as',
+      contact_id: 7,
+      source: 'exact',
+    },
+  ];
+  const contacts: ResolvableContact[] = [
+    {
+      id: 7,
+      canonical_name: '陈昕',
+      aliases: [],
+      company: '云沐内容',
+      title: null,
+      phone: null,
+      wechat_id: null,
+      notes: '老同事',
+    },
+  ];
+
+  const cards = proposeCards(extraction, resolutions, contacts);
+  const updateCard = cards.find((card) => card.type === 'update_contact');
+
+  assert.ok(updateCard);
+  assert.deepEqual(updateCard.payload, {
+    contact_id: 7,
+    contact_name: '陈昕',
+    changes: {
+      company: { old: '云沐内容', new: '翎点科技' },
+      notes: { old: '老同事', new: '市场负责人' },
+    },
+  });
+  assert.doesNotMatch(updateCard.payload.changes.notes?.new ?? '', /翎点科技/);
+});
+
+test('proposeCards folds no-time-signal meetings into interactions instead of create_meeting cards', () => {
+  const extraction = {
+    participants: [
+      {
+        name: '王磊',
+        is_self: false,
+        confidence: 'high',
+        source_quote: '王磊说后面继续聊',
+      },
+    ],
+    events: [
+      {
+        kind: 'meeting',
+        title: '细聊合作',
+        time_text: '等你方便',
+        time_iso: null,
+        has_time_signal: false,
+        participant_names: ['王磊'],
+        confidence: 'medium',
+        source_quote: '等你方便了我们再约个时间细聊',
+      },
+    ],
+    facts: [],
+    quotes: [],
+  } as PerceptionResult;
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '王磊',
+      normalized_name: '王磊',
+      status: 'same_as',
+      contact_id: 3,
+      source: 'exact',
+    },
+  ];
+  const contacts: ResolvableContact[] = [
+    {
+      id: 3,
+      canonical_name: '王磊',
+      aliases: [],
+      company: null,
+      title: null,
+      phone: null,
+      wechat_id: null,
+      notes: null,
+    },
+  ];
+
+  const cards = proposeCards(extraction, resolutions, contacts);
+  const meetingCard = cards.find((card) => card.type === 'create_meeting');
+  const interactionCard = cards.find((card) => card.type === 'record_interaction');
+
+  assert.equal(meetingCard, undefined);
+  assert.ok(interactionCard);
+  assert.match(interactionCard.payload.summary, /再约个时间细聊/);
+  assert.equal(
+    interactionCard.source_quote,
+    '王磊说后面继续聊\n\n等你方便了我们再约个时间细聊',
+  );
+});
+
+test('proposeCards treats blank time_iso without time signal as interaction only', () => {
+  const extraction = {
+    participants: [
+      {
+        name: '王磊',
+        is_self: false,
+        confidence: 'high',
+        source_quote: '王磊说我们改天再细聊',
+      },
+    ],
+    events: [
+      {
+        kind: 'meeting',
+        title: '细聊合作',
+        time_text: '改天再约',
+        time_iso: '   ',
+        has_time_signal: false,
+        participant_names: ['王磊'],
+        confidence: 'medium',
+        source_quote: '改天再约个时间细聊合作',
+      },
+    ],
+    facts: [],
+    quotes: [],
+  } as PerceptionResult;
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '王磊',
+      normalized_name: '王磊',
+      status: 'same_as',
+      contact_id: 3,
+      source: 'exact',
+    },
+  ];
+  const contacts: ResolvableContact[] = [
+    {
+      id: 3,
+      canonical_name: '王磊',
+      aliases: [],
+      company: null,
+      title: null,
+      phone: null,
+      wechat_id: null,
+      notes: null,
+    },
+  ];
+
+  const cards = proposeCards(extraction, resolutions, contacts);
+  const meetingCard = cards.find((card) => card.type === 'create_meeting');
+  const interactionCard = cards.find((card) => card.type === 'record_interaction');
+
+  assert.equal(meetingCard, undefined);
+  assert.ok(interactionCard);
+  assert.match(interactionCard.payload.summary, /改天再约个时间细聊合作/);
+  assert.equal(
+    interactionCard.source_quote,
+    '王磊说我们改天再细聊\n\n改天再约个时间细聊合作',
+  );
+});
+
 test('proposeCards skips no-op updates and dedupes interactions by resolved contact', () => {
   const extraction: PerceptionResult = {
     participants: [
       {
         name: '李姐',
+        is_self: false,
         company: '甲公司',
         confidence: 'medium',
         source_quote: '李姐，我们继续跟进那个合作',
       },
       {
         name: '李姐',
+        is_self: false,
         confidence: 'high',
         source_quote: '李姐说下周再对一下细节',
       },
@@ -284,6 +689,7 @@ test('proposeCards keeps interaction source_quote aligned with every summary anc
     participants: [
       {
         name: '王磊',
+        is_self: false,
         company: '星火科技',
         confidence: 'high',
         source_quote: '今天和王磊继续推进合作',
@@ -354,6 +760,7 @@ test('proposeCards creates create_contact cards for new and unsure participants 
     participants: [
       {
         name: '王磊',
+        is_self: false,
         company: '星火科技',
         title: '市场总监',
         confidence: 'high',
@@ -361,6 +768,7 @@ test('proposeCards creates create_contact cards for new and unsure participants 
       },
       {
         name: '李姐',
+        is_self: false,
         aliases: ['鲍总'],
         confidence: 'medium',
         source_quote: '李姐，下周找时间见面',

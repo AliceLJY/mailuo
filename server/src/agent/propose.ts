@@ -15,8 +15,11 @@ export type ProposedCard = ActionCard;
 
 type PerceptionFact = PerceptionResult['facts'][number];
 type PerceptionQuote = PerceptionResult['quotes'][number];
+type ProposeParticipant = PerceptionResult['participants'][number] & { is_self?: boolean };
+type ProposeEvent = PerceptionResult['events'][number] & { has_time_signal?: boolean };
 type ContactField = 'company' | 'title' | 'phone' | 'wechat_id' | 'notes';
 
+const selfParticipantName = '我';
 const trackedContactFields: ContactField[] = ['company', 'title', 'phone', 'wechat_id', 'notes'];
 const fieldLabels: Record<ContactField | 'alias', string> = {
   alias: '别名',
@@ -51,6 +54,22 @@ function dedupeStrings(values: Array<string | undefined>): string[] {
 
 function normalizeComparableText(value: string): string {
   return value.trim().toLocaleLowerCase();
+}
+
+function isSelfParticipant(participant: ProposeParticipant): boolean {
+  return participant.is_self === true || normalizeComparableText(participant.name) === selfParticipantName;
+}
+
+function buildSelfParticipantNames(participants: ProposeParticipant[]): Set<string> {
+  const normalizedNames = new Set<string>([selfParticipantName]);
+
+  for (const participant of participants) {
+    if (isSelfParticipant(participant)) {
+      normalizedNames.add(normalizeComparableText(participant.name));
+    }
+  }
+
+  return normalizedNames;
 }
 
 function joinSourceQuotes(values: Array<string | undefined>): string {
@@ -135,8 +154,209 @@ function firstFact(
   return facts?.find((fact) => fact.field === field);
 }
 
+type StructuredNoteAnchor = {
+  sourceQuote: string;
+  sourceQuoteNormalized: string;
+  normalizedValues: string[];
+};
+
+const noteSegmentPattern = /[\r\n]+|[，,。；;：:！？?!]+/u;
+const noteEdgeTrimPattern = /^[\s，,。；;：:！？?!、]+|[\s，,。；;：:！？?!、]+$/gu;
+
+function buildStructuredNoteAnchors(
+  participant: ProposeParticipant,
+  structuredFacts: Array<PerceptionFact | undefined>,
+): StructuredNoteAnchor[] {
+  const anchors = new Map<string, Set<string>>();
+  const participantStructuredValues = [
+    participant.company,
+    participant.title,
+    participant.phone,
+    participant.wechat_id,
+  ]
+    .map((value) => normalizeOptionalText(value))
+    .filter((value): value is string => Boolean(value));
+
+  if (participantStructuredValues.length > 0) {
+    anchors.set(participant.source_quote, new Set(participantStructuredValues));
+  }
+
+  for (const fact of structuredFacts) {
+    if (!fact) {
+      continue;
+    }
+
+    const normalizedValue = normalizeOptionalText(fact.value);
+
+    if (!normalizedValue) {
+      continue;
+    }
+
+    const values = anchors.get(fact.source_quote) ?? new Set<string>();
+    values.add(normalizedValue);
+    anchors.set(fact.source_quote, values);
+  }
+
+  return Array.from(anchors.entries()).map(([sourceQuote, values]) => ({
+    sourceQuote,
+    sourceQuoteNormalized: normalizeComparableText(sourceQuote),
+    normalizedValues: Array.from(values.values()).map((value) => normalizeComparableText(value)),
+  }));
+}
+
+function splitNoteSegments(value: string): string[] {
+  return value
+    .split(noteSegmentPattern)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function trimNoteSegmentEdge(value: string): string {
+  return value.replace(noteEdgeTrimPattern, '').trim();
+}
+
+function extractFreeformSegmentTail(
+  segment: string,
+  structuredValues: string[],
+): string | undefined {
+  const normalizedSegment = normalizeComparableText(segment);
+  const matchedStructuredValues = structuredValues.filter((structuredValue) =>
+    normalizedSegment.includes(structuredValue),
+  );
+
+  if (matchedStructuredValues.length === 0) {
+    return trimNoteSegmentEdge(segment);
+  }
+
+  if (matchedStructuredValues.length > 1) {
+    return undefined;
+  }
+
+  const [matchedStructuredValue] = matchedStructuredValues;
+  const firstMatchIndex = normalizedSegment.indexOf(matchedStructuredValue);
+  const lastMatchIndex = normalizedSegment.lastIndexOf(matchedStructuredValue);
+
+  if (firstMatchIndex !== lastMatchIndex) {
+    return undefined;
+  }
+
+  const freeformTail = trimNoteSegmentEdge(
+    segment.slice(firstMatchIndex + matchedStructuredValue.length),
+  );
+
+  if (!freeformTail) {
+    return undefined;
+  }
+
+  const normalizedTail = normalizeComparableText(freeformTail);
+
+  if (
+    structuredValues.some(
+      (structuredValue) =>
+        normalizedTail === structuredValue || normalizedTail.includes(structuredValue),
+    )
+  ) {
+    return undefined;
+  }
+
+  return freeformTail;
+}
+
+function collectFreeformNoteSegments(
+  value: string,
+  sourceQuote: string,
+  anchors: StructuredNoteAnchor[],
+): string[] {
+  const trimmedValue = value.trim();
+
+  if (!trimmedValue) {
+    return [];
+  }
+
+  const normalizedValue = normalizeComparableText(value);
+  const normalizedSourceQuote = normalizeComparableText(sourceQuote);
+  const exactStructuredValues = new Set(
+    anchors.flatMap((anchor) => anchor.normalizedValues.map((structuredValue) => structuredValue)),
+  );
+
+  if (exactStructuredValues.has(normalizedValue)) {
+    return [];
+  }
+
+  const matchingAnchors = anchors.filter(
+    (anchor) => anchor.sourceQuoteNormalized === normalizedSourceQuote,
+  );
+
+  if (matchingAnchors.length === 0) {
+    return [trimmedValue];
+  }
+
+  const structuredValues = Array.from(
+    new Set(
+      matchingAnchors.flatMap((anchor) => anchor.normalizedValues.map((structuredValue) => structuredValue)),
+    ),
+  );
+  const hasStructuredValue = structuredValues.some(
+    (structuredValue) =>
+      normalizedValue === structuredValue || normalizedValue.includes(structuredValue),
+  );
+
+  if (!hasStructuredValue) {
+    return [trimmedValue];
+  }
+
+  return splitNoteSegments(trimmedValue)
+    .map((segment) => extractFreeformSegmentTail(segment, structuredValues))
+    .filter((segment): segment is string => Boolean(segment));
+}
+
+function collectFreeformNotes(
+  participant: ProposeParticipant,
+  facts: PerceptionFact[] | undefined,
+  structuredAnchors: StructuredNoteAnchor[],
+): { values: string[]; sourceQuotes: string[] } {
+  const seen = new Set<string>();
+  const values: string[] = [];
+  const sourceQuotes: string[] = [];
+
+  const appendNoteValue = (noteValue: string | undefined, sourceQuote: string): void => {
+    if (!noteValue) {
+      return;
+    }
+
+    const noteSegments = collectFreeformNoteSegments(noteValue, sourceQuote, structuredAnchors);
+    let appended = false;
+
+    for (const segment of noteSegments) {
+      if (seen.has(segment)) {
+        continue;
+      }
+
+      seen.add(segment);
+      values.push(segment);
+      appended = true;
+    }
+
+    if (appended) {
+      sourceQuotes.push(sourceQuote);
+    }
+  };
+
+  appendNoteValue(participant.notes, participant.source_quote);
+
+  for (const fact of facts ?? []) {
+    if (fact.field !== 'notes' && fact.field !== 'other') {
+      continue;
+    }
+
+    appendNoteValue(fact.value, fact.source_quote);
+  }
+
+  return { values, sourceQuotes };
+}
+
 function buildCreateContactPayload(
-  participant: PerceptionResult['participants'][number],
+  participant: ProposeParticipant,
   relatedFacts: PerceptionFact[] | undefined,
 ): {
   payload: CreateContactPayload;
@@ -167,10 +387,15 @@ function buildCreateContactPayload(
   const title = participant.title ?? titleFact?.value;
   const phone = participant.phone ?? phoneFact?.value;
   const wechatId = participant.wechat_id ?? wechatIdFact?.value;
-  const noteMerge = collectFactValues(
-    [participant.notes],
+  const noteMerge = collectFreeformNotes(
+    participant,
     relatedFacts,
-    (fact) => fact.field === 'notes' || fact.field === 'other',
+    buildStructuredNoteAnchors(participant, [
+      companyFact,
+      titleFact,
+      phoneFact,
+      wechatIdFact,
+    ]),
   );
   const noteParts = noteMerge.values;
 
@@ -213,19 +438,31 @@ function buildCreateContactPayload(
 }
 
 function buildMeetingCard(
-  event: PerceptionResult['events'][number],
+  event: ProposeEvent,
   sameAsParticipantsByName: Map<string, number | null>,
+  selfParticipantNames: Set<string>,
 ): ProposedCard | null {
   if (event.kind !== 'meeting' && event.kind !== 'appointment') {
     return null;
   }
 
+  const normalizedTimeIso = normalizeOptionalText(event.time_iso);
+
+  if (!normalizedTimeIso && event.has_time_signal !== true) {
+    return null;
+  }
+
   const payload: CreateMeetingPayload = {
     title: event.title,
-    time_iso: event.time_iso,
+    time_iso: normalizedTimeIso ?? null,
     time_text: event.time_text,
     participants: event.participant_names.map((name) => {
       const normalizedName = normalizeComparableText(name);
+
+      if (selfParticipantNames.has(normalizedName)) {
+        return { name: selfParticipantName };
+      }
+
       const resolvedContactId = sameAsParticipantsByName.get(normalizedName);
 
       return resolvedContactId ? { contact_id: resolvedContactId, name } : { name };
@@ -272,6 +509,36 @@ function buildSameAsParticipantsByName(
   }
 
   return mapping;
+}
+
+function alignParticipantResolutions(
+  participants: ProposeParticipant[],
+  resolutions: ParticipantResolution[],
+): Array<ParticipantResolution | undefined> {
+  if (resolutions.length === participants.length) {
+    return resolutions;
+  }
+
+  const nonSelfParticipants = participants.filter((participant) => !isSelfParticipant(participant));
+
+  if (resolutions.length !== nonSelfParticipants.length) {
+    throw new Error('resolutions must align with extraction.participants');
+  }
+
+  const aligned: Array<ParticipantResolution | undefined> = [];
+  let resolutionIndex = 0;
+
+  for (const participant of participants) {
+    if (isSelfParticipant(participant)) {
+      aligned.push(undefined);
+      continue;
+    }
+
+    aligned.push(resolutions[resolutionIndex]);
+    resolutionIndex += 1;
+  }
+
+  return aligned;
 }
 
 function normalizeOptionalText(value: string | null | undefined): string | undefined {
@@ -358,11 +625,18 @@ export function proposeCards(
   contacts: ResolvableContact[] = [],
 ): ProposedCard[] {
   const cards: ProposedCard[] = [];
+  const participants = extraction.participants as ProposeParticipant[];
+  const events = extraction.events as ProposeEvent[];
+  const selfParticipantNames = buildSelfParticipantNames(participants);
   const factsBySubject = indexFactsBySubject(extraction.facts);
   const quotesBySpeaker = indexQuotesBySpeaker(extraction.quotes);
 
   if (!resolutions) {
-    for (const participant of extraction.participants) {
+    for (const participant of participants) {
+      if (isSelfParticipant(participant)) {
+        continue;
+      }
+
       const relatedFacts = factsBySubject.get(normalizeComparableText(participant.name));
       const draft = buildCreateContactPayload(participant, relatedFacts);
 
@@ -374,8 +648,8 @@ export function proposeCards(
       });
     }
 
-    for (const event of extraction.events) {
-      const meetingCard = buildMeetingCard(event, new Map());
+    for (const event of events) {
+      const meetingCard = buildMeetingCard(event, new Map(), selfParticipantNames);
 
       if (meetingCard) {
         cards.push(meetingCard);
@@ -386,13 +660,10 @@ export function proposeCards(
     return cards;
   }
 
-  if (resolutions.length !== extraction.participants.length) {
-    throw new Error('resolutions must align with extraction.participants');
-  }
-
   const contactsById = new Map<number, ResolvableContact>(
     contacts.map((contact) => [contact.id, contact]),
   );
+  const alignedResolutions = alignParticipantResolutions(participants, resolutions);
   const sameAsParticipantsByName = buildSameAsParticipantsByName(resolutions);
   const interactionCandidates = new Map<
     string,
@@ -408,8 +679,17 @@ export function proposeCards(
     }
   >();
 
-  for (const [index, participant] of extraction.participants.entries()) {
-    const resolution = resolutions[index];
+  for (const [index, participant] of participants.entries()) {
+    if (isSelfParticipant(participant)) {
+      continue;
+    }
+
+    const resolution = alignedResolutions[index];
+
+    if (!resolution) {
+      throw new Error('resolutions must align with extraction.participants');
+    }
+
     const relatedFacts =
       factsBySubject.get(normalizeComparableText(participant.name)) ?? [];
     const relatedQuotes =
@@ -491,11 +771,41 @@ export function proposeCards(
     cards.push(createCard);
   }
 
-  for (const event of extraction.events) {
-    const meetingCard = buildMeetingCard(event, sameAsParticipantsByName);
+  for (const event of events) {
+    const meetingCard = buildMeetingCard(event, sameAsParticipantsByName, selfParticipantNames);
 
     if (meetingCard) {
       cards.push(meetingCard);
+      continue;
+    }
+
+    const touchedInteractionKeys = new Set<string>();
+
+    for (const participantName of event.participant_names) {
+      const normalizedName = normalizeComparableText(participantName);
+
+      if (selfParticipantNames.has(normalizedName)) {
+        continue;
+      }
+
+      const resolvedContactId = sameAsParticipantsByName.get(normalizedName);
+      const interactionKey = resolvedContactId
+        ? `contact:${resolvedContactId}`
+        : `pending:${normalizedName}`;
+
+      if (touchedInteractionKeys.has(interactionKey)) {
+        continue;
+      }
+
+      const candidate = interactionCandidates.get(interactionKey);
+
+      if (!candidate) {
+        continue;
+      }
+
+      candidate.confidence.push(event.confidence);
+      candidate.participantSourceQuotes.push(event.source_quote);
+      touchedInteractionKeys.add(interactionKey);
     }
   }
 

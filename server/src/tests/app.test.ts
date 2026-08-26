@@ -460,6 +460,7 @@ test('POST /api/screenshots runs perceive, resolve, and propose with current DB 
     participants: [
       {
         name: '陈老师',
+        is_self: false,
         company: '山海文化',
         confidence: 'high' as const,
         source_quote: '我上个月跳槽去了山海文化',

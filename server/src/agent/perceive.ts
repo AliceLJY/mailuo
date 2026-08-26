@@ -7,8 +7,25 @@ import { createQwenProvider, imageFileToDataUrl } from '../llm/qwen.ts';
 const ConfidenceSchema = z.enum(['high', 'medium', 'low']);
 const IsoDateTimeWithOffsetSchema = z.string().datetime({ offset: true });
 
+function hasOwnProperty(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+export function isSelfName(value: string): boolean {
+  return value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase() === '我';
+}
+
 export const PerceptionParticipantSchema = z.object({
   name: z.string().min(1),
+  is_self: z.boolean(),
   aliases: z.array(z.string().min(1)).optional(),
   company: z.string().min(1).optional(),
   title: z.string().min(1).optional(),
@@ -24,6 +41,7 @@ export const PerceptionEventSchema = z.object({
   title: z.string().min(1),
   time_text: z.string().min(1),
   time_iso: IsoDateTimeWithOffsetSchema.nullable(),
+  has_time_signal: z.boolean(),
   location: z.string().min(1).optional(),
   participant_names: z.array(z.string().min(1)).default([]),
   agenda: z.string().min(1).optional(),
@@ -53,6 +71,52 @@ export const PerceptionResultSchema = z.object({
 }).strict();
 
 export type PerceptionResult = z.infer<typeof PerceptionResultSchema>;
+
+function normalizeLegacyParticipant(value: unknown): unknown {
+  if (!isRecord(value) || hasOwnProperty(value, 'is_self')) {
+    return value;
+  }
+
+  return {
+    ...value,
+    is_self: hasNonEmptyString(value.name) ? isSelfName(value.name) : false,
+  };
+}
+
+function normalizeLegacyEvent(value: unknown): unknown {
+  if (!isRecord(value) || hasOwnProperty(value, 'has_time_signal')) {
+    return value;
+  }
+
+  return {
+    ...value,
+    has_time_signal: hasNonEmptyString(value.time_iso),
+  };
+}
+
+export function parseStoredPerceptionResult(rawExtraction: unknown): PerceptionResult | null {
+  const strictResult = PerceptionResultSchema.safeParse(rawExtraction);
+
+  if (strictResult.success) {
+    return strictResult.data;
+  }
+
+  if (!isRecord(rawExtraction)) {
+    return null;
+  }
+
+  const compatResult = PerceptionResultSchema.safeParse({
+    ...rawExtraction,
+    participants: Array.isArray(rawExtraction.participants)
+      ? rawExtraction.participants.map((participant) => normalizeLegacyParticipant(participant))
+      : rawExtraction.participants,
+    events: Array.isArray(rawExtraction.events)
+      ? rawExtraction.events.map((event) => normalizeLegacyEvent(event))
+      : rawExtraction.events,
+  });
+
+  return compatResult.success ? compatResult.data : null;
+}
 
 export type PerceiveScreenshotOptions = {
   imagePath: string;
