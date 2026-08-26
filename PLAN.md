@@ -79,7 +79,9 @@ CREATE TABLE screenshots (
 CREATE TABLE action_cards (
   id INTEGER PRIMARY KEY,
   screenshot_id INTEGER NOT NULL REFERENCES screenshots(id),
-  type TEXT NOT NULL CHECK(type IN ('create_contact','update_contact','create_meeting')),
+  -- record_interaction 为 2026-08-26 M2 裁决 2B 新增：纯互动截图（无会议无字段变化）的确认入口，
+  -- 防泛滥约束：每截图每联系人至多一张，仅对已建档或同截图将建档的人生成
+  type TEXT NOT NULL CHECK(type IN ('create_contact','update_contact','create_meeting','record_interaction')),
   payload TEXT NOT NULL,               -- JSON，schema 见 §5
   confidence TEXT NOT NULL CHECK(confidence IN ('high','medium','low')),  -- 离散三档，不用连续分数
   source_quote TEXT NOT NULL,          -- 截图里支撑这张卡的原文
@@ -105,7 +107,8 @@ CREATE TABLE meetings (
   time_iso TEXT,                       -- 解析后的 ISO 时间（可能为 null：解析失败时保留原文）
   time_text TEXT NOT NULL,             -- 截图原文的时间表述（"下周三下午三点"）
   location TEXT,
-  participant_ids TEXT NOT NULL DEFAULT '[]',  -- JSON 数组 of contact_id
+  participants TEXT NOT NULL DEFAULT '[]',  -- JSON 数组 of {contact_id?, name}（2026-08-26 M2 裁决 1A：
+                                            -- 未建档参会者保留名字；单列存全量，不设 participant_ids 冗余列防漂移）
   agenda TEXT,
   source_screenshot_id INTEGER REFERENCES screenshots(id),
   status TEXT NOT NULL DEFAULT 'upcoming',
@@ -155,6 +158,9 @@ POST /api/cards/:id/confirm   （body 可带用户编辑后的 payload / 裁决�
                   近期 insights 摘要）+ 本次新增 → deepseek → 1-3 条洞察，
                   每条必须给 based_on（引用 observation id），给不出依据的丢弃。
   → 返回 { executed: true, insights: [...] }（同步生成，3-10s 可接受）
+  ※ M2 裁决 3A：执行事务先提交、洞察后生成；洞察失败响应仍 {ok:true}，
+    带 insight_status:"failed" + insight_error；卡片状态机不受洞察影响；
+    不做重试端点（Future work）——下次该联系人有卡确认时自然生成新洞察。
 
 POST /api/cards/:id/reject → status=rejected，不产生任何写入
 ```
@@ -179,6 +185,10 @@ type CreateMeetingPayload = {
   location?: string;
   participants: Array<{ contact_id?: number; name: string }>;  // 可能含未建档的人
   agenda?: string;
+};
+type RecordInteractionPayload = {   // M2 裁决 2B 新增（第四种卡）
+  contact_id?: number; contact_name: string;
+  summary: string;                  // 该截图与此人互动要点的汇总
 };
 ```
 
