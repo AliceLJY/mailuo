@@ -610,6 +610,91 @@ test('proposeCards treats blank time_iso without time signal as interaction only
   );
 });
 
+test('proposeCards folds eligible other events with time signals into the existing interaction card', () => {
+  const extraction: PerceptionResult = {
+    participants: [
+      {
+        name: '王磊',
+        is_self: false,
+        confidence: 'high',
+        source_quote: '今天继续推进方案',
+      },
+    ],
+    events: [
+      {
+        kind: 'other',
+        title: '发方案给你',
+        time_text: '明天下午三点',
+        time_iso: '2026-08-27T15:00:00+08:00',
+        has_time_signal: true,
+        participant_names: ['王磊'],
+        confidence: 'medium',
+        source_quote: '明天下午三点把方案发你',
+      },
+    ],
+    facts: [],
+    quotes: [],
+  };
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '王磊',
+      normalized_name: '王磊',
+      status: 'same_as',
+      contact_id: 8,
+      source: 'exact',
+    },
+  ];
+  const contacts: ResolvableContact[] = [
+    {
+      id: 8,
+      canonical_name: '王磊',
+      aliases: [],
+      company: null,
+      title: null,
+      phone: null,
+      wechat_id: null,
+      notes: null,
+    },
+  ];
+
+  const cards = proposeCards(extraction, resolutions, contacts);
+
+  assert.deepEqual(cards, [
+    {
+      type: 'record_interaction',
+      payload: {
+        contact_id: 8,
+        contact_name: '王磊',
+        summary: '今天继续推进方案；明天下午三点把方案发你',
+      },
+      confidence: 'high',
+      source_quote: '今天继续推进方案\n\n明天下午三点把方案发你',
+    },
+  ]);
+});
+
+test('proposeCards ignores unmatched other events instead of creating standalone interaction cards', () => {
+  const extraction: PerceptionResult = {
+    participants: [],
+    events: [
+      {
+        kind: 'other',
+        title: '发方案给你',
+        time_text: '明天下午三点',
+        time_iso: '2026-08-27T15:00:00+08:00',
+        has_time_signal: true,
+        participant_names: ['王磊'],
+        confidence: 'medium',
+        source_quote: '明天下午三点把方案发你',
+      },
+    ],
+    facts: [],
+    quotes: [],
+  };
+
+  assert.deepEqual(proposeCards(extraction, [], []), []);
+});
+
 test('proposeCards skips no-op updates and dedupes interactions by resolved contact', () => {
   const extraction: PerceptionResult = {
     participants: [

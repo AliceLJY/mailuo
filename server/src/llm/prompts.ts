@@ -1,6 +1,28 @@
-function formatShanghaiDateTime(now: Date): string {
-  const formatter = new Intl.DateTimeFormat('sv-SE', {
-    timeZone: 'Asia/Shanghai',
+const shanghaiTimeZone = 'Asia/Shanghai';
+const weekdayLabels = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+
+type ShanghaiDateParts = {
+  year: number;
+  month: number;
+  day: number;
+  hour: string;
+  minute: string;
+  second: string;
+};
+
+type CalendarDate = {
+  year: number;
+  month: number;
+  day: number;
+};
+
+function formatTwoDigits(value: number): string {
+  return value.toString().padStart(2, '0');
+}
+
+function getShanghaiDateParts(now: Date): ShanghaiDateParts {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: shanghaiTimeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -8,9 +30,61 @@ function formatShanghaiDateTime(now: Date): string {
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
-  });
+  }).formatToParts(now);
+  const values = new Map(parts.map((part) => [part.type, part.value]));
 
-  return formatter.format(now).replace(' ', 'T') + '+08:00';
+  return {
+    year: Number(values.get('year')),
+    month: Number(values.get('month')),
+    day: Number(values.get('day')),
+    hour: values.get('hour') ?? '00',
+    minute: values.get('minute') ?? '00',
+    second: values.get('second') ?? '00',
+  };
+}
+
+function toUtcCalendarDate(date: CalendarDate): Date {
+  return new Date(Date.UTC(date.year, date.month - 1, date.day));
+}
+
+function addCalendarDays(date: CalendarDate, deltaDays: number): CalendarDate {
+  const nextDate = toUtcCalendarDate(date);
+  nextDate.setUTCDate(nextDate.getUTCDate() + deltaDays);
+
+  return {
+    year: nextDate.getUTCFullYear(),
+    month: nextDate.getUTCMonth() + 1,
+    day: nextDate.getUTCDate(),
+  };
+}
+
+function formatCalendarDate(date: CalendarDate): string {
+  return `${date.year}-${formatTwoDigits(date.month)}-${formatTwoDigits(date.day)}`;
+}
+
+function formatCalendarMonthDay(date: CalendarDate): string {
+  return `${date.month}-${date.day}`;
+}
+
+function formatShanghaiDateTime(now: Date): string {
+  const parts = getShanghaiDateParts(now);
+
+  return `${formatCalendarDate(parts)}T${parts.hour}:${parts.minute}:${parts.second}+08:00`;
+}
+
+function buildShanghaiCalendarAnchor(now: Date): string {
+  const today = getShanghaiDateParts(now);
+  const todayDate: CalendarDate = {
+    year: today.year,
+    month: today.month,
+    day: today.day,
+  };
+  const jsWeekday = toUtcCalendarDate(todayDate).getUTCDay();
+  const mondayBasedWeekday = (jsWeekday + 6) % 7;
+  const thisWeekWednesday = addCalendarDays(todayDate, 2 - mondayBasedWeekday);
+  const nextWeekWednesday = addCalendarDays(thisWeekWednesday, 7);
+
+  return `Calendar anchor (Asia/Shanghai): 今天是 ${formatCalendarDate(todayDate)} ${weekdayLabels[jsWeekday]}；本周三是 ${formatCalendarMonthDay(thisWeekWednesday)}；下周三是 ${formatCalendarMonthDay(nextWeekWednesday)}`;
 }
 
 export type EntityResolutionContactSummary = {
@@ -57,7 +131,11 @@ export function buildPerceptionSystemPrompt(now: Date): string {
     'In a chat screenshot, the device owner is the self side of the conversation: messages shown as "我" or the right-side bubbles. Mark that participant with is_self=true. Mark everyone else with is_self=false.',
     'Do not turn another person into the device owner unless the screenshot itself shows that self-side evidence.',
     `Current datetime (Asia/Shanghai): ${formatShanghaiDateTime(now)}`,
-    'If the screenshot uses relative time like tomorrow or next Wednesday, resolve it to ISO 8601 using Asia/Shanghai and also preserve the original time_text.',
+    buildShanghaiCalendarAnchor(now),
+    'If the screenshot uses relative time like tomorrow or next Wednesday, resolve it to ISO 8601 using Asia/Shanghai, use the calendar anchor above instead of doing your own weekday math, and also preserve the original time_text.',
+    'A meeting or appointment must be a mutually agreed time when both sides will meet, attend together, or talk on a call together.',
+    'A one-sided delivery promise or task commitment such as "明天把方案发你" is not a meeting, even when it has a clear date or time. Extract it as kind="other".',
+    'For event titles, stay as close as possible to the original wording and meaning. Do not invent an agenda like "讨论合作" unless the screenshot explicitly says it.',
     'Set has_time_signal=true only when the screenshot contains a concrete scheduling signal such as a date, weekday, clock time, or time period like "周二", "下周三下午", or "明晚". Set has_time_signal=false for vague phrases like "改天", "回头", or "等你方便".',
     'Every participant, event, fact, and quote must include an exact source_quote copied from the screenshot when applicable.',
     'If company, title, phone, or wechat_id is explicitly stated or explicitly changed, include it in facts with the matching structured field. Do not hide structured contact data inside notes when a structured field exists.',
@@ -67,7 +145,7 @@ export function buildPerceptionSystemPrompt(now: Date): string {
     'Return JSON only.',
     'Schema requirements:',
     '- participants: array of people explicitly shown or mentioned in the screenshot. Include name, is_self, optional aliases/company/title/phone/wechat_id/notes, confidence, source_quote.',
-    '- events: array of explicit meetings or appointments. Include kind, title, time_text, time_iso or null, has_time_signal, optional location/agenda, participant_names, confidence, source_quote.',
+    '- events: array of explicit meetings, appointments, or other follow-up commitments shown in the screenshot. meeting/appointment only apply to mutually attended or call-together time points; one-sided promises belong to kind="other". Include kind, title, time_text, time_iso or null, has_time_signal, optional location/agenda, participant_names, confidence, source_quote.',
     '- facts: array of explicit facts with subject_name, field, value, confidence, source_quote.',
     '- quotes: array of notable exact quotes with speaker_name or null, text, source_quote.',
   ].join('\n');

@@ -6,6 +6,7 @@ import {
   PerceptionParticipantSchema,
   parseStoredPerceptionResult,
 } from '../agent/perceive.ts';
+import { buildPerceptionSystemPrompt } from '../llm/prompts.ts';
 
 test('PerceptionParticipantSchema requires explicit is_self', () => {
   const result = PerceptionParticipantSchema.safeParse({
@@ -62,6 +63,20 @@ test('PerceptionEventSchema requires explicit has_time_signal', () => {
 
   assert.equal(result.success, false);
   assert.equal(result.error.issues[0]?.path.join('.'), 'has_time_signal');
+});
+
+test('buildPerceptionSystemPrompt injects Shanghai calendar anchors for relative dates', () => {
+  const prompt = buildPerceptionSystemPrompt(new Date('2026-08-26T10:15:30+08:00'));
+
+  assert.match(
+    prompt,
+    /Current datetime \(Asia\/Shanghai\): 2026-08-26T10:15:30\+08:00/,
+  );
+  assert.match(
+    prompt,
+    /Calendar anchor \(Asia\/Shanghai\): 今天是 2026-08-26 星期三；本周三是 8-26；下周三是 9-2/,
+  );
+  assert.match(prompt, /A one-sided delivery promise or task commitment such as "明天把方案发你" is not a meeting/);
 });
 
 test('parseStoredPerceptionResult restores legacy missing booleans without dropping aliases or notes', () => {

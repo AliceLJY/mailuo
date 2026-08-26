@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "脉络",
+    "slug": "mailuo-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "mailuo",
+    "userInterfaceStyle": "automatic",
+    "plugins": [
+      "expo-router",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "脉络需要访问你的照片，用来导入聊天截图并生成行动卡片。",
+          "microphonePermission": false
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

@@ -485,6 +485,19 @@ function buildMeetingCard(
   };
 }
 
+function shouldFoldEventIntoInteraction(event: ProposeEvent): boolean {
+  if (event.kind === 'other') {
+    return true;
+  }
+
+  if (event.kind !== 'meeting' && event.kind !== 'appointment') {
+    return false;
+  }
+
+  const normalizedTimeIso = normalizeOptionalText(event.time_iso);
+  return !normalizedTimeIso && event.has_time_signal !== true;
+}
+
 function buildSameAsParticipantsByName(
   resolutions: ParticipantResolution[],
 ): Map<string, number | null> {
@@ -776,6 +789,10 @@ export function proposeCards(
 
     if (meetingCard) {
       cards.push(meetingCard);
+      continue;
+    }
+
+    if (!shouldFoldEventIntoInteraction(event)) {
       continue;
     }
 
