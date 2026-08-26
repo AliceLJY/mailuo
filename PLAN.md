@@ -14,7 +14,8 @@
 
 **Constraints**：
 - 客户端 Expo RN（SDK 57，与 Cobbler 同版本，减少踩坑面）；验证设备 = Alice 的 iPhone Air + OPPO Find N6，都跑 Expo Go，两台都在 tailnet。
-- 后端 Node 22 + TypeScript + Fastify + better-sqlite3。单用户，无鉴权系统（部署在 tailnet 内，tailscale 即边界；预留 `X-Api-Key` 简单校验一层）。
+- 后端 Node 26 + TypeScript + Fastify + **内置 `node:sqlite`（DatabaseSync）**。单用户，无鉴权系统（部署在 tailnet 内，tailscale 即边界；预留 `X-Api-Key` 简单校验一层）。
+  > ⚠️ 2026-08-26 修订（原写 Node 22 + better-sqlite3，是设计错误）：两台机实测均为 Node 26.7.0（ABI 147），且 npm 11 默认拦截安装脚本、本机 CLT 过旧无法从源码编译——原生模块这条路在此环境走不通。内置 `node:sqlite` 零编译零安装脚本，已实测覆盖本项目全部用法。**差异只有两处**：`.transaction(fn)` 改手写 `exec('BEGIN')`/`exec('COMMIT')` + catch 里 `ROLLBACK`；`.pragma(x)` 改 `exec('PRAGMA x')`。
 - LLM：视觉抽取走 **qwen-vl-max**（dashscope），文本推理/洞察走 **deepseek-v4-flash**。key 从环境变量读：`DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY`——**代码与文档中绝不出现真值**，部署时由 owner 注入。provider 层抽象，可替换。
 - 全部数据存 mini 本地 SQLite。截图文件存本地磁盘 `server/data/screenshots/`。隐私边界如实写进 README：截图会发往 qwen/deepseek API 做推理，此外不出本机。
 - 禁止引入重依赖（ORM / 消息队列 / Redis 都不要）。Simplicity First：能一个文件解决的不建目录。
