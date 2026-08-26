@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=390, initial-scale=1.0">
+  <title>Mailuo Fixture 3</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #e7ede3;
+      --ink: #151816;
+      --subtle: #6d756d;
+      --stroke: rgba(41, 52, 39, 0.1);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 390px; height: 844px; overflow: hidden; font-family: "PingFang SC", "Helvetica Neue", sans-serif; }
+    body {
+      background:
+        radial-gradient(circle at 24% 14%, rgba(255,255,255,0.75), transparent 28%),
+        radial-gradient(circle at 78% 24%, rgba(191, 212, 185, 0.42), transparent 26%),
+        radial-gradient(circle at 56% 84%, rgba(175, 196, 165, 0.25), transparent 33%),
+        linear-gradient(180deg, #edf3e9 0%, #e4eadf 52%, #dce5d8 100%);
+      color: var(--ink);
+      position: relative;
+    }
+    body::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        repeating-linear-gradient(135deg, rgba(255,255,255,0.07) 0 2px, transparent 2px 12px);
+      opacity: 0.45;
+      pointer-events: none;
+    }
+    .screen { position: relative; width: 390px; height: 844px; padding: 16px 14px 22px; }
+    .status {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 2px 6px 12px;
+      letter-spacing: 0.2px;
+      color: #283125;
+    }
+    .icons { display: flex; gap: 8px; align-items: center; }
+    .signal, .wifi, .battery { border: 1.8px solid currentColor; border-radius: 999px; position: relative; }
+    .signal { width: 17px; height: 11px; border: none; }
+    .signal::before {
+      content: "";
+      position: absolute;
+      left: 2px;
+      bottom: 0;
+      width: 3px;
+      height: 5px;
+      border-radius: 2px;
+      background: currentColor;
+      box-shadow: 5px -2px 0 currentColor, 10px -4px 0 currentColor;
+    }
+    .wifi { width: 16px; height: 12px; border-top-color: transparent; border-left-color: transparent; transform: rotate(45deg); }
+    .battery { width: 24px; height: 12px; border-radius: 4px; }
+    .battery::before {
+      content: "";
+      position: absolute;
+      right: -3px;
+      top: 3px;
+      width: 2px;
+      height: 4px;
+      border-radius: 1px;
+      background: currentColor;
+    }
+    .battery::after {
+      content: "";
+      position: absolute;
+      inset: 2px;
+      border-radius: 2px;
+      background: currentColor;
+    }
+    .nav {
+      display: grid;
+      grid-template-columns: 36px 1fr 48px;
+      align-items: center;
+      padding: 4px 6px 14px;
+    }
+    .back {
+      width: 18px;
+      height: 18px;
+      border-left: 2.5px solid #273024;
+      border-bottom: 2.5px solid #273024;
+      transform: rotate(45deg);
+      margin-left: 6px;
+    }
+    .title { text-align: center; }
+    .title strong { display: block; font-size: 17px; }
+    .title span { display: block; margin-top: 4px; font-size: 11px; color: var(--subtle); }
+    .more {
+      justify-self: end;
+      width: 30px;
+      height: 30px;
+      border-radius: 15px;
+      background: rgba(255,255,255,0.56);
+      border: 1px solid rgba(42, 54, 38, 0.1);
+      position: relative;
+    }
+    .more::before {
+      content: "";
+      position: absolute;
+      top: 13px;
+      left: 8px;
+      width: 14px;
+      height: 4px;
+      background:
+        radial-gradient(circle, #283123 42%, transparent 43%) 0 0 / 33.33% 100% repeat-x;
+    }
+    .banner {
+      width: max-content;
+      margin: 0 auto 16px;
+      padding: 7px 12px;
+      font-size: 12px;
+      color: #75816f;
+      background: rgba(243, 247, 239, 0.88);
+      border: 1px solid rgba(56, 72, 49, 0.08);
+      border-radius: 999px;
+      backdrop-filter: blur(6px);
+    }
+    .chat { display: flex; flex-direction: column; gap: 12px; }
+    .row { display: flex; gap: 10px; align-items: flex-start; }
+    .row.self { justify-content: flex-end; }
+    .avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 14px;
+      flex: none;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      background: linear-gradient(160deg, #7f8e78, #586954);
+      box-shadow: 0 10px 18px rgba(57, 73, 49, 0.18);
+    }
+    .avatar.self {
+      order: 2;
+      background: linear-gradient(160deg, #75a95c, #4c8f3e);
+    }
+    .stack { max-width: 266px; display: flex; flex-direction: column; gap: 6px; }
+    .name { font-size: 12px; color: #788373; padding-left: 4px; }
+    .bubble {
+      position: relative;
+      padding: 12px 14px;
+      border-radius: 16px;
+      line-height: 1.48;
+      font-size: 16px;
+      box-shadow: 0 10px 24px rgba(44, 59, 37, 0.1);
+      border: 1px solid var(--stroke);
+    }
+    .bubble.left {
+      background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,246,0.98));
+      border-top-left-radius: 6px;
+    }
+    .bubble.right {
+      background: linear-gradient(180deg, #a2ec73, #95e864);
+      border-top-right-radius: 6px;
+    }
+    .bubble.left::before, .bubble.right::before {
+      content: "";
+      position: absolute;
+      top: 11px;
+      width: 12px;
+      height: 12px;
+      background: inherit;
+      transform: rotate(45deg);
+    }
+    .bubble.left::before { left: -5px; border-left: 1px solid var(--stroke); border-top: 1px solid var(--stroke); }
+    .bubble.right::before { right: -5px; border-right: 1px solid var(--stroke); border-bottom: 1px solid var(--stroke); }
+    .meta {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-end;
+      font-size: 11px;
+      color: #7b8574;
+      padding-right: 2px;
+    }
+    .meta.left { justify-content: flex-start; padding-left: 4px; }
+    .tick {
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: rgba(78, 151, 54, 0.16);
+      display: inline-grid;
+      place-items: center;
+      color: #4e9736;
+      font-size: 10px;
+      font-weight: 800;
+    }
+    .input {
+      position: fixed;
+      left: 14px;
+      right: 14px;
+      bottom: 20px;
+      display: grid;
+      grid-template-columns: 38px 1fr 42px;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 12px;
+      border-radius: 24px;
+      background: rgba(246, 248, 244, 0.94);
+      border: 1px solid rgba(49, 63, 43, 0.08);
+      box-shadow: 0 10px 28px rgba(34, 49, 26, 0.12);
+      backdrop-filter: blur(8px);
+      z-index: 4;
+    }
+    .plus, .voice {
+      width: 100%;
+      height: 38px;
+      border-radius: 19px;
+      background: rgba(255,255,255,0.86);
+      border: 1px solid rgba(49, 63, 43, 0.08);
+      position: relative;
+    }
+    .plus::before, .plus::after {
+      content: "";
+      position: absolute;
+      background: #55644f;
+      border-radius: 1px;
+    }
+    .plus::before { width: 14px; height: 2px; top: 18px; left: 12px; }
+    .plus::after { width: 2px; height: 14px; top: 12px; left: 18px; }
+    .field {
+      height: 38px;
+      border-radius: 19px;
+      background: rgba(255,255,255,0.9);
+      border: 1px solid rgba(49, 63, 43, 0.08);
+      color: #8b9587;
+      padding: 10px 14px;
+      font-size: 14px;
+    }
+    .voice::before {
+      content: "";
+      position: absolute;
+      inset: 10px 14px;
+      border: 2px solid #55644f;
+      border-top-left-radius: 10px;
+      border-top-right-radius: 10px;
+      border-bottom: none;
+    }
+    .voice::after {
+      content: "";
+      position: absolute;
+      left: 17px;
+      bottom: 10px;
+      width: 8px;
+      height: 8px;
+      border-left: 2px solid #55644f;
+      border-bottom: 2px solid #55644f;
+      transform: rotate(-45deg);
+    }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div class="status">
+      <span>10:26</span>
+      <div class="icons">
+        <span class="signal"></span>
+        <span class="wifi"></span>
+        <span class="battery"></span>
+      </div>
+    </div>
+    <div class="nav">
+      <div class="back"></div>
+      <div class="title">
+        <strong>陈昕</strong>
+        <span>云沐内容</span>
+      </div>
+      <div class="more"></div>
+    </div>
+    <div class="banner">周二</div>
+    <div class="chat">
+      <div class="row">
+        <div class="avatar">陈</div>
+        <div class="stack">
+          <div class="name">陈昕</div>
+          <div class="bubble left">最近在忙新项目交接，我上个月跳槽去了翎点科技，节奏比之前快很多。</div>
+          <div class="meta left"><span>10:22</span></div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="avatar">陈</div>
+        <div class="stack">
+          <div class="bubble left">不过你们如果九月还想做那档播客联名，可以继续找我，我现在也负责这块。</div>
+          <div class="meta left"><span>10:23</span></div>
+        </div>
+      </div>
+      <div class="row self">
+        <div class="stack">
+          <div class="bubble right">收到，难怪我看你朋友圈定位都换了。等你方便了我们再约个时间细聊。</div>
+          <div class="meta"><span>10:25</span><span class="tick">✓</span></div>
+        </div>
+        <div class="avatar self">我</div>
+      </div>
+    </div>
+    <div class="input">
+      <div class="plus"></div>
+      <div class="field">发消息</div>
+      <div class="voice"></div>
+    </div>
+  </div>
+</body>
+</html>

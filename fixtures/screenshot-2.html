@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=390, initial-scale=1.0">
+  <title>Mailuo Fixture 2</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #141715;
+      --panel: rgba(25, 29, 26, 0.92);
+      --ink: #f4f7f2;
+      --subtle: #9ca59d;
+      --left: #232926;
+      --right: #2f6f40;
+      --stroke: rgba(255, 255, 255, 0.06);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 390px; height: 844px; overflow: hidden; font-family: "PingFang SC", "Helvetica Neue", sans-serif; }
+    body {
+      background:
+        radial-gradient(circle at 14% 16%, rgba(89, 118, 93, 0.24), transparent 25%),
+        radial-gradient(circle at 86% 12%, rgba(57, 89, 61, 0.32), transparent 24%),
+        radial-gradient(circle at 50% 80%, rgba(42, 59, 44, 0.28), transparent 35%),
+        linear-gradient(180deg, #171b18 0%, #121613 100%);
+      color: var(--ink);
+      position: relative;
+    }
+    body::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 1px 1px, rgba(255,255,255,0.05) 1px, transparent 0) 0 0 / 16px 16px;
+      opacity: 0.65;
+      pointer-events: none;
+    }
+    .screen { position: relative; width: 390px; height: 844px; padding: 16px 14px 22px; }
+    .status {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 2px 6px 12px;
+      letter-spacing: 0.2px;
+      color: #eff3ec;
+    }
+    .icons { display: flex; gap: 8px; align-items: center; }
+    .signal, .wifi, .battery { border: 1.8px solid currentColor; border-radius: 999px; position: relative; }
+    .signal { width: 17px; height: 11px; border: none; }
+    .signal::before {
+      content: "";
+      position: absolute;
+      left: 2px;
+      bottom: 0;
+      width: 3px;
+      height: 5px;
+      border-radius: 2px;
+      background: currentColor;
+      box-shadow: 5px -2px 0 currentColor, 10px -4px 0 currentColor;
+    }
+    .wifi { width: 16px; height: 12px; border-top-color: transparent; border-left-color: transparent; transform: rotate(45deg); }
+    .battery { width: 24px; height: 12px; border-radius: 4px; }
+    .battery::before {
+      content: "";
+      position: absolute;
+      right: -3px;
+      top: 3px;
+      width: 2px;
+      height: 4px;
+      border-radius: 1px;
+      background: currentColor;
+    }
+    .battery::after {
+      content: "";
+      position: absolute;
+      inset: 2px;
+      border-radius: 2px;
+      background: currentColor;
+    }
+    .nav {
+      display: grid;
+      grid-template-columns: 36px 1fr 48px;
+      align-items: center;
+      padding: 4px 6px 14px;
+      color: #f0f4ef;
+    }
+    .back {
+      width: 18px;
+      height: 18px;
+      border-left: 2.5px solid #edf2ea;
+      border-bottom: 2.5px solid #edf2ea;
+      transform: rotate(45deg);
+      margin-left: 6px;
+    }
+    .title { text-align: center; }
+    .title strong { display: block; font-size: 17px; }
+    .title span { display: block; margin-top: 4px; font-size: 11px; color: var(--subtle); }
+    .more {
+      justify-self: end;
+      width: 30px;
+      height: 30px;
+      border-radius: 15px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.07);
+      position: relative;
+    }
+    .more::before {
+      content: "";
+      position: absolute;
+      top: 13px;
+      left: 8px;
+      width: 14px;
+      height: 4px;
+      background:
+        radial-gradient(circle, #eef3ec 42%, transparent 43%) 0 0 / 33.33% 100% repeat-x;
+    }
+    .banner {
+      width: max-content;
+      margin: 0 auto 16px;
+      padding: 7px 12px;
+      font-size: 12px;
+      color: #b0b8b1;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 999px;
+      backdrop-filter: blur(6px);
+    }
+    .chat { display: flex; flex-direction: column; gap: 12px; }
+    .row { display: flex; gap: 10px; align-items: flex-start; }
+    .row.self { justify-content: flex-end; }
+    .avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 14px;
+      flex: none;
+      display: grid;
+      place-items: center;
+      color: #eff5eb;
+      font-size: 14px;
+      font-weight: 700;
+      background: linear-gradient(160deg, #4f7b59, #294a32);
+      box-shadow: 0 10px 20px rgba(0, 0, 0, 0.25);
+    }
+    .avatar.self {
+      order: 2;
+      background: linear-gradient(160deg, #5ea169, #2f6f40);
+    }
+    .stack { max-width: 266px; display: flex; flex-direction: column; gap: 6px; }
+    .name { font-size: 12px; color: #a3aba5; padding-left: 4px; }
+    .bubble {
+      position: relative;
+      padding: 12px 14px;
+      border-radius: 16px;
+      line-height: 1.48;
+      font-size: 16px;
+      box-shadow: 0 14px 28px rgba(0, 0, 0, 0.18);
+      border: 1px solid var(--stroke);
+    }
+    .bubble.left {
+      background: linear-gradient(180deg, rgba(38, 43, 40, 0.98), rgba(31, 36, 33, 0.98));
+      border-top-left-radius: 6px;
+    }
+    .bubble.right {
+      background: linear-gradient(180deg, #377b48, #2f6f40);
+      border-top-right-radius: 6px;
+    }
+    .bubble.left::before, .bubble.right::before {
+      content: "";
+      position: absolute;
+      top: 11px;
+      width: 12px;
+      height: 12px;
+      background: inherit;
+      transform: rotate(45deg);
+    }
+    .bubble.left::before { left: -5px; border-left: 1px solid var(--stroke); border-top: 1px solid var(--stroke); }
+    .bubble.right::before { right: -5px; border-right: 1px solid var(--stroke); border-bottom: 1px solid var(--stroke); }
+    .card {
+      margin-top: 4px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.03));
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+    .card h4 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      font-weight: 700;
+      color: #eef4ec;
+    }
+    .card p {
+      margin: 4px 0;
+      font-size: 13px;
+      color: #d1d8d2;
+      line-height: 1.45;
+    }
+    .meta {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-end;
+      font-size: 11px;
+      color: #94a199;
+      padding-right: 2px;
+    }
+    .meta.left { justify-content: flex-start; padding-left: 4px; }
+    .tick {
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: rgba(163, 224, 122, 0.18);
+      display: inline-grid;
+      place-items: center;
+      color: #a4e67c;
+      font-size: 10px;
+      font-weight: 800;
+    }
+    .input {
+      position: fixed;
+      left: 14px;
+      right: 14px;
+      bottom: 20px;
+      display: grid;
+      grid-template-columns: 38px 1fr 42px;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 12px;
+      border-radius: 24px;
+      background: rgba(24, 29, 26, 0.92);
+      border: 1px solid rgba(255,255,255,0.06);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.25);
+      backdrop-filter: blur(10px);
+      z-index: 4;
+    }
+    .plus, .voice {
+      width: 100%;
+      height: 38px;
+      border-radius: 19px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.06);
+      position: relative;
+    }
+    .plus::before, .plus::after {
+      content: "";
+      position: absolute;
+      background: #dce6dd;
+      border-radius: 1px;
+    }
+    .plus::before { width: 14px; height: 2px; top: 18px; left: 12px; }
+    .plus::after { width: 2px; height: 14px; top: 12px; left: 18px; }
+    .field {
+      height: 38px;
+      border-radius: 19px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.06);
+      color: #738078;
+      padding: 10px 14px;
+      font-size: 14px;
+    }
+    .voice::before {
+      content: "";
+      position: absolute;
+      inset: 10px 14px;
+      border: 2px solid #dce6dd;
+      border-top-left-radius: 10px;
+      border-top-right-radius: 10px;
+      border-bottom: none;
+    }
+    .voice::after {
+      content: "";
+      position: absolute;
+      left: 17px;
+      bottom: 10px;
+      width: 8px;
+      height: 8px;
+      border-left: 2px solid #dce6dd;
+      border-bottom: 2px solid #dce6dd;
+      transform: rotate(-45deg);
+    }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div class="status">
+      <span>21:18</span>
+      <div class="icons">
+        <span class="signal"></span>
+        <span class="wifi"></span>
+        <span class="battery"></span>
+      </div>
+    </div>
+    <div class="nav">
+      <div class="back"></div>
+      <div class="title">
+        <strong>王磊</strong>
+        <span>新消息</span>
+      </div>
+      <div class="more"></div>
+    </div>
+    <div class="banner">刚刚通过好友验证</div>
+    <div class="chat">
+      <div class="row">
+        <div class="avatar">王</div>
+        <div class="stack">
+          <div class="name">王磊</div>
+          <div class="bubble left">你好，我是澄曜实验室的市场总监王磊，前两天在品牌私享会和你聊过内容合作。</div>
+          <div class="meta left"><span>21:16</span></div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="avatar">王</div>
+        <div class="stack">
+          <div class="bubble left">这是我的联系方式，电话 138-0000-2468，微信号 wl-chenyao，后面方案我直接发你。</div>
+          <div class="meta left"><span>21:16</span></div>
+          <div class="card">
+            <h4>个人名片</h4>
+            <p>姓名：王磊</p>
+            <p>公司：澄曜实验室</p>
+            <p>职位：市场总监</p>
+            <p>电话：138-0000-2468</p>
+            <p>微信号：wl-chenyao</p>
+          </div>
+        </div>
+      </div>
+      <div class="row self">
+        <div class="stack">
+          <div class="bubble right">收到，我这边存一下，明天下午把简版提案先发你。</div>
+          <div class="meta"><span>21:18</span><span class="tick">✓</span></div>
+        </div>
+        <div class="avatar self">我</div>
+      </div>
+    </div>
+    <div class="input">
+      <div class="plus"></div>
+      <div class="field">发消息</div>
+      <div class="voice"></div>
+    </div>
+  </div>
+</body>
+</html>
