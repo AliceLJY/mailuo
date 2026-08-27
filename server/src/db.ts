@@ -12,6 +12,7 @@ import type {
   RecordInteractionPayload as SharedRecordInteractionPayload,
   UpdateContactPayload,
 } from "../../shared/types.ts";
+import type { InsightGenerationDb } from "../../shared/core/agent/insight.ts";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const defaultDatabasePath = resolve(currentDir, "..", "data", "mailuo.sqlite");
@@ -301,7 +302,7 @@ function normalizeLookupValue(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-export class MailuoDb {
+export class MailuoDb implements InsightGenerationDb {
   private readonly db: DatabaseSync;
 
   constructor(databasePath = process.env.DATABASE_PATH?.trim() || defaultDatabasePath) {

@@ -14,17 +14,17 @@ import {
   type InsightGenerationRecord,
   type InsightObservationRecord,
   type InsightSummaryRecord,
-} from '../agent/insight.ts';
+} from '../../../shared/core/agent/insight.ts';
 import {
   buildEntityResolutionPrompt,
   buildInsightGenerationPrompt,
-} from '../llm/prompts.ts';
+} from '../../../shared/core/llm/prompts.ts';
 import type {
   ChatCompletionRequest,
   ChatMessage,
   StructuredOutputProvider,
   StructuredOutputRequest,
-} from '../llm/provider.ts';
+} from '../../../shared/core/llm/provider.ts';
 
 const schemaSql = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8');
 

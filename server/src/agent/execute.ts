@@ -1,10 +1,15 @@
-import { z } from "zod";
-
 import type {
   CreateContactPayload,
   CreateMeetingPayload,
   UpdateContactPayload,
 } from "../../../shared/types.ts";
+import {
+  CreateContactPayloadSchema,
+  CreateMeetingPayloadSchema,
+  RecordInteractionPayloadSchema,
+  UpdateContactPayloadSchema,
+  ZodError,
+} from "../../../shared/core/schemas.ts";
 import {
   CONTACT_EDITABLE_FIELDS,
   MailuoDb,
@@ -31,60 +36,6 @@ const FIELD_LABELS: Record<ContactEditableField, string> = {
   wechat_id: "微信号",
   notes: "备注",
 };
-
-const CreateContactPayloadSchema = z
-  .object({
-    name: z.string().min(1),
-    aliases: z.array(z.string().min(1)).optional(),
-    company: z.string().optional(),
-    title: z.string().optional(),
-    phone: z.string().optional(),
-    wechat_id: z.string().optional(),
-    notes: z.string().optional(),
-  })
-  .strict();
-
-const UpdateContactPayloadSchema = z
-  .object({
-    contact_id: z.number().int().positive(),
-    contact_name: z.string().min(1),
-    changes: z.record(
-      z.string(),
-      z
-        .object({
-          old: z.string().nullable(),
-          new: z.string(),
-        })
-        .strict(),
-    ),
-  })
-  .strict();
-
-const MeetingParticipantSchema = z
-  .object({
-    contact_id: z.number().int().positive().optional(),
-    name: z.string().min(1),
-  })
-  .strict();
-
-const CreateMeetingPayloadSchema = z
-  .object({
-    title: z.string().min(1),
-    time_iso: z.string().nullable(),
-    time_text: z.string().min(1),
-    location: z.string().optional(),
-    participants: z.array(MeetingParticipantSchema),
-    agenda: z.string().optional(),
-  })
-  .strict();
-
-const RecordInteractionPayloadSchema = z
-  .object({
-    contact_id: z.number().int().positive().optional(),
-    contact_name: z.string().min(1),
-    summary: z.string().min(1),
-  })
-  .strict();
 
 type ExecuteCardInput = {
   db: MailuoDb;
@@ -369,7 +320,7 @@ function validatePayloadForType(type: StoredActionCard["type"], payload: unknown
       throw error;
     }
 
-    if (error instanceof z.ZodError) {
+    if (error instanceof ZodError) {
       throw new ExecuteValidationError(`Invalid ${type} payload`, error.issues);
     }
 

@@ -1,3 +1,4 @@
+// Platform-neutral Chinese time parsing shared by server and native runtimes.
 type CalendarDate = {
   year: number;
   month: number;

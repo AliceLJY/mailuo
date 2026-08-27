@@ -4,7 +4,7 @@ import type {
   CreateMeetingPayload,
   RecordInteractionPayload,
   UpdateContactPayload,
-} from '../../../shared/types.ts';
+} from '../../types.ts';
 
 import type { PerceptionResult } from './perceive.ts';
 import type { ParticipantResolution, ResolvableContact } from './resolve.ts';

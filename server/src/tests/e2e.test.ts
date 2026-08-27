@@ -11,7 +11,7 @@ import {
   perceiveScreenshot,
   type PerceptionResult,
 } from '../agent/perceive.ts';
-import { proposeCards } from '../agent/propose.ts';
+import { proposeCards } from '../../../shared/core/agent/propose.ts';
 import {
   resolveParticipants,
   type ResolvableContact,
@@ -22,8 +22,8 @@ import type {
   ChatCompletionRequest,
   StructuredOutputProvider,
   StructuredOutputRequest,
-} from '../llm/provider.ts';
-import { ConfigurationError } from '../llm/provider.ts';
+} from '../../../shared/core/llm/provider.ts';
+import { ConfigurationError } from '../../../shared/core/llm/provider.ts';
 
 const seedSql = readFileSync(new URL('../../../fixtures/seed.sql', import.meta.url), 'utf8');
 const screenshotPath = new URL('../../../fixtures/screenshot-2.png', import.meta.url).pathname;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { z } from 'zod';
 
-import { OpenAICompatibleProvider, StructuredOutputError } from '../llm/provider.ts';
+import { OpenAICompatibleProvider, StructuredOutputError } from '../../../shared/core/llm/provider.ts';
 
 class MockProvider extends OpenAICompatibleProvider {
   readonly requests: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
