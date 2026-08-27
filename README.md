@@ -10,6 +10,12 @@ Mailuo turns chat screenshots into structured action cards, contact memory, and 
 
 > Screenshots show the web build (Expo web output); the Android native UI is identical. All people and companies shown are synthetic test data.
 
+**v2 dual-mode UI on a real device** (Android, BYOK standalone):
+
+| First-launch chooser | Model key management | Settings |
+|---|---|---|
+| ![Onboarding](docs/screenshots/device-onboarding.jpg) | ![Key management](docs/screenshots/device-api-key.jpg) | ![Settings](docs/screenshots/device-settings.jpg) |
+
 ## Architecture
 
 ```text

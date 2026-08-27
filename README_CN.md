@@ -10,6 +10,12 @@
 
 > 截图为 web 版界面（Expo web 输出）；Android 原生版界面一致。图中人物、公司均为合成测试数据。
 
+**v2 双模式真机界面**（Android，BYOK 单机版）：
+
+| 首次启动选择 | 模型 Key 管理 | 设置 |
+|---|---|---|
+| ![引导页](docs/screenshots/device-onboarding.jpg) | ![Key 管理](docs/screenshots/device-api-key.jpg) | ![设置](docs/screenshots/device-settings.jpg) |
+
 ## 架构
 
 ```text
