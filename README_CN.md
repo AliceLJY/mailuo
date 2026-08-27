@@ -10,6 +10,12 @@
 
 > 截图为 web 版界面（Expo web 输出）；Android 原生版界面一致。图中人物、公司均为合成测试数据。
 
+**v2 双模式真机界面**（Android，BYOK 单机版）：
+
+| 首次启动选择 | 模型 Key 管理 | 设置 |
+|---|---|---|
+| ![引导页](docs/screenshots/device-onboarding.jpg) | ![Key 管理](docs/screenshots/device-api-key.jpg) | ![设置](docs/screenshots/device-settings.jpg) |
+
 ## 架构
 
 ```text
@@ -103,11 +109,15 @@ npm install
 ```bash
 # server/.env
 DASHSCOPE_API_KEY=
-DEEPSEEK_API_KEY=
 QWEN_MODEL=qwen-vl-max
+QWEN_TEXT_MODEL=qwen-plus
+# 选填：留空时，归并与洞察会通过 DashScope 使用 Qwen。
+DEEPSEEK_API_KEY=
 DEEPSEEK_MODEL=deepseek-v4-flash
 PORT=3000
 ```
+
+只有 DashScope Key 是必填项。填写 DeepSeek Key 后，归并与洞察会改用 DeepSeek；不填则继续使用 Qwen。
 
 ```bash
 cp app/.env.example app/.env
@@ -148,11 +158,12 @@ M4 的构建和部署入口在 [deploy/README.md](deploy/README.md) 和 [scripts
 
 ## 隐私边界
 
+- **BYOK 本地模式**：档案与导入的截图文件只保存在用户手机本地；推理时由 app 直接连接模型服务商，全程没有脉络中间服务器。模型 Key 只存入系统钥匙串（iOS Keychain / Android Keystore），界面永远不会回显全文。
 - 应用数据存放在服务端主机本地的 SQLite。
 - 截图文件本地存放在 `server/data/screenshots/`。
 - 原始截图二进制只会在感知阶段发给 Qwen。
 - DeepSeek 不接收原始图片。人物归并时，它只接收身份判断所需的截图抽取文本，例如 `source_quote`、`facts`、`quotes`、`events`，以及最小联系人摘要。
-- 洞察生成时，DeepSeek 只接收已落库的截图证据文本，以及生成有依据输出所需的最小档案与 observation 上下文。
+- 洞察生成时，DeepSeek 只接收已落库的截图证据文本，以及生成有依据输出所需的最小档案与 observation 上下文。未配置 DeepSeek 时，上述文本任务由 DashScope 的 Qwen 文本模型完成，数据不发往 DeepSeek。
 - **说白了**：档案的存储是全本地的，但推理阶段截图与相关文本会到达模型服务商（阿里云 / DeepSeek），受其各自的数据政策约束。介意这一层的用户可以走下一条。
 - **全本地路线（架构已支持，改环境变量即可）**：两个 provider 均走 OpenAI 兼容接口，可直接指向本地推理服务（如 Ollama / vLLM）——设置 `DASHSCOPE_BASE_URL` / `DEEPSEEK_BASE_URL` 指向本机端点、`QWEN_MODEL` / `DEEPSEEK_MODEL` 换成本地模型（视觉可用开源 Qwen-VL 系列），即可实现数据全程不出本机。注意本地小模型的抽取与洞察质量会相应下降，请自行评估。
 - 当前部署还是单用户，没有应用层鉴权。
@@ -166,7 +177,7 @@ M4 的构建和部署入口在 [deploy/README.md](deploy/README.md) 和 [scripts
 
 ## 后续工作
 
-- **分发形态路线图**（三级）：①自部署版（现状）——极客用户自建后端与 key；②**BYOK 单机版（v2.0 方向）**——agent 流水线与数据库整体移入 app 内，用户填自己的模型 API key 即可使用，无需任何服务器，档案数据只存在用户手机本地，隐私模型反而最优；③云服务版——多用户、账号体系与托管推理，属商业化范畴。客户端终态：**一个通用安装包 + 启动时选择连接模式**（填模型 API key / 填自部署服务器地址 / 登录订阅账号），三级用户同一个包覆盖，可随时切换。
+- **v2 分支已实现三种使用方式**：一个安装包现在提供①**API Key 本地模式**，用户填自己的模型 Key，整套处理在原生 app 内运行；②**自部署服务器模式**，连接用户自己的脉络后端；③灰色禁用的**订阅服务**占位，标注“敬请期待”。网页版仅支持服务器模式，本地模式为原生 app 专属。
 - iOS 原生分发：当目标地区的 App Store 不提供 Expo Go 时，iOS 原生分发需要 Apple Developer 账号，再配合 EAS 和 TestFlight。
 - 同图检测与合并。
 - 洞察重试端点。

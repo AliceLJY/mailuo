@@ -8,7 +8,8 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test src/tests/**/*.test.ts"
   },
   "dependencies": {
     "expo": "~57.0.16",
@@ -19,6 +20,8 @@
     "expo-image-picker": "~57.0.13",
     "expo-linking": "~57.0.7",
     "expo-router": "~57.0.16",
+    "expo-secure-store": "~57.0.2",
+    "expo-sqlite": "~57.0.2",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -27,10 +30,16 @@
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "~4.26.0",
     "react-native-web": "~0.21.0",
-    "react-native-worklets": "0.10.1"
+    "react-native-worklets": "0.10.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/node": "^22.20.1",
     "@types/react": "~19.2.2",
+    "tsx": "^4.23.12",
     "typescript": "~6.0.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
   }
 }

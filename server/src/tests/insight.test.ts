@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -14,19 +14,20 @@ import {
   type InsightGenerationRecord,
   type InsightObservationRecord,
   type InsightSummaryRecord,
-} from '../agent/insight.ts';
+} from '../../../shared/core/agent/insight.ts';
 import {
   buildEntityResolutionPrompt,
   buildInsightGenerationPrompt,
-} from '../llm/prompts.ts';
+} from '../../../shared/core/llm/prompts.ts';
 import type {
   ChatCompletionRequest,
   ChatMessage,
   StructuredOutputProvider,
   StructuredOutputRequest,
-} from '../llm/provider.ts';
+} from '../../../shared/core/llm/provider.ts';
+import { MAILUO_SCHEMA_SQL } from '../../../shared/core/schema.ts';
 
-const schemaSql = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8');
+const schemaSql = MAILUO_SCHEMA_SQL;
 
 class MockStructuredOutputProvider implements StructuredOutputProvider {
   readonly name = 'MockStructuredOutputProvider';

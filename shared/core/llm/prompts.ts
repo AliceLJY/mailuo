@@ -1,3 +1,4 @@
+// Platform-neutral prompt builders shared by server and native runtimes.
 const shanghaiTimeZone = 'Asia/Shanghai';
 const weekdayLabels = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
 const weekdayShortLabels = ['日', '一', '二', '三', '四', '五', '六'];

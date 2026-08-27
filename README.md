@@ -10,6 +10,12 @@ Mailuo turns chat screenshots into structured action cards, contact memory, and 
 
 > Screenshots show the web build (Expo web output); the Android native UI is identical. All people and companies shown are synthetic test data.
 
+**v2 dual-mode UI on a real device** (Android, BYOK standalone):
+
+| First-launch chooser | Model key management | Settings |
+|---|---|---|
+| ![Onboarding](docs/screenshots/device-onboarding.jpg) | ![Key management](docs/screenshots/device-api-key.jpg) | ![Settings](docs/screenshots/device-settings.jpg) |
+
 ## Architecture
 
 ```text
@@ -103,11 +109,15 @@ npm install
 ```bash
 # server/.env
 DASHSCOPE_API_KEY=
-DEEPSEEK_API_KEY=
 QWEN_MODEL=qwen-vl-max
+QWEN_TEXT_MODEL=qwen-plus
+# Optional: when empty, resolution and insights use Qwen through DashScope.
+DEEPSEEK_API_KEY=
 DEEPSEEK_MODEL=deepseek-v4-flash
 PORT=3000
 ```
+
+Only the DashScope key is required. Add a DeepSeek key if you want resolution and insight generation to use DeepSeek instead of Qwen.
 
 ```bash
 cp app/.env.example app/.env
@@ -148,10 +158,11 @@ M4 build and deployment assets live in [deploy/README.md](deploy/README.md) and 
 
 ## Privacy Boundary
 
+- **BYOK local mode**: profiles and imported screenshot files are stored only on the user's phone. During inference, the app connects directly to the model providers, with no Mailuo server in between. Model keys are kept only in the system credential store (iOS Keychain / Android Keystore), and the UI never reveals their full values.
 - App data is stored locally in SQLite on the server host.
 - Screenshot files are stored locally under `server/data/screenshots/`.
 - Raw screenshot binaries are sent only to Qwen during perception.
-- DeepSeek never receives raw images. For entity resolution it receives only the screenshot-derived text needed to decide identity, such as `source_quote`, `facts`, `quotes`, `events`, and the minimum contact summary. For insight generation it receives only the screenshot-derived text already stored as evidence plus the minimum profile and observation context needed for grounded output.
+- DeepSeek never receives raw images. For entity resolution it receives only the screenshot-derived text needed to decide identity, such as `source_quote`, `facts`, `quotes`, `events`, and the minimum contact summary. For insight generation it receives only the screenshot-derived text already stored as evidence plus the minimum profile and observation context needed for grounded output. When DeepSeek is not configured, these text tasks use the Qwen text model through DashScope instead, and no data is sent to DeepSeek.
 - **Plainly put**: storage is fully local, but during inference the screenshots and derived text do reach the model providers (Alibaba Cloud / DeepSeek) and are subject to their data policies. Users who mind this layer can take the next route.
 - **Fully-local route (already supported by the architecture, env vars only)**: both providers speak the OpenAI-compatible API, so they can point at a local inference service (e.g. Ollama / vLLM) — set `DASHSCOPE_BASE_URL` / `DEEPSEEK_BASE_URL` to a local endpoint and switch `QWEN_MODEL` / `DEEPSEEK_MODEL` to local models (open-weight Qwen-VL works for vision). Data then never leaves the machine. Expect lower extraction/insight quality from small local models; evaluate for your own use.
 - The current deployment is single-user and has no app-layer authentication yet.
@@ -165,7 +176,7 @@ M4 build and deployment assets live in [deploy/README.md](deploy/README.md) and 
 
 ## Future Work
 
-- **Distribution roadmap** (three tiers): (1) self-hosted (current) — technical users run their own backend and keys; (2) **BYOK standalone app (v2.0 direction)** — move the agent pipeline and database into the app itself so users just enter their own model API keys: no server at all, profiles live only on the user's phone, arguably the best privacy model; (3) hosted cloud service — multi-user accounts and managed inference, a commercial undertaking. Client end-state: **one generic package with a connection-mode chooser at first launch** (enter model API keys / enter a self-hosted server URL / sign in to a subscription) so a single APK covers all three tiers, switchable at any time.
+- **Distribution modes on the v2 branch**: one package now offers (1) **BYOK local mode**, where users enter their own model keys and the pipeline runs in the native app; (2) **self-hosted server mode**, which connects to the user's own Mailuo backend; and (3) a disabled **subscription** placeholder marked “Coming soon.” The web build supports server mode only; local mode is exclusive to the native app.
 - iOS native distribution: when the target region's App Store does not offer Expo Go, native iOS distribution needs an Apple Developer account plus EAS and TestFlight.
 - Duplicate screenshot detection and merge.
 - Insight retry endpoint.

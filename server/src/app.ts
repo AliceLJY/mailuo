@@ -14,8 +14,6 @@ import Fastify, {
   type FastifyReply,
   type FastifyRequest,
 } from "fastify";
-import { z } from "zod";
-
 import type {
   ActionCard,
   ApiFailure,
@@ -23,6 +21,10 @@ import type {
   HealthResponse,
   ScreenshotUploadResponse,
 } from "../../shared/types.ts";
+import {
+  ConfirmCardBodySchema,
+  type ConfirmCardBody,
+} from "../../shared/core/schemas.ts";
 import {
   executeCard as defaultExecuteCard,
   ExecuteError,
@@ -36,7 +38,7 @@ import {
   perceiveScreenshot as defaultPerceiveScreenshot,
   type PerceptionResult,
 } from "./agent/perceive.ts";
-import { proposeCards as defaultProposeCards } from "./agent/propose.ts";
+import { proposeCards as defaultProposeCards } from "../../shared/core/agent/propose.ts";
 import {
   resolveParticipants as defaultResolveParticipants,
   type ParticipantResolution,
@@ -76,15 +78,6 @@ type ResolveParticipantsFn = typeof defaultResolveParticipants;
 type ExecuteCardFn = typeof defaultExecuteCard;
 type RejectCardFn = typeof defaultRejectCard;
 type GenerateInsightsFn = typeof defaultGenerateInsights;
-
-const ConfirmCardBodySchema = z
-  .object({
-    payload: z.unknown().optional(),
-    resolved_contact_id: z.number().int().positive().optional(),
-  })
-  .strict();
-
-type ConfirmCardBody = z.infer<typeof ConfirmCardBodySchema>;
 
 type ConfirmCardResponse = {
   executed: true;

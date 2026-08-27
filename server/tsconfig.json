@@ -4,6 +4,10 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "allowImportingTsExtensions": true,
+    "baseUrl": ".",
+    "paths": {
+      "zod": ["./node_modules/zod"]
+    },
     "resolveJsonModule": true,
     "strict": true,
     "noEmit": true,
@@ -12,5 +16,5 @@
     "types": ["node"],
     "lib": ["ES2023"]
   },
-  "include": ["src/**/*.ts", "../shared/types.ts"]
+  "include": ["src/**/*.ts", "../shared/**/*.ts"]
 }

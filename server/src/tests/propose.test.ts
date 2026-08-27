@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import type { PerceptionResult } from '../agent/perceive.ts';
-import type { ParticipantResolution, ResolvableContact } from '../agent/resolve.ts';
-import { proposeCards as baseProposeCards } from '../agent/propose.ts';
+import type { PerceptionResult } from '../../../shared/core/agent/perceive.ts';
+import type { ParticipantResolution, ResolvableContact } from '../../../shared/core/agent/resolve.ts';
+import { proposeCards as baseProposeCards } from '../../../shared/core/agent/propose.ts';
 
 const proposalNow = new Date('2026-08-27T02:00:00.000Z');
 

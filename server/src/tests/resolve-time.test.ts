@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resolveChineseTime } from '../agent/resolve-time.ts';
+import { resolveChineseTime } from '../../../shared/core/agent/resolve-time.ts';
 
 const proposalNow = new Date('2026-08-27T02:00:00.000Z');
 const crossDayNow = new Date('2026-08-26T16:30:00.000Z');

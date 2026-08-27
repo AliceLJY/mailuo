@@ -5,8 +5,8 @@ import {
   PerceptionEventSchema,
   PerceptionParticipantSchema,
   parseStoredPerceptionResult,
-} from '../agent/perceive.ts';
-import { buildPerceptionSystemPrompt } from '../llm/prompts.ts';
+} from '../../../shared/core/agent/perceive.ts';
+import { buildPerceptionSystemPrompt } from '../../../shared/core/llm/prompts.ts';
 
 test('PerceptionParticipantSchema requires explicit is_self', () => {
   const result = PerceptionParticipantSchema.safeParse({

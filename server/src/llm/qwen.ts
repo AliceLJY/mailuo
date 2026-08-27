@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { extname } from 'node:path';
 
+import type { ScreenshotImageInput } from '../../../shared/core/agent/perceive.ts';
 import { OpenAICompatibleProvider, type FetchLike, requireEnv } from './provider.ts';
 
 const DEFAULT_QWEN_MODEL = 'qwen-vl-max';
@@ -115,13 +116,16 @@ export function inferExtensionFromMimeType(mimeType: string): string {
   return EXTENSION_BY_MIME[normalized];
 }
 
-export async function imageFileToDataUrl(
+export async function readScreenshotImage(
   imagePath: string,
   mimeType?: string,
-): Promise<string> {
+): Promise<ScreenshotImageInput> {
   const buffer = await readFile(imagePath);
   const resolvedMimeType = normalizeImageMimeType(mimeType) ?? inferMimeTypeFromPath(imagePath);
-  return `data:${resolvedMimeType};base64,${buffer.toString('base64')}`;
+  return {
+    base64: buffer.toString('base64'),
+    mimeType: resolvedMimeType,
+  };
 }
 
 export function createQwenProvider(options: QwenProviderOptions = {}): QwenProvider {

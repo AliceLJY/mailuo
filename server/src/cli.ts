@@ -4,7 +4,7 @@ import type { ActionCardRecord } from '../../shared/types.ts';
 import { executeCard } from './agent/execute.ts';
 import { generateInsights } from './agent/insight.ts';
 import { perceiveScreenshot } from './agent/perceive.ts';
-import { proposeCards } from './agent/propose.ts';
+import { proposeCards } from '../../shared/core/agent/propose.ts';
 import { resolveParticipants, type ResolvableContact } from './agent/resolve.ts';
 import { MailuoDb } from './db.ts';
 import type { PerceptionResult } from './agent/perceive.ts';

@@ -6,10 +6,10 @@
 
 - Mac mini 上要有 `/opt/homebrew/bin/node` 和 `/opt/homebrew/bin/npm`，Node 版本需 `>=26`
 - 仓库已拉到本机
-- `server/.env` 已存在，至少包含键名 `DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY`
-- 这两个键不光要存在，去掉首尾空白后也不能为空；`install.sh` 会用 Node 26 的 `--env-file` 按这个规则检查
+- `server/.env` 已存在；必填项只有 `DASHSCOPE_API_KEY`，去掉首尾空白后不能为空
+- `DEEPSEEK_API_KEY`、`QWEN_MODEL`、`QWEN_TEXT_MODEL` 都是选填项；未填写 DeepSeek Key 时，归并与洞察改用 DashScope 的 Qwen 文本模型
+- `install.sh` 会用 Node 26 的 `--env-file` 检查必填项
 - `scripts/build-web.sh` 和 `deploy/install.sh` 都会拒绝 symlink 形式的 `server/` 目录，要求真实路径精确落在当前仓库物理根的 `server/`
-- `QWEN_MODEL` 可选；不配时沿用服务端默认值
 
 ## 2. 构建 web 静态资源
 

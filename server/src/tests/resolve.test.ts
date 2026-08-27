@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { StructuredOutputProvider, StructuredOutputRequest } from '../llm/provider.ts';
-import type { PerceptionResult } from '../agent/perceive.ts';
+import type { StructuredOutputProvider, StructuredOutputRequest } from '../../../shared/core/llm/provider.ts';
+import type { PerceptionResult } from '../../../shared/core/agent/perceive.ts';
 import {
   resolveParticipants,
   type ParticipantResolution,
   type ResolvableContact,
-} from '../agent/resolve.ts';
+} from '../../../shared/core/agent/resolve.ts';
 
 class FakeStructuredOutputProvider implements StructuredOutputProvider {
   readonly name = 'FakeProvider';

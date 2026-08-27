@@ -54,8 +54,8 @@ fi
 
 if [ ! -f "${ENV_FILE}" ]; then
   echo "Missing server env file: ${ENV_FILE}" >&2
-  echo "Required keys: DASHSCOPE_API_KEY DEEPSEEK_API_KEY" >&2
-  echo "Optional key: QWEN_MODEL" >&2
+  echo "Required: DASHSCOPE_API_KEY" >&2
+  echo "Optional: DEEPSEEK_API_KEY, QWEN_MODEL, QWEN_TEXT_MODEL" >&2
   exit 1
 fi
 
@@ -69,7 +69,7 @@ if ! env_check_output=$(
   env -i PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="${HOME}" \
     "${NODE_BIN}" --env-file="${ENV_FILE}" -e '
 const fs = require("node:fs");
-const requiredKeys = ["DASHSCOPE_API_KEY", "DEEPSEEK_API_KEY"];
+const requiredKeys = ["DASHSCOPE_API_KEY"];
 const envFile = process.argv[1];
 const rawValues = new Map();
 

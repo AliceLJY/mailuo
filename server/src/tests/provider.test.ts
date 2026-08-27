@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 
 import { z } from 'zod';
 
-import { OpenAICompatibleProvider, StructuredOutputError } from '../llm/provider.ts';
+import {
+  OpenAICompatibleProvider,
+  StructuredOutputError,
+  createTextProvider,
+} from '../../../shared/core/llm/provider.ts';
 
 class MockProvider extends OpenAICompatibleProvider {
   readonly requests: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
@@ -71,4 +75,25 @@ test('generateStructuredOutput throws explicit error after two invalid attempts'
       return true;
     },
   );
+});
+
+test('text provider uses Qwen qwen-plus when DeepSeek is not configured', () => {
+  const provider = createTextProvider({ dashscopeApiKey: 'dashscope-test-key' });
+
+  assert.equal(provider.name, 'Qwen');
+  assert.equal(provider.model, 'qwen-plus');
+  assert.equal(provider.apiKeyEnv, 'DASHSCOPE_API_KEY');
+  assert.equal(provider.baseUrl, 'https://dashscope.aliyuncs.com/compatible-mode/v1');
+});
+
+test('text provider keeps using DeepSeek when its key is configured', () => {
+  const provider = createTextProvider({
+    dashscopeApiKey: 'dashscope-test-key',
+    deepseekApiKey: 'deepseek-test-key',
+  });
+
+  assert.equal(provider.name, 'DeepSeek');
+  assert.equal(provider.model, 'deepseek-v4-flash');
+  assert.equal(provider.apiKeyEnv, 'DEEPSEEK_API_KEY');
+  assert.equal(provider.baseUrl, 'https://api.deepseek.com');
 });
