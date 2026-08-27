@@ -1,13 +1,14 @@
-import { createWriteStream, mkdirSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, extname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import type { Multipart, MultipartFile } from "@fastify/multipart";
+import fastifyStatic from "@fastify/static";
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -55,6 +56,7 @@ import {
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const defaultScreenshotDir = resolve(currentDir, "..", "data", "screenshots");
+const defaultWebRoot = resolve(currentDir, "..", "public");
 
 type PerceiveScreenshotInput = {
   imagePath: string;
@@ -158,6 +160,54 @@ function toHttpError(error: unknown): HttpError {
 
 function getScreenshotDirectory() {
   return process.env.SCREENSHOT_DIR?.trim() || defaultScreenshotDir;
+}
+
+function resolveWebRoot(webRoot: string | false | undefined): string | null {
+  if (webRoot === false) {
+    return null;
+  }
+
+  if (typeof webRoot === "string" && webRoot.trim() === "") {
+    return null;
+  }
+
+  const resolvedRoot = resolve(webRoot ?? defaultWebRoot);
+
+  if (!existsSync(resolvedRoot)) {
+    return null;
+  }
+
+  try {
+    return statSync(resolvedRoot).isDirectory() ? resolvedRoot : null;
+  } catch {
+    return null;
+  }
+}
+
+function isApiPath(url: string): boolean {
+  const pathname = url.split("?", 1)[0] ?? url;
+  return pathname === "/api" || pathname.startsWith("/api/");
+}
+
+function shouldServeSpaIndex(request: FastifyRequest): boolean {
+  if (request.method !== "GET") {
+    return false;
+  }
+
+  const url = request.raw.url ?? request.url;
+
+  if (isApiPath(url)) {
+    return false;
+  }
+
+  const acceptHeader = request.headers.accept?.toLowerCase() ?? "";
+
+  if (!acceptHeader.includes("text/html")) {
+    return false;
+  }
+
+  const pathname = url.split("?", 1)[0] ?? url;
+  return extname(pathname) === "";
 }
 
 function getPublicErrorMessage(error: unknown, fallbackMessage: string): string {
@@ -335,6 +385,7 @@ async function readMultipartPayload(request: FastifyRequest) {
 type BuildAppOptions = {
   db?: MailuoDb;
   createDb?: () => MailuoDb;
+  webRoot?: string | false;
   perceiveScreenshot?: PerceiveScreenshotFn;
   resolveParticipants?: ResolveParticipantsFn;
   proposeCards?: ProposeCardsFn;
@@ -372,6 +423,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const executeCard = options.executeCard ?? defaultExecuteCard;
   const rejectCard = options.rejectCard ?? defaultRejectCard;
   const generateInsights = options.generateInsights ?? defaultGenerateInsights;
+  const webRoot = resolveWebRoot(options.webRoot);
+  const canServeSpaIndex = webRoot ? existsSync(resolve(webRoot, "index.html")) : false;
   const app = Fastify({ logger: true });
 
   // web 版（react-native-web）页面在 Metro 端口、API 在本端口，跨端口需 CORS；
@@ -563,15 +616,31 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
   });
 
-  app.setNotFoundHandler(async (_request, reply) =>
-    reply.status(404).send({
+  if (webRoot) {
+    app.register(fastifyStatic, {
+      root: webRoot,
+      prefix: "/",
+      index: ["index.html"],
+      redirect: false,
+      allowedPath(_pathName, _root, request) {
+        return !isApiPath(request.raw.url ?? request.url);
+      },
+    });
+  }
+
+  app.setNotFoundHandler(async (request, reply) => {
+    if (canServeSpaIndex && shouldServeSpaIndex(request)) {
+      return reply.sendFile("index.html");
+    }
+
+    return reply.status(404).send({
       ok: false,
       error: {
         message: "Route not found",
         code: "NOT_FOUND",
       },
-    } satisfies ApiFailure),
-  );
+    } satisfies ApiFailure);
+  });
 
   app.setErrorHandler(async (error, _request, reply) => sendError(reply, error));
 

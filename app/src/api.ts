@@ -3,6 +3,7 @@ import { File as ExpoFile } from "expo-file-system";
 import * as Linking from "expo-linking";
 import { Platform } from "react-native";
 
+import { prepareScreenshotForUpload } from "@/upload-image";
 import type {
   ApiResponse,
   ConfirmCardRequest,
@@ -47,20 +48,28 @@ export function isConflictError(error: unknown) {
   return error instanceof ApiError && error.status === 409;
 }
 
-function getBaseUrl() {
-  const baseUrl = process.env.EXPO_PUBLIC_API_URL?.trim().replace(/\/+$/u, "");
+function resolveConfiguredApiUrl() {
+  return process.env.EXPO_PUBLIC_API_URL?.trim().replace(/\/+$/u, "") ?? "";
+}
 
-  if (!baseUrl) {
-    const appName = Constants.expoConfig?.name ?? "当前 Expo App";
-    const launchUrl = Linking.createURL("/");
-    throw new ApiError(
-      `${appName} 缺少 EXPO_PUBLIC_API_URL。当前入口是 ${launchUrl}，请先配置 app/.env。`,
-      500,
-      "CONFIG_ERROR",
-    );
+export function getBaseUrl() {
+  const baseUrl = resolveConfiguredApiUrl();
+
+  if (baseUrl) {
+    return baseUrl;
   }
 
-  return baseUrl;
+  if (Platform.OS === "web") {
+    return "";
+  }
+
+  const appName = Constants.expoConfig?.name ?? "当前 Expo App";
+  const launchUrl = Linking.createURL("/");
+  throw new ApiError(
+    `${appName} 缺少 EXPO_PUBLIC_API_URL。原生端必须显式配置服务地址；当前入口是 ${launchUrl}。`,
+    500,
+    "CONFIG_ERROR",
+  );
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -77,18 +86,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return payload.data;
 }
 
-function resolveUploadFileName(asset: UploadImageAsset): string {
-  return (
-    asset.fileName?.trim() ||
-    asset.uri.split("/").filter(Boolean).at(-1) ||
-    `screenshot-${Date.now()}.jpg`
-  );
-}
-
 // SDK 57 的全局 fetch 是 WinterCG 实现，不再接受 RN 老式 {uri,name,type} 上传对象
 // （报 "unsupported FormDataPart implementation"）；native 走 expo-file-system 的
 // 标准 File（实现 Blob 接口），web 走真 Blob。
-async function buildUploadBlob(asset: UploadImageAsset): Promise<Blob> {
+async function buildUploadBlob(asset: { uri: string }): Promise<Blob> {
   if (Platform.OS === "web") {
     const response = await fetch(asset.uri);
     return await response.blob();
@@ -97,25 +98,46 @@ async function buildUploadBlob(asset: UploadImageAsset): Promise<Blob> {
   return new ExpoFile(asset.uri) as unknown as Blob;
 }
 
+async function cleanupPreparedUploadAsset(cleanup?: () => void) {
+  if (!cleanup) {
+    return;
+  }
+
+  try {
+    cleanup();
+  } catch (error) {
+    if (__DEV__) {
+      console.warn("截图上传缓存清理失败", error);
+    }
+  }
+}
+
 export async function uploadScreenshot(input: {
   asset: UploadImageAsset;
   note?: string;
 }) {
-  const formData = new FormData();
-  formData.append(
-    "image",
-    await buildUploadBlob(input.asset),
-    resolveUploadFileName(input.asset),
-  );
+  const preparedAsset = await prepareScreenshotForUpload(input.asset);
 
-  if (input.note?.trim()) {
-    formData.append("note", input.note.trim());
+  try {
+    const formData = new FormData();
+
+    formData.append(
+      "image",
+      await buildUploadBlob(preparedAsset),
+      preparedAsset.fileName,
+    );
+
+    if (input.note?.trim()) {
+      formData.append("note", input.note.trim());
+    }
+
+    return await request<ScreenshotUploadResponse>("/api/screenshots", {
+      method: "POST",
+      body: formData,
+    });
+  } finally {
+    await cleanupPreparedUploadAsset(preparedAsset.cleanup);
   }
-
-  return request<ScreenshotUploadResponse>("/api/screenshots", {
-    method: "POST",
-    body: formData,
-  });
 }
 
 export async function confirmCard(cardId: number, body: ConfirmCardRequest = {}) {
@@ -155,5 +177,5 @@ export async function getHealth() {
 }
 
 export function getConfiguredApiUrl() {
-  return process.env.EXPO_PUBLIC_API_URL?.trim() ?? "";
+  return resolveConfiguredApiUrl();
 }

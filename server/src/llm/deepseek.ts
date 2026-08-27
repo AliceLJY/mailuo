@@ -10,13 +10,27 @@ type DeepSeekProviderOptions = {
   fetchImpl?: FetchLike;
 };
 
+function normalizeConfiguredModel(model: string | undefined): string | undefined {
+  const trimmed = model?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function getDeepSeekModel(
+  optionModel: string | undefined,
+  env = process.env,
+): string {
+  return normalizeConfiguredModel(optionModel) ??
+    normalizeConfiguredModel(env.DEEPSEEK_MODEL) ??
+    DEFAULT_DEEPSEEK_MODEL;
+}
+
 export class DeepSeekProvider extends OpenAICompatibleProvider {
   constructor(options: DeepSeekProviderOptions = {}) {
     const apiKey = options.apiKey ?? requireEnv('DEEPSEEK_API_KEY');
 
     super({
       name: 'DeepSeek',
-      model: options.model ?? process.env.DEEPSEEK_MODEL ?? DEFAULT_DEEPSEEK_MODEL,
+      model: getDeepSeekModel(options.model),
       apiKeyEnv: 'DEEPSEEK_API_KEY',
       apiKey,
       baseUrl: options.baseUrl ?? process.env.DEEPSEEK_BASE_URL ?? DEFAULT_DEEPSEEK_BASE_URL,

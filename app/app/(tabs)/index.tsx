@@ -1,6 +1,6 @@
 import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -23,11 +23,25 @@ export default function UploadScreen() {
   const [asset, setAsset] = useState<UploadImageAsset | null>(null);
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadingText, setLoadingText] = useState("正在上传截图…");
   const { seedFromUpload } = useFlow();
   const { showError, showToast } = useToast();
+  const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
+  const submitTokenRef = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      clearLoadingTimer(loadingTimerRef.current);
+    };
+  }, []);
 
   async function pickImage() {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!mountedRef.current) {
+      return;
+    }
 
     if (!permission.granted) {
       showToast("请先允许访问相册，再选择聊天截图。", "info");
@@ -39,6 +53,9 @@ export default function UploadScreen() {
       quality: 1,
       selectionLimit: 1,
     });
+    if (!mountedRef.current) {
+      return;
+    }
 
     if (result.canceled || !result.assets[0]) {
       return;
@@ -48,6 +65,8 @@ export default function UploadScreen() {
       uri: result.assets[0].uri,
       fileName: result.assets[0].fileName,
       mimeType: result.assets[0].mimeType,
+      width: result.assets[0].width,
+      height: result.assets[0].height,
     });
   }
 
@@ -57,15 +76,38 @@ export default function UploadScreen() {
       return;
     }
 
+    const submitToken = submitTokenRef.current + 1;
+    submitTokenRef.current = submitToken;
+
     try {
+      clearLoadingTimer(loadingTimerRef.current);
       setLoading(true);
+      setLoadingText("正在上传截图…");
+      loadingTimerRef.current = setTimeout(() => {
+        if (!canCommitSubmitResult(mountedRef, submitTokenRef, submitToken)) {
+          return;
+        }
+        setLoadingText("AI 正在读图，通常 10-20 秒…");
+      }, 2000);
       const response = await uploadScreenshot({ asset, note });
+      if (!canCommitSubmitResult(mountedRef, submitTokenRef, submitToken)) {
+        return;
+      }
       seedFromUpload(response);
       router.push(`/review/${response.screenshot_id}`);
     } catch (error) {
+      if (!canCommitSubmitResult(mountedRef, submitTokenRef, submitToken)) {
+        return;
+      }
       showError(error, "上传失败，请确认服务端地址和局域网连通性。");
     } finally {
+      if (!canCommitSubmitResult(mountedRef, submitTokenRef, submitToken)) {
+        return;
+      }
+      clearLoadingTimer(loadingTimerRef.current);
+      loadingTimerRef.current = null;
       setLoading(false);
+      setLoadingText("正在上传截图…");
     }
   }
 
@@ -126,7 +168,7 @@ export default function UploadScreen() {
         <View style={styles.overlay}>
           <View style={styles.overlayCard}>
             <ActivityIndicator color={theme.colors.primary} size="large" />
-            <Text style={styles.overlayText}>AI 正在读图，约 20 秒…</Text>
+            <Text style={styles.overlayText}>{loadingText}</Text>
           </View>
         </View>
       ) : null}
@@ -140,6 +182,20 @@ function getAssetLabel(asset: UploadImageAsset) {
   }
 
   return asset.uri.split("/").filter(Boolean).at(-1) ?? asset.uri;
+}
+
+function clearLoadingTimer(timer: ReturnType<typeof setTimeout> | null) {
+  if (timer) {
+    clearTimeout(timer);
+  }
+}
+
+function canCommitSubmitResult(
+  mountedRef: { current: boolean },
+  submitTokenRef: { current: number },
+  submitToken: number,
+) {
+  return mountedRef.current && submitTokenRef.current === submitToken;
 }
 
 const styles = StyleSheet.create({

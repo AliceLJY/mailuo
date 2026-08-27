@@ -13,6 +13,23 @@ type QwenProviderOptions = {
   fetchImpl?: FetchLike;
 };
 
+function normalizeConfiguredModel(model: string | undefined): string | undefined {
+  const trimmed = model?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function getQwenModel(
+  optionModel: string | undefined,
+  env = process.env,
+): string {
+  return (
+    normalizeConfiguredModel(optionModel) ??
+    normalizeConfiguredModel(env.QWEN_MODEL) ??
+    normalizeConfiguredModel(env.QWEN_VISION_MODEL) ??
+    DEFAULT_QWEN_MODEL
+  );
+}
+
 const MIME_BY_EXTENSION: Record<string, string> = {
   '.bmp': 'image/bmp',
   '.gif': 'image/gif',
@@ -53,7 +70,7 @@ export class QwenProvider extends OpenAICompatibleProvider {
 
     super({
       name: 'Qwen',
-      model: options.model ?? process.env.QWEN_VISION_MODEL ?? DEFAULT_QWEN_MODEL,
+      model: getQwenModel(options.model),
       apiKeyEnv: 'DASHSCOPE_API_KEY',
       apiKey,
       baseUrl,

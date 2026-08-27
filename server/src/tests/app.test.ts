@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -222,6 +222,145 @@ test('buildApp closes app-owned databases and leaves injected databases open', a
 
     rmSync(ownedDirectory, { recursive: true, force: true });
     rmSync(injectedDirectory, { recursive: true, force: true });
+  }
+});
+
+test('buildApp skips static registration when the injected web root is missing and keeps API routes available', async () => {
+  const { db, screenshotDir, cleanup } = withTempAppDirectory();
+  const app = buildApp({
+    db,
+    webRoot: join(screenshotDir, 'missing-public'),
+  });
+
+  try {
+    const healthResponse = await app.inject({
+      method: 'GET',
+      url: '/api/health',
+    });
+
+    assert.equal(healthResponse.statusCode, 200);
+    assert.equal(healthResponse.json().ok, true);
+
+    const rootResponse = await app.inject({
+      method: 'GET',
+      url: '/',
+    });
+
+    assert.equal(rootResponse.statusCode, 404);
+    assert.deepEqual(rootResponse.json(), {
+      ok: false,
+      error: {
+        message: 'Route not found',
+        code: 'NOT_FOUND',
+      },
+    });
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
+test('buildApp serves an injected static web root and falls back to index.html only for HTML deep links', async () => {
+  const { db, screenshotDir, cleanup } = withTempAppDirectory();
+  const webRoot = join(screenshotDir, '..', 'public');
+  mkdirSync(join(webRoot, 'assets'), { recursive: true });
+  writeFileSync(join(webRoot, 'index.html'), '<!doctype html><html><body>Mailuo Web</body></html>');
+  writeFileSync(join(webRoot, 'assets', 'app.js'), 'console.log("mailuo web");');
+
+  const app = buildApp({
+    db,
+    webRoot,
+  });
+
+  try {
+    const rootResponse = await app.inject({
+      method: 'GET',
+      url: '/',
+    });
+
+    assert.equal(rootResponse.statusCode, 200);
+    assert.match(rootResponse.headers['content-type'] ?? '', /text\/html/);
+    assert.match(rootResponse.body, /Mailuo Web/);
+
+    const assetResponse = await app.inject({
+      method: 'GET',
+      url: '/assets/app.js',
+    });
+
+    assert.equal(assetResponse.statusCode, 200);
+    assert.equal(assetResponse.body, 'console.log("mailuo web");');
+
+    const reviewResponse = await app.inject({
+      method: 'GET',
+      url: '/review/123',
+      headers: {
+        accept: 'text/html,application/xhtml+xml',
+      },
+    });
+
+    assert.equal(reviewResponse.statusCode, 200);
+    assert.match(reviewResponse.headers['content-type'] ?? '', /text\/html/);
+    assert.match(reviewResponse.body, /Mailuo Web/);
+
+    const contactResponse = await app.inject({
+      method: 'GET',
+      url: '/contacts/1',
+      headers: {
+        accept: 'text/html,application/xhtml+xml',
+      },
+    });
+
+    assert.equal(contactResponse.statusCode, 200);
+    assert.match(contactResponse.headers['content-type'] ?? '', /text\/html/);
+    assert.match(contactResponse.body, /Mailuo Web/);
+
+    const missingAssetResponse = await app.inject({
+      method: 'GET',
+      url: '/assets/missing.js',
+      headers: {
+        accept: 'text/html,application/xhtml+xml',
+      },
+    });
+
+    assert.equal(missingAssetResponse.statusCode, 404);
+    assert.match(missingAssetResponse.headers['content-type'] ?? '', /application\/json/);
+    assert.deepEqual(missingAssetResponse.json(), {
+      ok: false,
+      error: {
+        message: 'Route not found',
+        code: 'NOT_FOUND',
+      },
+    });
+
+    const missingApiResponse = await app.inject({
+      method: 'GET',
+      url: '/api/missing',
+      headers: {
+        accept: 'text/html,application/xhtml+xml',
+      },
+    });
+
+    assert.equal(missingApiResponse.statusCode, 404);
+    assert.match(missingApiResponse.headers['content-type'] ?? '', /application\/json/);
+    assert.deepEqual(missingApiResponse.json(), {
+      ok: false,
+      error: {
+        message: 'Route not found',
+        code: 'NOT_FOUND',
+      },
+    });
+
+    const healthResponse = await app.inject({
+      method: 'GET',
+      url: '/api/health',
+    });
+
+    assert.equal(healthResponse.statusCode, 200);
+    assert.match(healthResponse.headers['content-type'] ?? '', /application\/json/);
+    assert.equal(healthResponse.json().ok, true);
+  } finally {
+    await app.close();
+    cleanup();
   }
 });
 

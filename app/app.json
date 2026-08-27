@@ -6,6 +6,16 @@
     "orientation": "portrait",
     "scheme": "mailuo",
     "userInterfaceStyle": "automatic",
+    "splash": {
+      "backgroundColor": "#07C160",
+      "resizeMode": "contain"
+    },
+    "android": {
+      "package": "com.alice.mailuo",
+      "adaptiveIcon": {
+        "backgroundColor": "#07C160"
+      }
+    },
     "plugins": [
       "expo-router",
       [
