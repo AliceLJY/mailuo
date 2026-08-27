@@ -26,6 +26,14 @@ function splitList(value: string) {
     .filter(Boolean);
 }
 
+const CHANGE_LABELS = {
+  company: "公司",
+  title: "职位",
+  phone: "电话",
+  wechat_id: "微信号",
+  notes: "备注",
+} as const;
+
 export function ContactFields({
   editable,
   payload,
@@ -73,11 +81,11 @@ export function UpdateFields({
       <StaticLine label="联系人" value={payload.contact_name} />
       {Object.entries(payload.changes).map(([field, change]) => (
         <View key={field} style={styles.block}>
-          <Text style={styles.fieldLabel}>{FIELD_LABELS[field as ContactFieldKey] ?? field}</Text>
-          <Text style={styles.metaText}>原值：{change.old || "空"}</Text>
+          <Text style={styles.fieldLabel}>{CHANGE_LABELS[field as keyof typeof CHANGE_LABELS] ?? field}</Text>
+          <Text style={styles.metaText}>当前记录：{change.old || "未填写"}</Text>
           <FieldInput
             editable={editable}
-            label="新值"
+            label="确认后的内容"
             value={change.new}
             onChangeText={(value) =>
               setPayload({
@@ -112,16 +120,16 @@ export function MeetingFields({
       <FieldInput editable={editable} label="标题" value={payload.title} onChangeText={(title) => setPayload({ ...payload, title })} />
       <View style={styles.dualRow}>
         <View style={styles.dualColumn}>
-          <FieldInput editable={editable} label="原文时间" value={payload.time_text} onChangeText={(time_text) => setPayload({ ...payload, time_text })} />
+          <FieldInput editable={editable} label="聊天里的时间" value={payload.time_text} onChangeText={(time_text) => setPayload({ ...payload, time_text })} />
         </View>
         <View style={styles.dualColumn}>
           <FieldInput
             editable={editable}
             emphasis
-            label="ISO 时间"
+            label="确认时间"
             value={payload.time_iso ?? ""}
             onChangeText={(time_iso) => setPayload({ ...payload, time_iso: time_iso || null })}
-            placeholder="可手动修正"
+            placeholder="看起来不对就手动改"
           />
         </View>
       </View>
@@ -137,7 +145,7 @@ export function MeetingFields({
         <View key={`${participant.contact_id ?? "name"}-${index}`} style={styles.block}>
           <Text style={styles.fieldLabel}>参与人 {index + 1}</Text>
           <Text style={styles.metaText}>
-            {participant.contact_id ? `保留 contact_id #${participant.contact_id}` : "未关联 contact_id"}
+            {participant.contact_id ? "已关联到已有联系人" : "先按名字保存"}
           </Text>
           <FieldInput
             editable={editable}
@@ -169,9 +177,9 @@ export function InteractionFields({
 }) {
   return (
     <View style={styles.section}>
-      <FieldInput editable={editable} label="联系人称呼" value={payload.contact_name} onChangeText={(contact_name) => setPayload({ ...payload, contact_name })} />
-      <StaticLine label="关联 contact_id" value={payload.contact_id ? String(payload.contact_id) : "未关联"} />
-      <FieldInput editable={editable} label="互动摘要" multiline value={payload.summary} onChangeText={(summary) => setPayload({ ...payload, summary })} />
+      <FieldInput editable={editable} label="对方称呼" value={payload.contact_name} onChangeText={(contact_name) => setPayload({ ...payload, contact_name })} />
+      <StaticLine label="当前归属" value={payload.contact_id ? "已关联到已有联系人" : "还没关联到已有联系人"} />
+      <FieldInput editable={editable} label="这次互动摘要" multiline value={payload.summary} onChangeText={(summary) => setPayload({ ...payload, summary })} />
     </View>
   );
 }
@@ -232,7 +240,7 @@ function FieldInput({
           value={value}
         />
       ) : (
-        <Text style={[styles.staticValue, emphasis ? styles.emphasisText : undefined]}>{value || "空"}</Text>
+        <Text style={[styles.staticValue, emphasis ? styles.emphasisText : undefined]}>{value || "未填写"}</Text>
       )}
     </View>
   );

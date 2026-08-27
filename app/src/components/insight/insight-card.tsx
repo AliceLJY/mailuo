@@ -25,15 +25,15 @@ export function InsightCard({ contactName, evidence, insight }: Props) {
         </View>
         <View style={styles.copy}>
           <Text style={styles.label}>{getInsightLabel(insight.kind)}</Text>
-          <Text style={styles.contact}>{contactName ?? `联系人 #${insight.contact_id}`}</Text>
+          <Text style={styles.contact}>{contactName ?? `联系人 ${insight.contact_id}`}</Text>
         </View>
       </View>
 
       <Text style={styles.content}>{insight.content}</Text>
 
       <DisclosurePanel
-        title="依据观测"
-        hint={evidence.length ? `${evidence.length} 条` : "暂无映射到 observation 内容"}
+        title="聊天依据"
+        hint={evidence.length ? `${evidence.length} 条` : "依据补充中"}
       >
         {evidence.length ? (
           evidence.map((item) => (
@@ -44,7 +44,7 @@ export function InsightCard({ contactName, evidence, insight }: Props) {
           ))
         ) : (
           <Text style={styles.emptyText}>
-            based_on 已返回，但当前还没有拿到对应 observation 详情。
+            这条洞察已经生成，但对应的依据还在补充。
           </Text>
         )}
       </DisclosurePanel>

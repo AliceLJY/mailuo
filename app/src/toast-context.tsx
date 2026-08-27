@@ -40,7 +40,7 @@ export function ToastProvider({ children }: PropsWithChildren) {
   }, []);
 
   const showError = useCallback(
-    (error: unknown, fallback = "请求失败，请稍后再试。") => {
+    (error: unknown, fallback = "暂时没成功，请稍后再试。") => {
       if (error instanceof ApiError) {
         showToast(error.message, "error");
         return;
@@ -93,7 +93,7 @@ export function ToastProvider({ children }: PropsWithChildren) {
             ]}
           >
             <Text style={styles.title}>
-              {toast.tone === "error" ? "出错了" : "提示"}
+              {toast.tone === "error" ? "出了点状况" : "提示"}
             </Text>
             <Text style={styles.message}>{toast.message}</Text>
           </Pressable>

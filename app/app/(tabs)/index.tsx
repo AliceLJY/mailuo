@@ -99,7 +99,7 @@ export default function UploadScreen() {
       if (!canCommitSubmitResult(mountedRef, submitTokenRef, submitToken)) {
         return;
       }
-      showError(error, "上传失败，请确认服务端地址和局域网连通性。");
+      showError(error, "上传失败，请检查服务是否可用后再试一次。");
     } finally {
       if (!canCommitSubmitResult(mountedRef, submitTokenRef, submitToken)) {
         return;
@@ -115,19 +115,19 @@ export default function UploadScreen() {
     <View style={styles.screen}>
       <Page
         title="上传截图"
-        subtitle="选一张聊天截图，可补一句背景说明。成功后会直接进入卡片确认页。"
+        subtitle="选一张聊天截图，可补一句背景说明。上传成功后会直接进入卡片确认页。"
         footer={
           <AppButton
-            label={loading ? "提交中..." : "提交并生成卡片"}
+            label={loading ? "上传中..." : "提交并开始整理"}
             disabled={loading || !asset}
             onPress={submit}
           />
         }
       >
-        <SectionCard kicker="上传链路" title="本轮会做什么">
+        <SectionCard kicker="上传后会发生什么" title="这次会整理什么">
           <MetaLine label="选图" value="从相册挑一张聊天截图，支持单张预览。" />
-          <MetaLine label="说明" value="补充文字会一起发给后端，帮助 AI 理解上下文。" />
-          <MetaLine label="下一步" value="上传成功后初始化 flow，并跳到 /review/[id]。" />
+          <MetaLine label="说明" value="补充说明会一起参考，方便更快看懂聊天背景。" />
+          <MetaLine label="下一步" value="上传成功后会直接进入卡片确认页。" />
         </SectionCard>
 
         <SectionCard title="聊天截图">
@@ -144,7 +144,7 @@ export default function UploadScreen() {
               style={({ pressed }) => [styles.pickBox, pressed ? styles.pickPressed : null]}
             >
               <Text style={styles.pickTitle}>从相册选截图</Text>
-              <Text style={styles.pickText}>支持微信聊天截图，选中后会在这里显示预览和文件名。</Text>
+              <Text style={styles.pickText}>支持微信聊天截图，选中后会在这里显示预览。</Text>
             </Pressable>
           )}
         </SectionCard>
@@ -158,10 +158,10 @@ export default function UploadScreen() {
             style={styles.input}
             value={note}
           />
-          <Text style={styles.helperText}>不写也可以，系统会先按截图内容抽取卡片。</Text>
+          <Text style={styles.helperText}>不写也可以，系统会先根据截图整理出待确认内容。</Text>
         </SectionCard>
 
-        {!asset ? <EmptyHint text="先选图，再提交给后端。" /> : null}
+        {!asset ? <EmptyHint text="先选一张图，再开始整理。" /> : null}
       </Page>
 
       {loading ? (

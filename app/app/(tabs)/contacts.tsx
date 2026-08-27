@@ -34,7 +34,7 @@ export default function ContactsScreen() {
       setContacts(nextContacts);
       setErrorMessage(null);
     } catch (error) {
-      const fallback = "人脉列表加载失败。";
+      const fallback = "人脉加载失败。";
       setErrorMessage(error instanceof Error ? error.message : fallback);
       showErrorRef.current(error, fallback);
     } finally {
@@ -63,12 +63,12 @@ export default function ContactsScreen() {
             {loading ? (
               <View style={styles.loadingBox}>
                 <ActivityIndicator color={theme.colors.primary} />
-                <Text style={styles.loadingText}>正在读取人脉档案…</Text>
+                <Text style={styles.loadingText}>正在读取联系人…</Text>
               </View>
             ) : null}
 
             {!loading && errorMessage ? (
-              <SectionCard title="列表暂时没打开">
+              <SectionCard title="暂时没加载出来">
                 <Text style={styles.note}>{errorMessage}</Text>
                 <AppButton label="重新加载" onPress={() => void loadContacts("refresh")} />
               </SectionCard>
@@ -83,7 +83,7 @@ export default function ContactsScreen() {
         ListHeaderComponent={
           <View style={styles.header}>
             <Text style={styles.title}>人脉</Text>
-            <Text style={styles.subtitle}>名字、公司、最近互动和观测计数都在这里，下拉或回到此页会自动刷新。</Text>
+            <Text style={styles.subtitle}>名字、公司和最近来往都在这里，下拉会刷新。</Text>
           </View>
         }
         onRefresh={() => void loadContacts("refresh")}

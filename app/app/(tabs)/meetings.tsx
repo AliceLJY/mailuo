@@ -34,7 +34,7 @@ export default function MeetingsScreen() {
       setMeetings(nextMeetings);
       setErrorMessage(null);
     } catch (error) {
-      const fallback = "日程列表加载失败。";
+      const fallback = "日程加载失败。";
       setErrorMessage(error instanceof Error ? error.message : fallback);
       showErrorRef.current(error, fallback);
     } finally {
@@ -68,20 +68,20 @@ export default function MeetingsScreen() {
             ) : null}
 
             {!loading && errorMessage ? (
-              <SectionCard title="日程暂时没打开">
+              <SectionCard title="暂时没加载出来">
                 <Text style={styles.note}>{errorMessage}</Text>
                 <AppButton label="重新加载" onPress={() => void loadMeetings("refresh")} />
               </SectionCard>
             ) : null}
 
-            {!loading && !errorMessage ? <EmptyHint text="还没有会议记录。" /> : null}
+            {!loading && !errorMessage ? <EmptyHint text="还没有会议安排。" /> : null}
           </View>
         }
         ListFooterComponent={<View style={styles.bottomGap} />}
         ListHeaderComponent={
           <View style={styles.header}>
             <Text style={styles.title}>日程</Text>
-            <Text style={styles.subtitle}>按 API 返回顺序展示标题、时间原文、解析时间、地点和参与人。</Text>
+            <Text style={styles.subtitle}>即将到来的会议都在这里</Text>
           </View>
         }
         onRefresh={() => void loadMeetings("refresh")}

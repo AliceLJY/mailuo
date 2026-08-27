@@ -113,9 +113,9 @@ export default function ReviewScreen() {
           return;
         }
 
-        const message = getErrorMessage(error, "截图详情加载失败。");
+        const message = getErrorMessage(error, "这张截图加载失败。");
         setPageError(message);
-        showError(error, "截图详情加载失败。");
+        showError(error, "这张截图加载失败。");
       }
     })();
 
@@ -159,7 +159,7 @@ export default function ReviewScreen() {
     }
 
     if (hasFailure) {
-      showToast("档案依据加载失败", "error");
+      showToast("补充资料加载失败。", "error");
     }
   }
 
@@ -181,24 +181,24 @@ export default function ReviewScreen() {
       applyConfirmResult(result);
       setLoadingCardId(null);
       if (result.insight_status === "failed") {
-        showToast("洞察生成没成功，档案已保存，下次确认时会再生成", "info");
+        showToast("这次洞察暂时没生成，但档案已经保存。", "info");
       }
       void hydrateAffectedContacts(result.affected_contact_ids);
     } catch (error) {
       if (isConflictError(error)) {
         try {
-          await refreshScreenshot("这张卡刚刚已被处理，列表已刷新。");
+          await refreshScreenshot("这张卡刚刚已经处理过，内容已刷新。");
         } catch (refreshError) {
-          const message = getErrorMessage(refreshError, "卡片状态刷新失败。");
+          const message = getErrorMessage(refreshError, "刷新状态失败。");
           setActionError(message);
-          showError(refreshError, "卡片状态刷新失败。");
+          showError(refreshError, "刷新状态失败。");
         }
         return;
       }
 
-      const message = getErrorMessage(error, "确认卡片失败。");
+      const message = getErrorMessage(error, "确认失败。");
       setActionError(message);
-      showError(error, "确认卡片失败。");
+      showError(error, "确认失败。");
     } finally {
       setLoadingCardId((current) => (current === card.id ? null : current));
     }
@@ -217,31 +217,31 @@ export default function ReviewScreen() {
     } catch (error) {
       if (isConflictError(error)) {
         try {
-          await refreshScreenshot("这张卡刚刚已被处理，列表已刷新。");
+          await refreshScreenshot("这张卡刚刚已经处理过，内容已刷新。");
         } catch (refreshError) {
-          const message = getErrorMessage(refreshError, "卡片状态刷新失败。");
+          const message = getErrorMessage(refreshError, "刷新状态失败。");
           setActionError(message);
-          showError(refreshError, "卡片状态刷新失败。");
+          showError(refreshError, "刷新状态失败。");
         }
         return;
       }
 
-      const message = getErrorMessage(error, "跳过卡片失败。");
+      const message = getErrorMessage(error, "跳过失败。");
       setActionError(message);
-      showError(error, "跳过卡片失败。");
+      showError(error, "跳过失败。");
     } finally {
       setLoadingCardId(null);
     }
   }
 
   if (!isValidId) {
-    return <Page title="确认卡片"><EmptyHint text="无效的 screenshotId。" /></Page>;
+    return <Page title="确认卡片"><EmptyHint text="页面地址无效。" /></Page>;
   }
 
   return (
     <Page
       title="确认卡片"
-      subtitle="按 新联系人 → 更新联系人 → 新会议 → 互动记录 的顺序逐张处理。当前卡可编辑，后续卡可提前查看。"
+      subtitle="按 新联系人 → 更新联系人 → 新会议 → 互动记录 的顺序逐张处理。当前这张可以直接调整，后面的内容也能先看看。"
     >
       {pageError ? (
         <SectionCard title="加载失败">
@@ -250,20 +250,20 @@ export default function ReviewScreen() {
             label="重新加载"
             onPress={() => {
               void refreshScreenshot().catch((error) => {
-                const message = getErrorMessage(error, "截图详情加载失败。");
+                const message = getErrorMessage(error, "这张截图加载失败。");
                 setPageError(message);
-                showError(error, "截图详情加载失败。");
+                showError(error, "这张截图加载失败。");
               });
             }}
           />
         </SectionCard>
       ) : null}
 
-      {!orderedCards.length && !pageError && !hasRouteSnapshot ? <EmptyHint text="正在恢复这张截图的卡片..." /> : null}
+      {!orderedCards.length && !pageError && !hasRouteSnapshot ? <EmptyHint text="正在找回这张截图的待确认内容..." /> : null}
 
       {!orderedCards.length && !pageError && hasRouteSnapshot ? (
-        <SectionCard title="没有待确认卡">
-          <EmptyHint text="这张截图没有生成卡片，结果页会给出空态和回上传入口。" />
+        <SectionCard title="没有待确认内容">
+          <EmptyHint text="这张截图暂时没有需要确认的内容，可以返回继续上传。" />
         </SectionCard>
       ) : null}
 

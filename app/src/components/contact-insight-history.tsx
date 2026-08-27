@@ -16,7 +16,7 @@ const insightMarkers: Record<InsightKind, string> = {
 
 export function ContactInsightHistory({ insights }: Props) {
   return (
-    <SectionCard title="历史洞察" kicker={`${insights.length} 条记录`}>
+    <SectionCard title="历史洞察" kicker={`${insights.length} 条`}>
       {insights.length === 0 ? <EmptyHint text="还没有历史洞察。" /> : null}
 
       {insights.map((item) => (
@@ -35,8 +35,8 @@ export function ContactInsightHistory({ insights }: Props) {
 
           <Text style={styles.meta}>
             {item.based_on.length > 0
-              ? `依据 ${item.based_on.length} 条观测`
-              : "未附观测编号"}
+              ? `依据 ${item.based_on.length} 条往来记录`
+              : "暂时没有关联记录"}
           </Text>
         </View>
       ))}

@@ -592,19 +592,23 @@ function buildInteractionPayload(
   contact: ResolvableContact | undefined,
   createPayload: CreateContactPayload,
   participantSourceQuotes: string[],
+  interactionSummaries: string[],
   relatedFacts: PerceptionFact[] | undefined,
   relatedQuotes: PerceptionQuote[] | undefined,
 ): { payload: RecordInteractionPayload; sourceQuote: string } {
-  const summaryFragments = dedupeStrings([
-    participantSourceQuotes.join('；'),
-    ...((relatedQuotes ?? []).map((quote) => quote.text)),
-    ...(createPayload.aliases?.length
-      ? [`${fieldLabels.alias} ${createPayload.aliases.join(' / ')}`]
-      : []),
-    ...trackedContactFields.flatMap((field) =>
-      createPayload[field] ? [`${fieldLabels[field]} ${createPayload[field]}`] : [],
-    ),
-  ]);
+  const preferredSummary = dedupeStrings(interactionSummaries).join('；');
+  const summaryFragments = preferredSummary
+    ? [preferredSummary]
+    : dedupeStrings([
+        participantSourceQuotes.join('；'),
+        ...((relatedQuotes ?? []).map((quote) => quote.text)),
+        ...(createPayload.aliases?.length
+          ? [`${fieldLabels.alias} ${createPayload.aliases.join(' / ')}`]
+          : []),
+        ...trackedContactFields.flatMap((field) =>
+          createPayload[field] ? [`${fieldLabels[field]} ${createPayload[field]}`] : [],
+        ),
+      ]);
 
   return {
     payload: {
@@ -688,6 +692,7 @@ export function proposeCards(
       relatedFacts: PerceptionFact[];
       relatedQuotes: PerceptionQuote[];
       participantSourceQuotes: string[];
+      interactionSummaries: string[];
       requiresCreateCard: boolean;
     }
   >();
@@ -725,6 +730,7 @@ export function proposeCards(
         relatedFacts: [...relatedFacts],
         relatedQuotes: [...relatedQuotes],
         participantSourceQuotes: [participant.source_quote],
+        interactionSummaries: dedupeStrings([participant.interaction_summary]),
         requiresCreateCard: resolution.status !== 'same_as',
       });
     } else {
@@ -733,6 +739,7 @@ export function proposeCards(
       existing.relatedFacts.push(...relatedFacts);
       existing.relatedQuotes.push(...relatedQuotes);
       existing.participantSourceQuotes.push(participant.source_quote);
+      existing.interactionSummaries.push(...dedupeStrings([participant.interaction_summary]));
     }
 
     if (resolution.status === 'same_as') {
@@ -846,6 +853,7 @@ export function proposeCards(
       candidate.contact,
       candidate.createPayload,
       dedupeStrings(candidate.participantSourceQuotes),
+      dedupeStrings(candidate.interactionSummaries),
       candidate.relatedFacts,
       candidate.relatedQuotes,
     );

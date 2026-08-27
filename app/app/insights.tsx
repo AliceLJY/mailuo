@@ -47,7 +47,7 @@ export default function InsightsScreen() {
       }
 
       if (failed) {
-        const message = "有些联系人证据还没补齐，稍后再试一次。";
+        const message = "有些联系人的依据还没补齐，稍后再试一次。";
         setPageError(message);
         showError(new Error(message), message);
       } else {
@@ -59,10 +59,10 @@ export default function InsightsScreen() {
   return (
     <Page
       title="洞察结果"
-      subtitle="这里只聚合本轮确认动作返回的 insights，并把 based_on 映射回 observation 内容。"
+      subtitle="这里会汇总这次确认后整理出的洞察，并附上对应依据。"
       footer={
         <AppButton
-          label="回上传继续"
+          label="继续上传下一张"
           onPress={() => {
             resetFlow();
             router.replace("/");
@@ -72,19 +72,19 @@ export default function InsightsScreen() {
     >
       {hasInsightFailure ? (
         <SectionCard title="提示">
-          <EmptyHint text="洞察生成没成功，档案已保存，下次确认时会再生成" />
+          <EmptyHint text="这次洞察暂时没生成，但档案已经保存。" />
         </SectionCard>
       ) : null}
 
       {pageError ? (
-        <SectionCard title="证据补全提醒">
+        <SectionCard title="依据补充中">
           <EmptyHint text={pageError} />
         </SectionCard>
       ) : null}
 
       {!insights.length ? (
         <SectionCard title="暂时没有新洞察">
-          <EmptyHint text="这轮没有可展示的新洞察。你可以回上传继续下一张截图，或稍后在人脉页查看已更新的档案。" />
+          <EmptyHint text="这次还没有新的洞察。你可以继续上传下一张截图，或稍后在人脉页查看更新后的档案。" />
         </SectionCard>
       ) : null}
 

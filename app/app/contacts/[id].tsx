@@ -87,7 +87,7 @@ export default function ContactDetailScreen() {
       <View style={styles.page}>
         <View style={styles.content}>
           <Text style={styles.title}>联系人详情</Text>
-          <EmptyHint text="无效的联系人 ID。" />
+          <EmptyHint text="页面地址无效。" />
         </View>
       </View>
     );
@@ -111,7 +111,7 @@ export default function ContactDetailScreen() {
           <Text style={styles.subtitle}>
             {detail
               ? `${detail.contact.company ?? "公司待补充"} · ${detail.contact.title ?? "职位待补充"}`
-              : "档案字段、观测时间线和历史洞察会一起展示。"}
+              : "基本资料、往来记录和历史洞察会一起显示。"}
           </Text>
         </View>
 
@@ -123,17 +123,17 @@ export default function ContactDetailScreen() {
         ) : null}
 
         {!loading && !detail && errorMessage ? (
-          <SectionCard title="详情暂时没打开">
+          <SectionCard title="暂时没加载出来">
             <Text style={styles.note}>{errorMessage}</Text>
             <AppButton label="重新加载" onPress={() => void loadDetail("refresh")} />
           </SectionCard>
         ) : null}
 
-        {!loading && !detail && !errorMessage ? <EmptyHint text="还没有联系人档案。" /> : null}
+        {!loading && !detail && !errorMessage ? <EmptyHint text="还没有联系人资料。" /> : null}
 
         {detail ? (
           <>
-            <SectionCard title="档案字段">
+            <SectionCard title="基本资料">
               <MetaLine label="公司" value={detail.contact.company ?? "未填写"} />
               <MetaLine label="职位" value={detail.contact.title ?? "未填写"} />
               <MetaLine label="电话" value={detail.contact.phone ?? "未填写"} />

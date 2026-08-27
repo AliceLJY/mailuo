@@ -21,14 +21,14 @@ export function ContactListCard({ contact, onPress }: Props) {
           <Text style={styles.company}>{contact.company ?? "公司待补充"}</Text>
         </View>
         <View style={styles.countBadge}>
-          <Text style={styles.countLabel}>观测 {contact.observation_count}</Text>
+          <Text style={styles.countLabel}>记录 {contact.observation_count}</Text>
         </View>
       </View>
 
       <View style={styles.metaRow}>
         <Text style={styles.metaLabel}>最近互动</Text>
         <Text style={styles.metaValue}>
-          {formatDateTime(contact.last_interaction_at) ?? "还没有互动记录"}
+          {formatDateTime(contact.last_interaction_at) ?? "最近还没有互动"}
         </Text>
       </View>
     </Pressable>

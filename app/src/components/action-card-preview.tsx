@@ -16,13 +16,33 @@ const cardTypeLabel: Record<ActionCardRecord["type"], string> = {
   record_interaction: "互动记录",
 };
 
+const statusLabel: Record<ActionCardRecord["status"], string> = {
+  pending: "待确认",
+  confirmed: "已确认",
+  rejected: "已跳过",
+};
+
+const confidenceLabel: Record<ActionCardRecord["confidence"], string> = {
+  high: "高把握",
+  medium: "中等把握",
+  low: "待确认",
+};
+
+const fieldLabel: Record<string, string> = {
+  company: "公司",
+  title: "职位",
+  phone: "电话",
+  wechat_id: "微信号",
+  notes: "备注",
+};
+
 export function ActionCardPreview({ card, compact = false, onPressSource }: Props) {
   return (
     <View style={styles.card}>
       <View style={styles.header}>
         <View>
           <Text style={styles.type}>{cardTypeLabel[card.type]}</Text>
-          <Text style={styles.status}>状态：{card.status}</Text>
+          <Text style={styles.status}>状态：{statusLabel[card.status]}</Text>
         </View>
         <View
           style={[
@@ -36,7 +56,7 @@ export function ActionCardPreview({ card, compact = false, onPressSource }: Prop
               { backgroundColor: getConfidenceColor(card.confidence) },
             ]}
           />
-          <Text style={styles.badgeText}>{card.confidence}</Text>
+          <Text style={styles.badgeText}>{confidenceLabel[card.confidence]}</Text>
         </View>
       </View>
 
@@ -66,7 +86,7 @@ function summarizeCard(card: ActionCardRecord) {
 
   if (card.type === "update_contact") {
     const fields = Object.entries(card.payload.changes)
-      .map(([field, value]) => `${field}: ${value.old ?? "空"} → ${value.new}`)
+      .map(([field, value]) => `${fieldLabel[field] ?? field}：${value.old ?? "未填写"} → ${value.new}`)
       .join("；");
     return `${card.payload.contact_name}：${fields}`;
   }

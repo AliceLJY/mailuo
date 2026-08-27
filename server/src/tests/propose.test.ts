@@ -212,6 +212,131 @@ test('proposeCards creates update_contact, meeting contact ids, and one interact
   });
 });
 
+test('proposeCards prefers participant interaction_summary for interaction payloads and keeps source_quote grounded in raw evidence', () => {
+  const extraction: PerceptionResult = {
+    participants: [
+      {
+        name: '王磊',
+        is_self: false,
+        company: '新公司',
+        interaction_summary: '聊了合作推进，对方表示下周给我明确反馈。',
+        confidence: 'high',
+        source_quote: '王磊说下周给我明确反馈',
+      },
+    ],
+    events: [],
+    facts: [
+      {
+        subject_name: '王磊',
+        field: 'company',
+        value: '新公司',
+        confidence: 'high',
+        source_quote: '我已经去了新公司',
+      },
+    ],
+    quotes: [
+      {
+        speaker_name: '王磊',
+        text: '下周给你明确反馈',
+        source_quote: '王磊说：下周给你明确反馈',
+      },
+    ],
+  };
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '王磊',
+      normalized_name: '王磊',
+      status: 'same_as',
+      contact_id: 1,
+      source: 'exact',
+    },
+  ];
+  const contacts: ResolvableContact[] = [
+    {
+      id: 1,
+      canonical_name: '王磊',
+      aliases: ['老王'],
+      company: '旧公司',
+      title: null,
+      phone: null,
+      wechat_id: null,
+      notes: null,
+    },
+  ];
+
+  const cards = proposeCards(extraction, resolutions, contacts);
+  const interactionCard = cards.find((card) => card.type === 'record_interaction');
+
+  assert.ok(interactionCard);
+  assert.deepEqual(interactionCard.payload, {
+    contact_id: 1,
+    contact_name: '王磊',
+    summary: '聊了合作推进，对方表示下周给我明确反馈。',
+  });
+  assert.equal(
+    interactionCard.source_quote,
+    '王磊说下周给我明确反馈\n\n我已经去了新公司\n\n王磊说：下周给你明确反馈',
+  );
+});
+
+test('proposeCards falls back to legacy interaction summary assembly when interaction_summary is missing', () => {
+  const extraction: PerceptionResult = {
+    participants: [
+      {
+        name: '王磊',
+        is_self: false,
+        company: '星火科技',
+        confidence: 'high',
+        source_quote: '今天和王磊继续推进合作',
+      },
+    ],
+    events: [],
+    facts: [],
+    quotes: [
+      {
+        speaker_name: '王磊',
+        text: '周五前把方案发你',
+        source_quote: '王磊说：周五前把方案发你',
+      },
+    ],
+  };
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '王磊',
+      normalized_name: '王磊',
+      status: 'same_as',
+      contact_id: 5,
+      source: 'exact',
+    },
+  ];
+  const contacts: ResolvableContact[] = [
+    {
+      id: 5,
+      canonical_name: '王磊',
+      aliases: [],
+      company: null,
+      title: null,
+      phone: null,
+      wechat_id: null,
+      notes: null,
+    },
+  ];
+
+  const cards = proposeCards(extraction, resolutions, contacts);
+  const interactionCard = cards.find((card) => card.type === 'record_interaction');
+
+  assert.ok(interactionCard);
+  assert.deepEqual(interactionCard.payload, {
+    contact_id: 5,
+    contact_name: '王磊',
+    summary: '今天和王磊继续推进合作；周五前把方案发你；公司 星火科技',
+  });
+  assert.equal(
+    interactionCard.source_quote,
+    '今天和王磊继续推进合作\n\n王磊说：周五前把方案发你',
+  );
+});
+
 test('proposeCards filters self participants out of cards and keeps self in meeting payload without contact_id', () => {
   const extraction = {
     participants: [

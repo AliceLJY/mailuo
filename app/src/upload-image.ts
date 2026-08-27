@@ -60,7 +60,7 @@ function resolveImageDimensions(asset: UploadImageAsset) {
     Image.getSize(
       asset.uri,
       (width, height) => resolve({ width, height }),
-      (error) => reject(new Error(`读取图片尺寸失败：${error.message}`)),
+      () => reject(new Error("读取图片失败，请换一张截图再试。")),
     );
   });
 }

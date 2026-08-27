@@ -20,8 +20,8 @@ const observationMeta: Record<
 
 export function ContactObservationTimeline({ observations }: Props) {
   return (
-    <SectionCard title="观测时间线" kicker={`${observations.length} 条观测`}>
-      {observations.length === 0 ? <EmptyHint text="还没有观测记录。" /> : null}
+    <SectionCard title="往来记录" kicker={`${observations.length} 条`}>
+      {observations.length === 0 ? <EmptyHint text="还没有往来记录。" /> : null}
 
       {observations.map((item) => {
         const meta = observationMeta[item.kind];

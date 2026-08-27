@@ -32,6 +32,7 @@ export const PerceptionParticipantSchema = z.object({
   phone: z.string().min(1).optional(),
   wechat_id: z.string().min(1).optional(),
   notes: z.string().min(1).optional(),
+  interaction_summary: z.string().trim().min(1).optional(),
   confidence: ConfidenceSchema,
   source_quote: z.string().min(1),
 }).strict();

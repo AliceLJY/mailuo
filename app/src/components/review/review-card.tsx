@@ -40,10 +40,16 @@ const CARD_META = {
 } satisfies Record<ActionCardRecord["type"], { icon: string; label: string }>;
 
 const STATUS_LABEL = {
-  pending: "待处理",
+  pending: "待确认",
   confirmed: "已确认",
   rejected: "已跳过",
 } satisfies Record<ActionCardRecord["status"], string>;
+
+const CONFIDENCE_LABEL = {
+  high: "高把握",
+  medium: "中等把握",
+  low: "待确认",
+} satisfies Record<ActionCardRecord["confidence"], string>;
 
 function formatCandidate(candidate: { name: string; company?: string | null }) {
   return candidate.company ? `${candidate.name} · ${candidate.company}` : candidate.name;
@@ -62,7 +68,7 @@ export function ReviewCard({
   const editable = stage === "current" && card.status === "pending";
   const meta = CARD_META[card.type];
   const stageText =
-    stage === "current" ? "当前待处理" : stage === "upcoming" ? "后续可见" : STATUS_LABEL[card.status];
+    stage === "current" ? "当前这张" : stage === "upcoming" ? "后面还有" : STATUS_LABEL[card.status];
   const confidenceColor = getConfidenceColor(card.confidence);
 
   function setPayload(payload: ReviewCardDraft["payload"]) {
@@ -87,7 +93,7 @@ export function ReviewCard({
         </View>
         <View style={[styles.confidenceBadge, { backgroundColor: `${confidenceColor}18` }]}>
           <View style={[styles.confidenceDot, { backgroundColor: confidenceColor }]} />
-          <Text style={styles.confidenceText}>{card.confidence}</Text>
+          <Text style={styles.confidenceText}>{CONFIDENCE_LABEL[card.confidence]}</Text>
         </View>
       </View>
 
@@ -122,11 +128,11 @@ export function ReviewCard({
 
       {card.disambiguation?.candidates.length ? (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>联系人裁决</Text>
+          <Text style={styles.sectionTitle}>这是谁</Text>
           <ChoiceRow
             active={draft.resolved_contact_id == null}
             disabled={!editable}
-            label="按新联系人处理"
+            label="作为新联系人保存"
             onPress={() => setResolvedContactId(null)}
           />
           {card.disambiguation.candidates.map((candidate) => (
@@ -141,7 +147,7 @@ export function ReviewCard({
         </View>
       ) : null}
 
-      <DisclosurePanel title="依据原文" hint="点击展开">
+      <DisclosurePanel title="依据原文" hint="点开查看">
         <Text style={styles.quoteText}>{card.source_quote}</Text>
       </DisclosurePanel>
 
@@ -150,13 +156,13 @@ export function ReviewCard({
           <View style={styles.actionRow}>
             <AppButton
               disabled={busy}
-              label={busy ? "处理中..." : "确认这张卡"}
+              label={busy ? "处理中..." : "确认这张"}
               onPress={onConfirm}
               style={styles.actionButton}
             />
             <AppButton
               disabled={busy}
-              label="跳过"
+              label="先跳过"
               onPress={onReject}
               style={styles.actionButton}
               tone="secondary"

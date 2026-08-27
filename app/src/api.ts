@@ -32,7 +32,7 @@ export class ApiError extends Error {
   }
 }
 
-export function getErrorMessage(error: unknown, fallback = "请求失败，请稍后再试。") {
+export function getErrorMessage(error: unknown, fallback = "暂时没成功，请稍后再试。") {
   if (error instanceof ApiError) {
     return error.message;
   }
@@ -63,12 +63,13 @@ export function getBaseUrl() {
     return "";
   }
 
-  const appName = Constants.expoConfig?.name ?? "当前 Expo App";
+  const appName = Constants.expoConfig?.name ?? "当前应用";
   const launchUrl = Linking.createURL("/");
   throw new ApiError(
-    `${appName} 缺少 EXPO_PUBLIC_API_URL。原生端必须显式配置服务地址；当前入口是 ${launchUrl}。`,
+    `${appName} 还没设置服务地址，请先完成配置后再打开。`,
     500,
     "CONFIG_ERROR",
+    { launchUrl, missingKey: "EXPO_PUBLIC_API_URL" },
   );
 }
 
@@ -77,7 +78,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const payload = (await response.json()) as ApiResponse<T>;
 
   if (!response.ok || !payload.ok) {
-    const message = payload.ok ? "请求失败" : payload.error.message;
+    const message = payload.ok ? "暂时没成功" : payload.error.message;
     const code = payload.ok ? undefined : payload.error.code;
     const details = payload.ok ? undefined : payload.error.details;
     throw new ApiError(message, response.status, code, details);

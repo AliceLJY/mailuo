@@ -12,12 +12,12 @@ export function MeetingListCard({ meeting }: Props) {
   return (
     <View style={styles.card}>
       <Text style={styles.title}>{meeting.title}</Text>
-      <MetaLine label="时间原文" value={meeting.time_text} />
-      <MetaLine label="解析时间" value={formatDateTime(meeting.time_iso) ?? "待人工确认"} />
+      <MetaLine label="聊天里的时间" value={meeting.time_text} />
+      <MetaLine label="确认时间" value={formatDateTime(meeting.time_iso) ?? "待确认"} />
       <MetaLine label="地点" value={meeting.location ?? "地点待补充"} />
       <MetaLine
-        label="参与人"
-        value={meeting.participants.map((item) => item.name).join("、") || "参与人待补充"}
+        label="参会人"
+        value={meeting.participants.map((item) => item.name).join("、") || "参会人待补充"}
       />
       {meeting.agenda ? <Text style={styles.agenda}>{meeting.agenda}</Text> : null}
     </View>
