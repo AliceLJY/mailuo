@@ -1,6 +1,6 @@
 import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { uploadScreenshot } from "@/api";
@@ -12,10 +12,10 @@ import { useFlow } from "@/flow-context";
 import { theme } from "@/theme";
 import { useToast } from "@/toast-context";
 import type { UploadImageAsset } from "@/types";
+import { initialUploadDraft, uploadDraftReducer } from "@/upload-draft";
 
 export default function UploadScreen() {
-  const [asset, setAsset] = useState<UploadImageAsset | null>(null);
-  const [note, setNote] = useState("");
+  const [{ asset, note }, dispatchDraft] = useReducer(uploadDraftReducer, initialUploadDraft);
   const [loading, setLoading] = useState(false);
   const [loadingText, setLoadingText] = useState("正在准备截图…");
   const { seedFromUpload } = useFlow();
@@ -57,12 +57,15 @@ export default function UploadScreen() {
       return;
     }
 
-    setAsset({
-      uri: result.assets[0].uri,
-      fileName: result.assets[0].fileName,
-      mimeType: result.assets[0].mimeType,
-      width: result.assets[0].width,
-      height: result.assets[0].height,
+    dispatchDraft({
+      type: "select-asset",
+      asset: {
+        uri: result.assets[0].uri,
+        fileName: result.assets[0].fileName,
+        mimeType: result.assets[0].mimeType,
+        width: result.assets[0].width,
+        height: result.assets[0].height,
+      },
     });
   }
 
@@ -90,6 +93,7 @@ export default function UploadScreen() {
         return;
       }
       seedFromUpload(response);
+      dispatchDraft({ type: "reset" });
       router.push(`/review/${response.screenshot_id}`);
     } catch (error) {
       if (!canCommitSubmitResult(mountedRef, submitTokenRef, submitToken)) {
@@ -156,7 +160,7 @@ export default function UploadScreen() {
         <SectionCard title="补充说明（可选）">
           <TextInput
             multiline
-            onChangeText={setNote}
+            onChangeText={(value) => dispatchDraft({ type: "set-note", note: value })}
             placeholder="例如：这是我和陈老师最近三天的聊天，重点看会议时间和他的新公司。"
             placeholderTextColor={theme.colors.textMuted}
             style={styles.input}
