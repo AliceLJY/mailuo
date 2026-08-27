@@ -4,7 +4,11 @@
 
 脉络 Mailuo 把聊天截图变成结构化行动卡片、联系人记忆和有依据的关系洞察。
 
-> 核心演示占位：维护者后补“上传 -> 审核 -> 洞察”流程的截图或 GIF。
+| 上传 | 人脉档案 | 日程 |
+|---|---|---|
+| ![上传](docs/screenshots/web-upload.png) | ![人脉](docs/screenshots/web-contacts.png) | ![日程](docs/screenshots/web-meetings.png) |
+
+> 截图为 web 版界面（Expo web 输出）；Android 原生版界面一致。图中人物、公司均为合成测试数据。
 
 ## 架构
 

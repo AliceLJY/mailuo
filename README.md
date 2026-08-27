@@ -4,7 +4,11 @@ Chinese Version: [README_CN.md](README_CN.md)
 
 Mailuo turns chat screenshots into structured action cards, contact memory, and grounded relationship insights.
 
-> Core demo placeholder: the owner will add the upload -> review -> insight screenshots or GIF later.
+| Upload | Contacts | Meetings |
+|---|---|---|
+| ![Upload](docs/screenshots/web-upload.png) | ![Contacts](docs/screenshots/web-contacts.png) | ![Meetings](docs/screenshots/web-meetings.png) |
+
+> Screenshots show the web build (Expo web output); the Android native UI is identical. All people and companies shown are synthetic test data.
 
 ## Architecture
 
