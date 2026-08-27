@@ -24,7 +24,8 @@
           "photosPermission": "脉络需要访问你的照片，用来导入聊天截图并生成行动卡片。",
           "microphonePermission": false
         }
-      ]
+      ],
+      "expo-build-properties"
     ],
     "experiments": {
       "typedRoutes": true
