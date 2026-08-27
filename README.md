@@ -152,6 +152,8 @@ M4 build and deployment assets live in [deploy/README.md](deploy/README.md) and 
 - Screenshot files are stored locally under `server/data/screenshots/`.
 - Raw screenshot binaries are sent only to Qwen during perception.
 - DeepSeek never receives raw images. For entity resolution it receives only the screenshot-derived text needed to decide identity, such as `source_quote`, `facts`, `quotes`, `events`, and the minimum contact summary. For insight generation it receives only the screenshot-derived text already stored as evidence plus the minimum profile and observation context needed for grounded output.
+- **Plainly put**: storage is fully local, but during inference the screenshots and derived text do reach the model providers (Alibaba Cloud / DeepSeek) and are subject to their data policies. Users who mind this layer can take the next route.
+- **Fully-local route (already supported by the architecture, env vars only)**: both providers speak the OpenAI-compatible API, so they can point at a local inference service (e.g. Ollama / vLLM) — set `DASHSCOPE_BASE_URL` / `DEEPSEEK_BASE_URL` to a local endpoint and switch `QWEN_MODEL` / `DEEPSEEK_MODEL` to local models (open-weight Qwen-VL works for vision). Data then never leaves the machine. Expect lower extraction/insight quality from small local models; evaluate for your own use.
 - The current deployment is single-user and has no app-layer authentication yet.
 - The practical access boundary today is the local network or Tailscale exposure chosen by the owner.
 - Future multi-user support and authentication are still pending work.

@@ -153,6 +153,8 @@ M4 的构建和部署入口在 [deploy/README.md](deploy/README.md) 和 [scripts
 - 原始截图二进制只会在感知阶段发给 Qwen。
 - DeepSeek 不接收原始图片。人物归并时，它只接收身份判断所需的截图抽取文本，例如 `source_quote`、`facts`、`quotes`、`events`，以及最小联系人摘要。
 - 洞察生成时，DeepSeek 只接收已落库的截图证据文本，以及生成有依据输出所需的最小档案与 observation 上下文。
+- **说白了**：档案的存储是全本地的，但推理阶段截图与相关文本会到达模型服务商（阿里云 / DeepSeek），受其各自的数据政策约束。介意这一层的用户可以走下一条。
+- **全本地路线（架构已支持，改环境变量即可）**：两个 provider 均走 OpenAI 兼容接口，可直接指向本地推理服务（如 Ollama / vLLM）——设置 `DASHSCOPE_BASE_URL` / `DEEPSEEK_BASE_URL` 指向本机端点、`QWEN_MODEL` / `DEEPSEEK_MODEL` 换成本地模型（视觉可用开源 Qwen-VL 系列），即可实现数据全程不出本机。注意本地小模型的抽取与洞察质量会相应下降，请自行评估。
 - 当前部署还是单用户，没有应用层鉴权。
 - 现在的实际访问边界取决于局域网或 Tailscale 的暴露范围。
 - 面向多用户的鉴权和隔离仍是后续工作。
