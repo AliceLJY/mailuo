@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   humanizeLocalProviderError,
   maskSecret,
+  validateLocalKeySettings,
 } from "../connection/presentation";
 import { testServerConnection } from "../connection/server-health";
 import { resolveStartupDestination } from "../connection/startup";
@@ -34,6 +35,21 @@ test("secret mask exposes only the final four characters", () => {
 
   assert.equal(masked, "****7X9Z");
   assert.equal(masked?.includes("dashscope-private"), false);
+});
+
+test("local key validation requires DashScope but not DeepSeek", () => {
+  assert.equal(
+    validateLocalKeySettings({ dashscopeMask: null, dashscopeValue: "" }),
+    "请填写 DashScope API Key。已设置的 Key 不需要重复填写。",
+  );
+  assert.equal(
+    validateLocalKeySettings({ dashscopeMask: null, dashscopeValue: " dashscope-key " }),
+    null,
+  );
+  assert.equal(
+    validateLocalKeySettings({ dashscopeMask: "****1234", dashscopeValue: "" }),
+    null,
+  );
 });
 
 test("local provider errors distinguish key, network, and rate-limit failures without echoing details", () => {

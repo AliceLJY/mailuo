@@ -10,6 +10,17 @@ export function maskSecret(value: string | null | undefined): string | null {
   return normalized ? `****${normalized.slice(-4)}` : null;
 }
 
+export function validateLocalKeySettings(input: {
+  dashscopeMask: string | null;
+  dashscopeValue: string;
+}): string | null {
+  if (!input.dashscopeMask && !input.dashscopeValue.trim()) {
+    return "请填写 DashScope API Key。已设置的 Key 不需要重复填写。";
+  }
+
+  return null;
+}
+
 function describeError(error: unknown) {
   if (typeof error !== "object" || error === null) {
     return { code: "", message: "", status: undefined };

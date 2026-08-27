@@ -100,6 +100,22 @@ export type OpenAICompatibleProviderOptions = {
   fetchImpl?: FetchLike;
 };
 
+export const DEFAULT_QWEN_TEXT_MODEL = 'qwen-plus';
+
+const DEFAULT_QWEN_TEXT_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-flash';
+const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+
+export type TextProviderOptions = {
+  dashscopeApiKey?: string | null;
+  deepseekApiKey?: string | null;
+  qwenTextModel?: string | null;
+  deepseekModel?: string | null;
+  dashscopeBaseUrl?: string;
+  deepseekBaseUrl?: string;
+  fetchImpl?: FetchLike;
+};
+
 type OpenAIChatCompletionResponse = {
   error?: { message?: string; code?: string };
   choices?: Array<{
@@ -300,4 +316,45 @@ export abstract class OpenAICompatibleProvider implements StructuredOutputProvid
       attempt: 2,
     });
   }
+}
+
+class TextProvider extends OpenAICompatibleProvider {}
+
+function normalizeOptionalValue(value: string | null | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized || undefined;
+}
+
+export function createTextProvider(options: TextProviderOptions): OpenAICompatibleProvider {
+  const deepseekApiKey = normalizeOptionalValue(options.deepseekApiKey);
+
+  if (deepseekApiKey) {
+    return new TextProvider({
+      name: 'DeepSeek',
+      model: normalizeOptionalValue(options.deepseekModel) ?? DEFAULT_DEEPSEEK_MODEL,
+      apiKeyEnv: 'DEEPSEEK_API_KEY',
+      apiKey: deepseekApiKey,
+      baseUrl: options.deepseekBaseUrl ?? DEFAULT_DEEPSEEK_BASE_URL,
+      fetchImpl: options.fetchImpl,
+    });
+  }
+
+  const dashscopeApiKey = normalizeOptionalValue(options.dashscopeApiKey);
+
+  if (!dashscopeApiKey) {
+    throw new ConfigurationError(
+      'Missing required environment variable DASHSCOPE_API_KEY',
+      'DASHSCOPE_API_KEY',
+      'CONFIG_ERROR',
+    );
+  }
+
+  return new TextProvider({
+    name: 'Qwen',
+    model: normalizeOptionalValue(options.qwenTextModel) ?? DEFAULT_QWEN_TEXT_MODEL,
+    apiKeyEnv: 'DASHSCOPE_API_KEY',
+    apiKey: dashscopeApiKey,
+    baseUrl: options.dashscopeBaseUrl ?? DEFAULT_QWEN_TEXT_BASE_URL,
+    fetchImpl: options.fetchImpl,
+  });
 }

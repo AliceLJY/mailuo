@@ -2,7 +2,7 @@ import {
   resolveParticipants as resolveParticipantsCore,
   type ResolveParticipantsOptions as CoreResolveParticipantsOptions,
 } from '../../../shared/core/agent/resolve.ts';
-import { createDeepSeekProvider } from '../llm/deepseek.ts';
+import { createTextProvider } from '../llm/text.ts';
 
 export type {
   ParticipantResolution,
@@ -17,6 +17,6 @@ export type ResolveParticipantsOptions = Omit<
 export function resolveParticipants(options: ResolveParticipantsOptions) {
   return resolveParticipantsCore({
     ...options,
-    providerFactory: createDeepSeekProvider,
+    providerFactory: createTextProvider,
   });
 }

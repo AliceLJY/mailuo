@@ -109,11 +109,15 @@ npm install
 ```bash
 # server/.env
 DASHSCOPE_API_KEY=
-DEEPSEEK_API_KEY=
 QWEN_MODEL=qwen-vl-max
+QWEN_TEXT_MODEL=qwen-plus
+# Optional: when empty, resolution and insights use Qwen through DashScope.
+DEEPSEEK_API_KEY=
 DEEPSEEK_MODEL=deepseek-v4-flash
 PORT=3000
 ```
+
+Only the DashScope key is required. Add a DeepSeek key if you want resolution and insight generation to use DeepSeek instead of Qwen.
 
 ```bash
 cp app/.env.example app/.env
@@ -158,7 +162,7 @@ M4 build and deployment assets live in [deploy/README.md](deploy/README.md) and 
 - App data is stored locally in SQLite on the server host.
 - Screenshot files are stored locally under `server/data/screenshots/`.
 - Raw screenshot binaries are sent only to Qwen during perception.
-- DeepSeek never receives raw images. For entity resolution it receives only the screenshot-derived text needed to decide identity, such as `source_quote`, `facts`, `quotes`, `events`, and the minimum contact summary. For insight generation it receives only the screenshot-derived text already stored as evidence plus the minimum profile and observation context needed for grounded output.
+- DeepSeek never receives raw images. For entity resolution it receives only the screenshot-derived text needed to decide identity, such as `source_quote`, `facts`, `quotes`, `events`, and the minimum contact summary. For insight generation it receives only the screenshot-derived text already stored as evidence plus the minimum profile and observation context needed for grounded output. When DeepSeek is not configured, these text tasks use the Qwen text model through DashScope instead, and no data is sent to DeepSeek.
 - **Plainly put**: storage is fully local, but during inference the screenshots and derived text do reach the model providers (Alibaba Cloud / DeepSeek) and are subject to their data policies. Users who mind this layer can take the next route.
 - **Fully-local route (already supported by the architecture, env vars only)**: both providers speak the OpenAI-compatible API, so they can point at a local inference service (e.g. Ollama / vLLM) — set `DASHSCOPE_BASE_URL` / `DEEPSEEK_BASE_URL` to a local endpoint and switch `QWEN_MODEL` / `DEEPSEEK_MODEL` to local models (open-weight Qwen-VL works for vision). Data then never leaves the machine. Expect lower extraction/insight quality from small local models; evaluate for your own use.
 - The current deployment is single-user and has no app-layer authentication yet.

@@ -34,10 +34,10 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
 
   return {
     async uploadScreenshot(input) {
-      const [loadedImage, qwenProvider, deepSeekProvider] = await Promise.all([
+      const [loadedImage, qwenProvider, textProvider] = await Promise.all([
         options.loadImage(input.asset),
         providerFactory.createQwenProvider(options.keys),
-        providerFactory.createDeepSeekProvider(options.keys),
+        providerFactory.createTextProvider(options.keys),
       ]);
       const note = input.note?.trim() || undefined;
       const timestamp = now();
@@ -58,7 +58,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
         const resolutions = await resolveParticipants({
           extraction,
           contacts,
-          provider: deepSeekProvider,
+          provider: textProvider,
         });
         const cards = options.store.saveScreenshotAnalysis({
           screenshotId: screenshot.id,
@@ -90,7 +90,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
       });
 
       try {
-        const provider = await providerFactory.createDeepSeekProvider(options.keys);
+        const provider = await providerFactory.createTextProvider(options.keys);
         const insightResult = await generateInsights({
           db: options.store,
           contactIds: execution.affectedContactIds,
@@ -115,7 +115,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           observation_ids: execution.observationIds,
           ...(execution.meetingId != null ? { meeting_id: execution.meetingId } : {}),
           insight_status: "failed",
-          insight_error: "洞察生成失败，请检查 DeepSeek 配置后重试。",
+          insight_error: "洞察生成失败，请检查模型配置后重试。",
           insights: [],
         };
       }

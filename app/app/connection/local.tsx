@@ -10,7 +10,7 @@ import {
 } from "@/components/connection-fields";
 import { Page, SectionCard } from "@/components/page";
 import { useConnection } from "@/connection/context";
-import { maskSecret } from "@/connection/presentation";
+import { maskSecret, validateLocalKeySettings } from "@/connection/presentation";
 import { localLlmSecretStore } from "@/connection/secure-store";
 import type { LocalLlmSecretName } from "@/connection/secrets";
 import { useFlow } from "@/flow-context";
@@ -32,6 +32,7 @@ export default function LocalConnectionScreen() {
   const [dashscope, setDashscope] = useState<KeyEditorState>(emptyKeyState);
   const [deepseek, setDeepseek] = useState<KeyEditorState>(emptyKeyState);
   const [qwenModel, setQwenModel] = useState("");
+  const [qwenTextModel, setQwenTextModel] = useState("");
   const [deepseekModel, setDeepseekModel] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -48,9 +49,16 @@ export default function LocalConnectionScreen() {
       localLlmSecretStore.get("DASHSCOPE_API_KEY"),
       localLlmSecretStore.get("DEEPSEEK_API_KEY"),
       localLlmSecretStore.get("QWEN_MODEL"),
+      localLlmSecretStore.get("QWEN_TEXT_MODEL"),
       localLlmSecretStore.get("DEEPSEEK_MODEL"),
     ])
-      .then(([dashscopeKey, deepseekKey, storedQwenModel, storedDeepseekModel]) => {
+      .then(([
+        dashscopeKey,
+        deepseekKey,
+        storedQwenModel,
+        storedQwenTextModel,
+        storedDeepseekModel,
+      ]) => {
         if (!active) {
           return;
         }
@@ -58,6 +66,7 @@ export default function LocalConnectionScreen() {
         setDashscope({ ...emptyKeyState, mask: maskSecret(dashscopeKey) });
         setDeepseek({ ...emptyKeyState, mask: maskSecret(deepseekKey) });
         setQwenModel(storedQwenModel ?? "");
+        setQwenTextModel(storedQwenTextModel ?? "");
         setDeepseekModel(storedDeepseekModel ?? "");
       })
       .catch(() => {
@@ -107,8 +116,13 @@ export default function LocalConnectionScreen() {
   }
 
   async function save() {
-    if ((!dashscope.mask && !dashscope.value.trim()) || (!deepseek.mask && !deepseek.value.trim())) {
-      setMessage("请把两个模型 Key 都填完整。已设置的 Key 不需要重复填写。");
+    const validationMessage = validateLocalKeySettings({
+      dashscopeMask: dashscope.mask,
+      dashscopeValue: dashscope.value,
+    });
+
+    if (validationMessage) {
+      setMessage(validationMessage);
       return;
     }
 
@@ -123,6 +137,7 @@ export default function LocalConnectionScreen() {
         await localLlmSecretStore.set("DEEPSEEK_API_KEY", deepseek.value);
       }
       await saveModel("QWEN_MODEL", qwenModel);
+      await saveModel("QWEN_TEXT_MODEL", qwenTextModel);
       await saveModel("DEEPSEEK_MODEL", deepseekModel);
       await saveConfig({ mode: "local" });
       resetFlow();
@@ -160,6 +175,12 @@ export default function LocalConnectionScreen() {
           placeholder="粘贴你的 DashScope Key"
           value={dashscope.value}
         />
+      </SectionCard>
+
+      <SectionCard kicker="选填" title="DeepSeek 与模型名称">
+        <Text style={{ color: theme.colors.textSecondary, fontSize: 13, lineHeight: 19 }}>
+          不填也能用：文本整理将同样由通义千问完成。填入后归并与洞察改用 DeepSeek（更省钱）。
+        </Text>
         <SecretField
           editing={deepseek.editing}
           label="DeepSeek API Key"
@@ -171,16 +192,21 @@ export default function LocalConnectionScreen() {
           placeholder="粘贴你的 DeepSeek Key"
           value={deepseek.value}
         />
-      </SectionCard>
-
-      <SectionCard kicker="选填" title="模型名称">
         <LabeledInput
           autoCapitalize="none"
           autoCorrect={false}
-          label="Qwen 模型名"
+          label="Qwen 视觉模型名"
           onChangeText={setQwenModel}
           placeholder="qwen-vl-max"
           value={qwenModel}
+        />
+        <LabeledInput
+          autoCapitalize="none"
+          autoCorrect={false}
+          label="Qwen 文本模型名"
+          onChangeText={setQwenTextModel}
+          placeholder="qwen-plus"
+          value={qwenTextModel}
         />
         <LabeledInput
           autoCapitalize="none"

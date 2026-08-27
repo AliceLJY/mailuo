@@ -1,26 +1,25 @@
 import {
   ConfigurationError,
   OpenAICompatibleProvider,
+  createTextProvider as createCoreTextProvider,
   type FetchLike,
   type StructuredOutputProvider,
 } from "../../../shared/core/llm/provider.ts";
 import type { LocalLlmSecretStore } from "../connection/secrets";
 
 const DEFAULT_QWEN_MODEL = "qwen-vl-max";
-const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
 const DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 
 class ByokProvider extends OpenAICompatibleProvider {}
 
 export interface LocalProviderFactory {
   createQwenProvider(keys: LocalLlmSecretStore): Promise<StructuredOutputProvider>;
-  createDeepSeekProvider(keys: LocalLlmSecretStore): Promise<StructuredOutputProvider>;
+  createTextProvider(keys: LocalLlmSecretStore): Promise<StructuredOutputProvider>;
 }
 
 async function requireStoredValue(
   keys: LocalLlmSecretStore,
-  name: "DASHSCOPE_API_KEY" | "DEEPSEEK_API_KEY",
+  name: "DASHSCOPE_API_KEY",
 ) {
   const value = await keys.get(name);
 
@@ -47,13 +46,19 @@ export function createLocalProviderFactory(fetchImpl?: FetchLike): LocalProvider
         fetchImpl,
       });
     },
-    async createDeepSeekProvider(keys) {
-      return new ByokProvider({
-        name: "DeepSeek",
-        model: (await keys.get("DEEPSEEK_MODEL")) ?? DEFAULT_DEEPSEEK_MODEL,
-        apiKeyEnv: "DEEPSEEK_API_KEY",
-        apiKey: await requireStoredValue(keys, "DEEPSEEK_API_KEY"),
-        baseUrl: DEEPSEEK_BASE_URL,
+    async createTextProvider(keys) {
+      const [dashscopeApiKey, deepseekApiKey, qwenTextModel, deepseekModel] = await Promise.all([
+        keys.get("DASHSCOPE_API_KEY"),
+        keys.get("DEEPSEEK_API_KEY"),
+        keys.get("QWEN_TEXT_MODEL"),
+        keys.get("DEEPSEEK_MODEL"),
+      ]);
+
+      return createCoreTextProvider({
+        dashscopeApiKey,
+        deepseekApiKey,
+        qwenTextModel,
+        deepseekModel,
         fetchImpl,
       });
     },

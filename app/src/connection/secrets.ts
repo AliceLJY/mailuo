@@ -2,6 +2,7 @@ export const LOCAL_LLM_SECRET_NAMES = [
   "DASHSCOPE_API_KEY",
   "DEEPSEEK_API_KEY",
   "QWEN_MODEL",
+  "QWEN_TEXT_MODEL",
   "DEEPSEEK_MODEL",
 ] as const;
 

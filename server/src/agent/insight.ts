@@ -2,7 +2,7 @@ import {
   generateInsights as generateInsightsCore,
   type GenerateInsightsOptions,
 } from '../../../shared/core/agent/insight.ts';
-import { createDeepSeekProvider } from '../llm/deepseek.ts';
+import { createTextProvider } from '../llm/text.ts';
 
 export type {
   GenerateInsightsOptions,
@@ -20,6 +20,6 @@ export type {
 export function generateInsights(options: GenerateInsightsOptions) {
   return generateInsightsCore({
     ...options,
-    provider: options.provider ?? createDeepSeekProvider(),
+    provider: options.provider ?? createTextProvider(),
   });
 }

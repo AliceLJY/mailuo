@@ -26,9 +26,11 @@ test("secure key wrapper uses only its injected storage and supports get/set/cle
   await keys.set("DASHSCOPE_API_KEY", "  dashscope-value  ");
   await keys.set("DEEPSEEK_API_KEY", "deepseek-value");
   await keys.set("QWEN_MODEL", " qwen-test ");
+  await keys.set("QWEN_TEXT_MODEL", " qwen-plus-test ");
 
   assert.equal(await keys.get("DASHSCOPE_API_KEY"), "dashscope-value");
   assert.equal(await keys.get("QWEN_MODEL"), "qwen-test");
+  assert.equal(await keys.get("QWEN_TEXT_MODEL"), "qwen-plus-test");
 
   await keys.clear("DASHSCOPE_API_KEY");
   assert.equal(await keys.get("DASHSCOPE_API_KEY"), null);

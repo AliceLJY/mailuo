@@ -463,7 +463,7 @@ test("local orchestration reaches terminal contacts, observations, meetings, and
       async createQwenProvider() {
         return qwen;
       },
-      async createDeepSeekProvider() {
+      async createTextProvider() {
         return deepSeek;
       },
     },
