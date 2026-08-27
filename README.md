@@ -165,7 +165,7 @@ M4 build and deployment assets live in [deploy/README.md](deploy/README.md) and 
 
 ## Future Work
 
-- **Distribution roadmap** (three tiers): (1) self-hosted (current) — technical users run their own backend and keys; (2) **BYOK standalone app (v2.0 direction)** — move the agent pipeline and database into the app itself so users just enter their own model API keys: no server at all, profiles live only on the user's phone, arguably the best privacy model; (3) hosted cloud service — multi-user accounts and managed inference, a commercial undertaking. Stepping stone: an in-app server URL setting so one generic APK serves every self-hosted user.
+- **Distribution roadmap** (three tiers): (1) self-hosted (current) — technical users run their own backend and keys; (2) **BYOK standalone app (v2.0 direction)** — move the agent pipeline and database into the app itself so users just enter their own model API keys: no server at all, profiles live only on the user's phone, arguably the best privacy model; (3) hosted cloud service — multi-user accounts and managed inference, a commercial undertaking. Client end-state: **one generic package with a connection-mode chooser at first launch** (enter model API keys / enter a self-hosted server URL / sign in to a subscription) so a single APK covers all three tiers, switchable at any time.
 - iOS native distribution: when the target region's App Store does not offer Expo Go, native iOS distribution needs an Apple Developer account plus EAS and TestFlight.
 - Duplicate screenshot detection and merge.
 - Insight retry endpoint.
