@@ -1,19 +1,13 @@
 import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
 import { useEffect, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Image,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { ActivityIndicator, Image, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { uploadScreenshot } from "@/api";
 import { AppButton } from "@/components/button";
 import { EmptyHint, MetaLine, Page, SectionCard } from "@/components/page";
+import { useConnection } from "@/connection/context";
+import { humanizeLocalProviderError } from "@/connection/presentation";
 import { useFlow } from "@/flow-context";
 import { theme } from "@/theme";
 import { useToast } from "@/toast-context";
@@ -23,9 +17,11 @@ export default function UploadScreen() {
   const [asset, setAsset] = useState<UploadImageAsset | null>(null);
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(false);
-  const [loadingText, setLoadingText] = useState("正在上传截图…");
+  const [loadingText, setLoadingText] = useState("正在准备截图…");
   const { seedFromUpload } = useFlow();
   const { showError, showToast } = useToast();
+  const { config } = useConnection();
+  const isLocal = config?.mode === "local";
   const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const submitTokenRef = useRef(0);
@@ -82,7 +78,7 @@ export default function UploadScreen() {
     try {
       clearLoadingTimer(loadingTimerRef.current);
       setLoading(true);
-      setLoadingText("正在上传截图…");
+      setLoadingText("正在准备截图…");
       loadingTimerRef.current = setTimeout(() => {
         if (!canCommitSubmitResult(mountedRef, submitTokenRef, submitToken)) {
           return;
@@ -99,7 +95,11 @@ export default function UploadScreen() {
       if (!canCommitSubmitResult(mountedRef, submitTokenRef, submitToken)) {
         return;
       }
-      showError(error, "上传失败，请检查服务是否可用后再试一次。");
+      if (isLocal) {
+        showToast(humanizeLocalProviderError(error), "error");
+      } else {
+        showError(error, "上传失败，请检查服务是否可用后再试一次。");
+      }
     } finally {
       if (!canCommitSubmitResult(mountedRef, submitTokenRef, submitToken)) {
         return;
@@ -107,7 +107,7 @@ export default function UploadScreen() {
       clearLoadingTimer(loadingTimerRef.current);
       loadingTimerRef.current = null;
       setLoading(false);
-      setLoadingText("正在上传截图…");
+      setLoadingText("正在准备截图…");
     }
   }
 
@@ -115,7 +115,11 @@ export default function UploadScreen() {
     <View style={styles.screen}>
       <Page
         title="上传截图"
-        subtitle="选一张聊天截图，可补一句背景说明。上传成功后会直接进入卡片确认页。"
+        subtitle={
+          isLocal
+            ? "选一张聊天截图，可补一句背景说明。档案只会保存在这台手机上。"
+            : "选一张聊天截图，可补一句背景说明。上传成功后会直接进入卡片确认页。"
+        }
         footer={
           <AppButton
             label={loading ? "上传中..." : "提交并开始整理"}

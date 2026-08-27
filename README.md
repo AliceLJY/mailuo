@@ -148,6 +148,7 @@ M4 build and deployment assets live in [deploy/README.md](deploy/README.md) and 
 
 ## Privacy Boundary
 
+- **BYOK local mode**: profiles and imported screenshot files are stored only on the user's phone. During inference, the app connects directly to the model providers, with no Mailuo server in between. Model keys are kept only in the system credential store (iOS Keychain / Android Keystore), and the UI never reveals their full values.
 - App data is stored locally in SQLite on the server host.
 - Screenshot files are stored locally under `server/data/screenshots/`.
 - Raw screenshot binaries are sent only to Qwen during perception.
@@ -165,7 +166,7 @@ M4 build and deployment assets live in [deploy/README.md](deploy/README.md) and 
 
 ## Future Work
 
-- **Distribution roadmap** (three tiers): (1) self-hosted (current) — technical users run their own backend and keys; (2) **BYOK standalone app (v2.0 direction)** — move the agent pipeline and database into the app itself so users just enter their own model API keys: no server at all, profiles live only on the user's phone, arguably the best privacy model; (3) hosted cloud service — multi-user accounts and managed inference, a commercial undertaking. Client end-state: **one generic package with a connection-mode chooser at first launch** (enter model API keys / enter a self-hosted server URL / sign in to a subscription) so a single APK covers all three tiers, switchable at any time.
+- **Distribution modes on the v2 branch**: one package now offers (1) **BYOK local mode**, where users enter their own model keys and the pipeline runs in the native app; (2) **self-hosted server mode**, which connects to the user's own Mailuo backend; and (3) a disabled **subscription** placeholder marked “Coming soon.” The web build supports server mode only; local mode is exclusive to the native app.
 - iOS native distribution: when the target region's App Store does not offer Expo Go, native iOS distribution needs an Apple Developer account plus EAS and TestFlight.
 - Duplicate screenshot detection and merge.
 - Insight retry endpoint.
