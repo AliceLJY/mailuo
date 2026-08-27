@@ -3,7 +3,17 @@ import assert from 'node:assert/strict';
 
 import type { PerceptionResult } from '../agent/perceive.ts';
 import type { ParticipantResolution, ResolvableContact } from '../agent/resolve.ts';
-import { proposeCards } from '../agent/propose.ts';
+import { proposeCards as baseProposeCards } from '../agent/propose.ts';
+
+const proposalNow = new Date('2026-08-27T02:00:00.000Z');
+
+function proposeCards(
+  extraction: PerceptionResult,
+  resolutions?: ParticipantResolution[],
+  contacts: ResolvableContact[] = [],
+) {
+  return baseProposeCards(extraction, resolutions, contacts, proposalNow);
+}
 
 test('proposeCards creates contact and meeting cards from perception output', () => {
   const extraction: PerceptionResult = {
@@ -193,7 +203,7 @@ test('proposeCards creates update_contact, meeting contact ids, and one interact
     type: 'create_meeting',
     payload: {
       title: '喝咖啡聊合作',
-      time_iso: '2026-08-27T14:00:00+08:00',
+      time_iso: '2026-08-28T14:00:00+08:00',
       time_text: '明天下午两点',
       participants: [{ contact_id: 1, name: '王磊' }, { name: '路人甲' }],
     },
@@ -277,6 +287,158 @@ test('proposeCards prefers participant interaction_summary for interaction paylo
     interactionCard.source_quote,
     '王磊说下周给我明确反馈\n\n我已经去了新公司\n\n王磊说：下周给你明确反馈',
   );
+});
+
+test('proposeCards overrides model time_iso with locally resolved time_text', () => {
+  const extraction: PerceptionResult = {
+    participants: [],
+    events: [
+      {
+        kind: 'meeting',
+        title: '继续聊',
+        time_text: '明晚',
+        time_iso: '2026-08-28T18:00:00+08:00',
+        has_time_signal: true,
+        participant_names: [],
+        confidence: 'medium',
+        source_quote: '明晚继续聊',
+      },
+    ],
+    facts: [],
+    quotes: [],
+  };
+
+  assert.deepEqual(proposeCards(extraction), [
+    {
+      type: 'create_meeting',
+      payload: {
+        title: '继续聊',
+        time_iso: '2026-08-28T19:00:00+08:00',
+        time_text: '明晚',
+        participants: [],
+      },
+      confidence: 'medium',
+      source_quote: '明晚继续聊',
+    },
+  ]);
+});
+
+test('proposeCards preserves model time_iso when legacy time_text is blank', () => {
+  const extraction: PerceptionResult = {
+    participants: [],
+    events: [
+      {
+        kind: 'meeting',
+        title: '继续聊',
+        time_text: '   ',
+        time_iso: '2026-08-28T18:00:00+08:00',
+        has_time_signal: true,
+        participant_names: [],
+        confidence: 'medium',
+        source_quote: '明晚继续聊',
+      },
+    ],
+    facts: [],
+    quotes: [],
+  };
+
+  assert.deepEqual(proposeCards(extraction), [
+    {
+      type: 'create_meeting',
+      payload: {
+        title: '继续聊',
+        time_iso: '2026-08-28T18:00:00+08:00',
+        time_text: '   ',
+        participants: [],
+      },
+      confidence: 'medium',
+      source_quote: '明晚继续聊',
+    },
+  ]);
+});
+
+test('proposeCards preserves model time_iso when local resolution returns null', () => {
+  const extraction: PerceptionResult = {
+    participants: [],
+    events: [
+      {
+        kind: 'meeting',
+        title: '改天聊',
+        time_text: '改天',
+        time_iso: '2026-08-30T09:00:00+08:00',
+        has_time_signal: true,
+        participant_names: [],
+        confidence: 'medium',
+        source_quote: '改天聊',
+      },
+      {
+        kind: 'meeting',
+        title: '回头再约',
+        time_text: '回头',
+        time_iso: '2026-08-31T09:00:00+08:00',
+        has_time_signal: true,
+        participant_names: [],
+        confidence: 'medium',
+        source_quote: '回头再约',
+      },
+      {
+        kind: 'meeting',
+        title: '超能力时间',
+        time_text: '超能力',
+        time_iso: '2026-09-01T09:00:00+08:00',
+        has_time_signal: true,
+        participant_names: [],
+        confidence: 'low',
+        source_quote: '超能力时间',
+      },
+      {
+        kind: 'meeting',
+        title: '二十五点',
+        time_text: '下周三下午二十五点',
+        time_iso: '2026-09-02T15:00:00+08:00',
+        has_time_signal: true,
+        participant_names: [],
+        confidence: 'medium',
+        source_quote: '下周三下午二十五点见',
+      },
+      {
+        kind: 'meeting',
+        title: '多余周前缀',
+        time_text: '下下下周三',
+        time_iso: '2026-09-09T09:00:00+08:00',
+        has_time_signal: true,
+        participant_names: [],
+        confidence: 'medium',
+        source_quote: '下下下周三见',
+      },
+      {
+        kind: 'meeting',
+        title: '方案评审',
+        time_text: '第2号方案',
+        time_iso: '2026-09-10T09:00:00+08:00',
+        has_time_signal: true,
+        participant_names: [],
+        confidence: 'medium',
+        source_quote: '先看第2号方案',
+      },
+    ],
+    facts: [],
+    quotes: [],
+  };
+  const cards = proposeCards(extraction);
+
+  assert.deepEqual(
+    cards.map((card) => (card.type === 'create_meeting' ? card.payload.time_iso : null)),
+    [
+      '2026-08-30T09:00:00+08:00',
+      '2026-08-31T09:00:00+08:00',
+      '2026-09-01T09:00:00+08:00',
+      '2026-09-02T15:00:00+08:00',
+      '2026-09-09T09:00:00+08:00',
+      '2026-09-10T09:00:00+08:00',
+    ],
+  );
+  assert.equal(cards.length, 6);
 });
 
 test('proposeCards falls back to legacy interaction summary assembly when interaction_summary is missing', () => {

@@ -179,7 +179,7 @@ test('mock e2e chain persists contacts, meetings, observations, and insights to 
     const savedCards = db.saveScreenshotAnalysis({
       screenshotId: screenshot.id,
       rawExtraction: extraction,
-      cards: proposeCards(extraction, resolutions, contacts),
+      cards: proposeCards(extraction, resolutions, contacts, new Date('2026-08-27T02:00:00.000Z')),
       createdAt: '2026-08-26T00:01:00.000Z',
     });
     const executionResults = sortCardsForExecution(savedCards).map((card) =>

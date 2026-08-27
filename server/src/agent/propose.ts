@@ -8,6 +8,7 @@ import type {
 
 import type { PerceptionResult } from './perceive.ts';
 import type { ParticipantResolution, ResolvableContact } from './resolve.ts';
+import { resolveChineseTime } from './resolve-time.ts';
 
 export type CardConfidence = 'high' | 'medium' | 'low';
 
@@ -640,10 +641,17 @@ export function proposeCards(
   extraction: PerceptionResult,
   resolutions?: ParticipantResolution[],
   contacts: ResolvableContact[] = [],
+  now = new Date(),
 ): ProposedCard[] {
   const cards: ProposedCard[] = [];
   const participants = extraction.participants as ProposeParticipant[];
-  const events = extraction.events as ProposeEvent[];
+  // M4-fix2 真机里模型会把“下周三”落成错日期；代码解析成功才覆盖，解析不到仍保留模型值与原门槛。
+  const events = (extraction.events as ProposeEvent[]).map((event) => ({
+    ...event,
+    time_iso: normalizeOptionalText(event.time_text)
+      ? (resolveChineseTime(event.time_text, now) ?? event.time_iso)
+      : event.time_iso,
+  }));
   const selfParticipantNames = buildSelfParticipantNames(participants);
   const factsBySubject = indexFactsBySubject(extraction.facts);
   const quotesBySpeaker = indexQuotesBySpeaker(extraction.quotes);
