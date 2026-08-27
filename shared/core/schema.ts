@@ -1,3 +1,5 @@
+// simplified: one schema string is consumed by both SQLite adapters so table drift is impossible.
+export const MAILUO_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS contacts (
   id INTEGER PRIMARY KEY,
   canonical_name TEXT NOT NULL,
@@ -65,3 +67,4 @@ CREATE TABLE IF NOT EXISTS insights (
   based_on TEXT NOT NULL DEFAULT '[]',
   generated_at TEXT NOT NULL
 );
+`;

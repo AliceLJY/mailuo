@@ -30,7 +30,7 @@ v2 全程在 `v2-byok` 分支开发，`main` 保持 v1 可演示状态。开发�
 
 ### 1.2 共享核心
 
-平台无关逻辑统一放在 `shared/core/`：prompts、zod schemas、OpenAI 兼容 provider、结构化输出重试、perceive、resolve、propose、resolve-time 与 insight 过滤。core 使用全局 `fetch`，不导入 Node 文件系统或路径模块，也不读取 `process.env`。
+平台无关逻辑统一放在 `shared/core/`：prompts、zod schemas、OpenAI 兼容 provider、结构化输出重试、perceive、resolve、propose、resolve-time、execute 与 insight 过滤。core 使用全局 `fetch`，不导入 Node 文件系统或路径模块，也不读取 `process.env`。
 
 数据库与图片文件读取留在平台适配层：server 使用现有 SQLite 与文件目录，app 在后续批次使用移动端实现。存储接口只覆盖 core 的实际调用面，不预留未使用方法。
 
@@ -47,7 +47,7 @@ server 负责把文件读成 base64；app 后续负责把相册 asset 转成同�
 
 ### 1.3 本地存储与密钥
 
-本地档案使用 `expo-sqlite`，schema 与 v1 `server/src/schema.sql` 同构。用户 API key 使用 `expo-secure-store` 写入系统钥匙串，绝不进入 AsyncStorage、SQLite 或源代码。
+本地档案使用 `expo-sqlite`；schema 的单一真相源为 `shared/core/schema.ts`，server 与 app 共用。用户 API key 使用 `expo-secure-store` 写入系统钥匙串，绝不进入 AsyncStorage、SQLite 或源代码。
 
 ### 1.4 Web 边界
 

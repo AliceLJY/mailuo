@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -12,11 +12,12 @@ import type {
   RecordInteractionPayload as SharedRecordInteractionPayload,
   UpdateContactPayload,
 } from "../../shared/types.ts";
+import type { ExecuteStore } from "../../shared/core/agent/execute.ts";
 import type { InsightGenerationDb } from "../../shared/core/agent/insight.ts";
+import { MAILUO_SCHEMA_SQL } from "../../shared/core/schema.ts";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const defaultDatabasePath = resolve(currentDir, "..", "data", "mailuo.sqlite");
-const schemaPath = resolve(currentDir, "schema.sql");
 
 export const CONTACT_EDITABLE_FIELDS = [
   "company",
@@ -302,7 +303,7 @@ function normalizeLookupValue(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-export class MailuoDb implements InsightGenerationDb {
+export class MailuoDb implements InsightGenerationDb, ExecuteStore {
   private readonly db: DatabaseSync;
 
   constructor(databasePath = process.env.DATABASE_PATH?.trim() || defaultDatabasePath) {
@@ -315,7 +316,7 @@ export class MailuoDb implements InsightGenerationDb {
   }
 
   private initializeSchema() {
-    this.db.exec(readFileSync(schemaPath, "utf8"));
+    this.db.exec(MAILUO_SCHEMA_SQL);
   }
 
   private normalizeQueryResult<T>(value: T): T {
