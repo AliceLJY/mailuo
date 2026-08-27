@@ -3,6 +3,12 @@ import { File as ExpoFile } from "expo-file-system";
 import * as Linking from "expo-linking";
 import { Platform } from "react-native";
 
+import { connectionConfigStore } from "@/connection/config-runtime";
+import {
+  createApiDispatcher,
+  type ApiPlatform,
+  type RoutedApi,
+} from "@/connection/dispatch";
 import { prepareScreenshotForUpload } from "@/upload-image";
 import type {
   ApiResponse,
@@ -45,15 +51,21 @@ export function getErrorMessage(error: unknown, fallback = "暂时没成功，�
 }
 
 export function isConflictError(error: unknown) {
-  return error instanceof ApiError && error.status === 409;
+  return (
+    (error instanceof ApiError && error.status === 409) ||
+    (typeof error === "object" &&
+      error !== null &&
+      "statusCode" in error &&
+      error.statusCode === 409)
+  );
 }
 
 function resolveConfiguredApiUrl() {
   return process.env.EXPO_PUBLIC_API_URL?.trim().replace(/\/+$/u, "") ?? "";
 }
 
-export function getBaseUrl() {
-  const baseUrl = resolveConfiguredApiUrl();
+export function getBaseUrl(configuredUrl?: string) {
+  const baseUrl = configuredUrl?.trim().replace(/\/+$/u, "") || resolveConfiguredApiUrl();
 
   if (baseUrl) {
     return baseUrl;
@@ -73,8 +85,8 @@ export function getBaseUrl() {
   );
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${getBaseUrl()}${path}`, init);
+async function request<T>(path: string, init?: RequestInit, serverUrl?: string): Promise<T> {
+  const response = await fetch(`${getBaseUrl(serverUrl)}${path}`, init);
   const payload = (await response.json()) as ApiResponse<T>;
 
   if (!response.ok || !payload.ok) {
@@ -113,10 +125,10 @@ async function cleanupPreparedUploadAsset(cleanup?: () => void) {
   }
 }
 
-export async function uploadScreenshot(input: {
+async function uploadScreenshotFromServer(input: {
   asset: UploadImageAsset;
   note?: string;
-}) {
+}, serverUrl?: string) {
   const preparedAsset = await prepareScreenshotForUpload(input.asset);
 
   try {
@@ -135,43 +147,87 @@ export async function uploadScreenshot(input: {
     return await request<ScreenshotUploadResponse>("/api/screenshots", {
       method: "POST",
       body: formData,
-    });
+    }, serverUrl);
   } finally {
     await cleanupPreparedUploadAsset(preparedAsset.cleanup);
   }
 }
 
-export async function confirmCard(cardId: number, body: ConfirmCardRequest = {}) {
+async function confirmCardFromServer(
+  cardId: number,
+  body: ConfirmCardRequest = {},
+  serverUrl?: string,
+) {
   return request<ConfirmCardResponse>(`/api/cards/${cardId}/confirm`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
-  });
+  }, serverUrl);
 }
 
-export async function rejectCard(cardId: number) {
+async function rejectCardFromServer(cardId: number, serverUrl?: string) {
   return request<RejectCardResponse>(`/api/cards/${cardId}/reject`, {
     method: "POST",
-  });
+  }, serverUrl);
 }
 
-export async function getContacts() {
-  return request<ContactListItem[]>("/api/contacts");
+async function getContactsFromServer(serverUrl?: string) {
+  return request<ContactListItem[]>("/api/contacts", undefined, serverUrl);
 }
 
-export async function getContactDetail(contactId: number) {
-  return request<ContactDetail>(`/api/contacts/${contactId}`);
+async function getContactDetailFromServer(contactId: number, serverUrl?: string) {
+  return request<ContactDetail>(`/api/contacts/${contactId}`, undefined, serverUrl);
 }
 
-export async function getMeetings() {
-  return request<MeetingRecord[]>("/api/meetings");
+async function getMeetingsFromServer(serverUrl?: string) {
+  return request<MeetingRecord[]>("/api/meetings", undefined, serverUrl);
 }
 
-export async function getScreenshotDetail(screenshotId: number) {
-  return request<ScreenshotDetail>(`/api/screenshots/${screenshotId}`);
+async function getScreenshotDetailFromServer(screenshotId: number, serverUrl?: string) {
+  return request<ScreenshotDetail>(`/api/screenshots/${screenshotId}`, undefined, serverUrl);
 }
+
+function createServerApi(serverUrl?: string): RoutedApi {
+  return {
+    uploadScreenshot: (input) => uploadScreenshotFromServer(input, serverUrl),
+    confirmCard: (cardId, body = {}) => confirmCardFromServer(cardId, body, serverUrl),
+    rejectCard: (cardId) => rejectCardFromServer(cardId, serverUrl),
+    getContacts: () => getContactsFromServer(serverUrl),
+    getContactDetail: (contactId) => getContactDetailFromServer(contactId, serverUrl),
+    getMeetings: () => getMeetingsFromServer(serverUrl),
+    getScreenshotDetail: (screenshotId) =>
+      getScreenshotDetailFromServer(screenshotId, serverUrl),
+  };
+}
+
+function getApiPlatform(): ApiPlatform {
+  if (Platform.OS === "web") {
+    return "web";
+  }
+
+  return Platform.OS === "ios" ? "ios" : "android";
+}
+
+const apiDispatcher = createApiDispatcher({
+  configStore: connectionConfigStore,
+  platform: getApiPlatform(),
+  publicApiUrl: resolveConfiguredApiUrl(),
+  createServerApi,
+  async getLocalApi() {
+    const { getExpoLocalApi } = await import("@/local/runtime");
+    return getExpoLocalApi();
+  },
+});
+
+export const uploadScreenshot = apiDispatcher.uploadScreenshot;
+export const confirmCard = apiDispatcher.confirmCard;
+export const rejectCard = apiDispatcher.rejectCard;
+export const getContacts = apiDispatcher.getContacts;
+export const getContactDetail = apiDispatcher.getContactDetail;
+export const getMeetings = apiDispatcher.getMeetings;
+export const getScreenshotDetail = apiDispatcher.getScreenshotDetail;
 
 export async function getHealth() {
   return request<HealthResponse>("/api/health");
