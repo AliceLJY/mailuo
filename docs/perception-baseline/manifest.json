@@ -1,0 +1,26 @@
+{
+  "formatVersion": 1,
+  "baselineNow": "2026-08-29T08:00:00+08:00",
+  "provider": "Qwen",
+  "model": "qwen-vl-max",
+  "fixtures": [
+    {
+      "fixture": "screenshot-1.png",
+      "fixtureMd5": "2f1d980ef213e8ea536826ae182384b9",
+      "fixtureSha256": "3092368f261e32af94e2da2a87a07e02a045e8e3b604ea90641d87334ef8cb36",
+      "snapshot": "screenshot-1.qwen-vl.json"
+    },
+    {
+      "fixture": "screenshot-2.png",
+      "fixtureMd5": "679034bb1fa21ce8e983f2882a15d460",
+      "fixtureSha256": "dcf1a69ed3cc605c42b6bff4fec4b1bae5e3495cb55e5371cd7a339b8965928f",
+      "snapshot": "screenshot-2.qwen-vl.json"
+    },
+    {
+      "fixture": "screenshot-3.png",
+      "fixtureMd5": "857411cc74e13217f64e0723a70f8d63",
+      "fixtureSha256": "5dfe1899d9b91a0fcaa87623a42f3dcd990dd24db9b3044a0b5b0008309df6ad",
+      "snapshot": "screenshot-3.qwen-vl.json"
+    }
+  ]
+}

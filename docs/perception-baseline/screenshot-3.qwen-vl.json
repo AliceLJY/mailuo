@@ -1,0 +1,66 @@
+{
+  "participants": [
+    {
+      "name": "陈昕",
+      "is_self": false,
+      "company": "翎点科技",
+      "interaction_summary": "陈昕提到她上个月跳槽去了翎点科技，目前负责栏播客联名项目，并表示如果对方九月还想做该项目可以继续找她。她还提到工作节奏比之前快很多。",
+      "confidence": "high",
+      "source_quote": "最近在忙新项目交接，我上个月跳槽去了翎点科技，节奏比之前快很多。不过你们如果九月还想做那栏播客联名，可以继续找我，我现在也负责这块。"
+    },
+    {
+      "name": "我",
+      "is_self": true,
+      "confidence": "high",
+      "source_quote": "收到，难怪我看你朋友圈定位都换了。等你方便了我们再约个时间细聊。"
+    }
+  ],
+  "events": [
+    {
+      "kind": "other",
+      "title": "再约时间细聊",
+      "time_text": "等你方便了",
+      "time_iso": null,
+      "has_time_signal": false,
+      "participant_names": [
+        "陈昕",
+        "我"
+      ],
+      "confidence": "medium",
+      "source_quote": "等你方便了我们再约个时间细聊。"
+    }
+  ],
+  "facts": [
+    {
+      "subject_name": "陈昕",
+      "field": "company",
+      "value": "翎点科技",
+      "confidence": "high",
+      "source_quote": "我上个月跳槽去了翎点科技"
+    },
+    {
+      "subject_name": "陈昕",
+      "field": "notes",
+      "value": "负责栏播客联名项目，工作节奏加快。",
+      "confidence": "high",
+      "source_quote": "最近在忙新项目交接，我上个月跳槽去了翎点科技，节奏比之前快很多。不过你们如果九月还想做那栏播客联名，可以继续找我，我现在也负责这块。"
+    }
+  ],
+  "quotes": [
+    {
+      "speaker_name": "陈昕",
+      "text": "最近在忙新项目交接，我上个月跳槽去了翎点科技，节奏比之前快很多。",
+      "source_quote": "最近在忙新项目交接，我上个月跳槽去了翎点科技，节奏比之前快很多。"
+    },
+    {
+      "speaker_name": "陈昕",
+      "text": "不过你们如果九月还想做那栏播客联名，可以继续找我，我现在也负责这块。",
+      "source_quote": "不过你们如果九月还想做那栏播客联名，可以继续找我，我现在也负责这块。"
+    },
+    {
+      "speaker_name": "我",
+      "text": "收到，难怪我看你朋友圈定位都换了。等你方便了我们再约个时间细聊。",
+      "source_quote": "收到，难怪我看你朋友圈定位都换了。等你方便了我们再约个时间细聊。"
+    }
+  ]
+}

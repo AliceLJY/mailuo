@@ -1,0 +1,77 @@
+{
+  "participants": [
+    {
+      "name": "林岚",
+      "is_self": false,
+      "company": "栖川数据",
+      "interaction_summary": "林岚确认了下周三下午3点的会议安排，并告知会议室已预留，公司地址在云栖路88号A座7层。",
+      "confidence": "high",
+      "source_quote": "收到，我是栖川数据的林岚，下周三下午3点来我们公司聊合作。我会把会议室先留出来，你到了前台报我的名字就行。对，A座7层。到时直接微信"
+    },
+    {
+      "name": "我",
+      "is_self": true,
+      "confidence": "high",
+      "source_quote": "上次你提的联名方案，我们这边已经把方向梳理好了。可以，我提前十分钟到。你们公司是在云栖路88号对吧？"
+    }
+  ],
+  "events": [
+    {
+      "kind": "meeting",
+      "title": "聊合作",
+      "time_text": "下周三下午3点",
+      "time_iso": "2026-08-31T15:00:00+08:00",
+      "has_time_signal": true,
+      "location": "云栖路88号A座7层",
+      "participant_names": [
+        "林岚",
+        "我"
+      ],
+      "confidence": "high",
+      "source_quote": "收到，我是栖川数据的林岚，下周三下午3点来我们公司聊合作。我会把会议室先留出来，你到了前台报我的名字就行。可以，我提前十分钟到。你们公司是在云栖路88号对吧？对，A座7层。到时直接微信"
+    }
+  ],
+  "facts": [
+    {
+      "subject_name": "林岚",
+      "field": "company",
+      "value": "栖川数据",
+      "confidence": "high",
+      "source_quote": "收到，我是栖川数据的林岚，下周三下午3点来我们公司聊合作。"
+    },
+    {
+      "subject_name": "林岚",
+      "field": "notes",
+      "value": "公司地址为云栖路88号A座7层",
+      "confidence": "high",
+      "source_quote": "对，A座7层。到时直接微信"
+    }
+  ],
+  "quotes": [
+    {
+      "speaker_name": "我",
+      "text": "上次你提的联名方案，我们这边已经把方向梳理好了。",
+      "source_quote": "上次你提的联名方案，我们这边已经把方向梳理好了。"
+    },
+    {
+      "speaker_name": "林岚",
+      "text": "收到，我是栖川数据的林岚，下周三下午3点来我们公司聊合作。",
+      "source_quote": "收到，我是栖川数据的林岚，下周三下午3点来我们公司聊合作。"
+    },
+    {
+      "speaker_name": "林岚",
+      "text": "我会把会议室先留出来，你到了前台报我的名字就行。",
+      "source_quote": "我会把会议室先留出来，你到了前台报我的名字就行。"
+    },
+    {
+      "speaker_name": "我",
+      "text": "可以，我提前十分钟到。你们公司是在云栖路88号对吧？",
+      "source_quote": "可以，我提前十分钟到。你们公司是在云栖路88号对吧？"
+    },
+    {
+      "speaker_name": "林岚",
+      "text": "对，A座7层。到时直接微信",
+      "source_quote": "对，A座7层。到时直接微信"
+    }
+  ]
+}

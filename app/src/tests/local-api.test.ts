@@ -25,6 +25,7 @@ import type {
   ScreenshotRecord,
 } from "../types";
 import { createLocalApi } from "../local/api";
+import { perceiveScreenshotWithOcr, type OcrPerceptionResult } from "../local/perceive-ocr";
 import type { LocalStore } from "../local/types";
 import type { LocalLlmSecretStore } from "../connection/secrets";
 
@@ -511,4 +512,274 @@ test("local orchestration reaches terminal contacts, observations, meetings, and
   assert.ok(screenshot.cards.every((card) => card.status === "confirmed"));
   assert.equal(qwen.calls, 1);
   assert.equal(deepSeek.calls, 3);
+});
+
+const emptyExtraction = {
+  participants: [],
+  events: [],
+  facts: [],
+  quotes: [],
+};
+
+async function runOcrFallbackCase(
+  perceiveOcr: () => Promise<OcrPerceptionResult>,
+  perceiveText: () => Promise<typeof emptyExtraction> = async () => emptyExtraction,
+  expectedTextPerceptionCalls = 0,
+) {
+  const store = new FakeLocalStore();
+  const qwen = new FakeStructuredOutputProvider(() => emptyExtraction);
+  const text = new FakeStructuredOutputProvider(() => emptyExtraction);
+  let textPerceptionCalls = 0;
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async (asset) => ({
+      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+      imagePath: asset.uri,
+    }),
+    providers: {
+      async createQwenProvider() {
+        return qwen;
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    async getProcessingSettings() {
+      return { perceptionPath: "ocr", exportOcrResults: false };
+    },
+    perceiveOcr,
+    async perceiveOcrText() {
+      textPerceptionCalls += 1;
+      return perceiveText();
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  const upload = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/fallback.png", mimeType: "image/png" },
+  });
+
+  assert.equal(qwen.calls, 1);
+  assert.equal(textPerceptionCalls, expectedTextPerceptionCalls);
+  assert.match(upload.processing_notice ?? "", /已用云端模型重新处理/u);
+  assert.ok(await api.getScreenshotDetail(upload.screenshot_id));
+}
+
+test("OCR exception falls back to Qwen-VL without deleting the screenshot", async () => {
+  await runOcrFallbackCase(async () => {
+    throw new Error("ML Kit unavailable");
+  });
+});
+
+test("zero OCR lines fall back to Qwen-VL without crashing", async () => {
+  await runOcrFallbackCase(async () => ({
+    lines: [],
+    warnings: [],
+    degraded: false,
+  }));
+});
+
+test("all-null region samples mark OCR degraded and fall back to Qwen-VL", async () => {
+  const degradedOcr = await perceiveScreenshotWithOcr({
+    uri: "file:///fake/fallback.png",
+    async recognize() {
+      return {
+        blocks: [{
+          lines: [
+            { text: "左侧锚点", frame: { left: 24, top: 20, width: 100, height: 30 } },
+            { text: "第一条满宽消息", frame: { left: 24, top: 80, width: 342, height: 30 } },
+            { text: "第二条满宽消息", frame: { left: 24, top: 150, width: 342, height: 30 } },
+            { text: "右侧锚点", frame: { left: 266, top: 240, width: 100, height: 30 } },
+          ],
+        }],
+      };
+    },
+    async sampleRegions(requests) {
+      return {
+        samples: requests.map((request) => ({ id: request.id, side: null })),
+      };
+    },
+  });
+
+  assert.equal(degradedOcr.degraded, true);
+  assert.equal(degradedOcr.warnings.length, 2);
+  assert.ok(degradedOcr.lines.every((line, index) => index === 0 || index === 3 || line.side === null));
+  await runOcrFallbackCase(async () => degradedOcr);
+});
+
+test("OCR text interpretation failure falls back to Qwen-VL once", async () => {
+  await runOcrFallbackCase(
+    async () => ({
+      lines: [{
+        text: "下周二见",
+        side: "them",
+        x: 24,
+        y: 80,
+        width: 120,
+        height: 30,
+        confidence: 0.95,
+      }],
+      warnings: [],
+      degraded: false,
+    }),
+    async () => {
+      throw new Error("text model unavailable");
+    },
+    1,
+  );
+});
+
+test("healthy OCR stays on the text path and does not create a Qwen-VL provider", async () => {
+  const store = new FakeLocalStore();
+  const qwen = new FakeStructuredOutputProvider(() => emptyExtraction);
+  const text = new FakeStructuredOutputProvider(() => emptyExtraction);
+  let textPerceptionCalls = 0;
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async (asset) => ({
+      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+      imagePath: asset.uri,
+    }),
+    providers: {
+      async createQwenProvider() {
+        return qwen;
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    async getProcessingSettings() {
+      return { perceptionPath: "ocr", exportOcrResults: false };
+    },
+    async perceiveOcr() {
+      return {
+        lines: [{
+          text: "下周二见",
+          side: "them",
+          x: 24,
+          y: 80,
+          width: 120,
+          height: 30,
+          confidence: 0.95,
+        }],
+        warnings: [],
+        degraded: false,
+      };
+    },
+    async perceiveOcrText() {
+      textPerceptionCalls += 1;
+      return emptyExtraction;
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  const upload = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/healthy.png", mimeType: "image/png" },
+  });
+
+  assert.equal(textPerceptionCalls, 1);
+  assert.equal(qwen.calls, 0);
+  assert.equal(upload.processing_notice, undefined);
+});
+
+test("forced cloud path does not invoke OCR or OCR text interpretation", async () => {
+  const store = new FakeLocalStore();
+  const qwen = new FakeStructuredOutputProvider(() => emptyExtraction);
+  const text = new FakeStructuredOutputProvider(() => emptyExtraction);
+  let ocrCalls = 0;
+  let textPerceptionCalls = 0;
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async (asset) => ({
+      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+      imagePath: asset.uri,
+    }),
+    providers: {
+      async createQwenProvider() {
+        return qwen;
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    async getProcessingSettings() {
+      return { perceptionPath: "cloud", exportOcrResults: true };
+    },
+    async perceiveOcr() {
+      ocrCalls += 1;
+      return { lines: [], warnings: [], degraded: false };
+    },
+    async perceiveOcrText() {
+      textPerceptionCalls += 1;
+      return emptyExtraction;
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  const upload = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/cloud.png", mimeType: "image/png" },
+  });
+
+  assert.equal(qwen.calls, 1);
+  assert.equal(ocrCalls, 0);
+  assert.equal(textPerceptionCalls, 0);
+  assert.equal(upload.processing_notice, undefined);
+});
+
+test("OCR export failure is reported without changing a healthy text result", async () => {
+  const store = new FakeLocalStore();
+  const qwen = new FakeStructuredOutputProvider(() => emptyExtraction);
+  const text = new FakeStructuredOutputProvider(() => emptyExtraction);
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async (asset) => ({
+      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+      imagePath: asset.uri,
+    }),
+    providers: {
+      async createQwenProvider() {
+        return qwen;
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    async getProcessingSettings() {
+      return { perceptionPath: "ocr", exportOcrResults: true };
+    },
+    async perceiveOcr() {
+      return {
+        lines: [{
+          text: "下周二见",
+          side: "them",
+          x: 24,
+          y: 80,
+          width: 120,
+          height: 30,
+          confidence: 0.95,
+        }],
+        warnings: [],
+        degraded: false,
+      };
+    },
+    async perceiveOcrText() {
+      return emptyExtraction;
+    },
+    async exportOcr() {
+      throw new Error("directory picker cancelled");
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  const upload = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/healthy.png", mimeType: "image/png" },
+  });
+
+  assert.equal(qwen.calls, 0);
+  assert.match(upload.processing_notice ?? "", /OCR 原始结果没有导出/u);
+  assert.ok(await api.getScreenshotDetail(upload.screenshot_id));
 });

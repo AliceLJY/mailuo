@@ -27,7 +27,7 @@ type KeyEditorState = {
 const emptyKeyState: KeyEditorState = { editing: false, mask: null, value: "" };
 
 export default function LocalConnectionScreen() {
-  const { saveConfig } = useConnection();
+  const { config, saveConfig } = useConnection();
   const { resetFlow } = useFlow();
   const [dashscope, setDashscope] = useState<KeyEditorState>(emptyKeyState);
   const [deepseek, setDeepseek] = useState<KeyEditorState>(emptyKeyState);
@@ -139,7 +139,11 @@ export default function LocalConnectionScreen() {
       await saveModel("QWEN_MODEL", qwenModel);
       await saveModel("QWEN_TEXT_MODEL", qwenTextModel);
       await saveModel("DEEPSEEK_MODEL", deepseekModel);
-      await saveConfig({ mode: "local" });
+      await saveConfig({
+        mode: "local",
+        ...(config?.perceptionPath === "cloud" ? { perceptionPath: "cloud" } : {}),
+        ...(config?.exportOcrResults ? { exportOcrResults: true } : {}),
+      });
       resetFlow();
       router.replace("/(tabs)");
     } catch {

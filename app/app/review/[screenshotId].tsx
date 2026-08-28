@@ -64,6 +64,7 @@ export default function ReviewScreen() {
     cards,
     markRejected,
     mergeContactDetail,
+    processingNotice,
     screenshotDetail,
     screenshotId,
     setScreenshotDetail,
@@ -256,6 +257,12 @@ export default function ReviewScreen() {
               });
             }}
           />
+        </SectionCard>
+      ) : null}
+
+      {processingNotice && hasRouteSnapshot ? (
+        <SectionCard title="处理提示">
+          <EmptyHint text={processingNotice} />
         </SectionCard>
       ) : null}
 

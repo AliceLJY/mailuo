@@ -1,13 +1,34 @@
 import { executeCard, rejectCard as rejectActionCard } from "../../../shared/core/agent/execute.ts";
 import { generateInsights } from "../../../shared/core/agent/insight.ts";
 import { perceiveScreenshot } from "../../../shared/core/agent/perceive.ts";
+import type { PerceptionResult } from "../../../shared/core/agent/perceive.ts";
 import { proposeCards } from "../../../shared/core/agent/propose.ts";
 import { resolveParticipants, type ResolvableContact } from "../../../shared/core/agent/resolve.ts";
 import type { LocalLlmSecretStore } from "../connection/secrets";
+import type { LocalProcessingSettings } from "../connection/config";
+import type { UploadImageAsset } from "../types";
 import type { RoutedApi } from "../connection/dispatch";
 
 import { createLocalProviderFactory, type LocalProviderFactory } from "./providers";
+import type { OcrPerceptionResult } from "./perceive-ocr";
 import type { LocalStore, ScreenshotImageLoader } from "./types";
+
+const OCR_FALLBACK_NOTICE = "部分内容可能识别不全，已用云端模型重新处理。";
+const OCR_EXPORT_FAILURE_NOTICE = "截图已处理，但 OCR 原始结果没有导出，请再试一次。";
+
+export type OcrPerceiver = (uri: string) => Promise<OcrPerceptionResult>;
+
+export type OcrTextPerceiver = (input: {
+  ocr: OcrPerceptionResult;
+  note?: string;
+  provider: Awaited<ReturnType<LocalProviderFactory["createTextProvider"]>>;
+  now: Date;
+}) => Promise<PerceptionResult>;
+
+export type OcrExporter = (input: {
+  result: OcrPerceptionResult;
+  asset: UploadImageAsset;
+}) => Promise<void>;
 
 export type CreateLocalApiOptions = {
   store: LocalStore;
@@ -15,6 +36,10 @@ export type CreateLocalApiOptions = {
   loadImage: ScreenshotImageLoader;
   providers?: LocalProviderFactory;
   now?: () => Date;
+  getProcessingSettings?: () => Promise<LocalProcessingSettings>;
+  perceiveOcr?: OcrPerceiver;
+  perceiveOcrText?: OcrTextPerceiver;
+  exportOcr?: OcrExporter;
 };
 
 function listResolvableContacts(store: LocalStore): ResolvableContact[] {
@@ -34,10 +59,13 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
 
   return {
     async uploadScreenshot(input) {
-      const [loadedImage, qwenProvider, textProvider] = await Promise.all([
+      const [loadedImage, textProvider, processing] = await Promise.all([
         options.loadImage(input.asset),
-        providerFactory.createQwenProvider(options.keys),
         providerFactory.createTextProvider(options.keys),
+        options.getProcessingSettings?.() ?? Promise.resolve({
+          perceptionPath: "cloud" as const,
+          exportOcrResults: false,
+        }),
       ]);
       const note = input.note?.trim() || undefined;
       const timestamp = now();
@@ -48,12 +76,67 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
       });
 
       try {
-        const extraction = await perceiveScreenshot({
-          image: loadedImage.image,
-          note,
-          provider: qwenProvider,
-          now: timestamp,
-        });
+        let qwenProviderPromise: ReturnType<LocalProviderFactory["createQwenProvider"]> | null = null;
+        const notices: string[] = [];
+        const perceiveVisually = async () => {
+          qwenProviderPromise ??= providerFactory.createQwenProvider(options.keys);
+          return perceiveScreenshot({
+            image: loadedImage.image,
+            note,
+            provider: await qwenProviderPromise,
+            now: timestamp,
+          });
+        };
+        let extraction: PerceptionResult;
+
+        if (
+          processing.perceptionPath === "ocr" &&
+          options.perceiveOcr &&
+          options.perceiveOcrText
+        ) {
+          let ocr: OcrPerceptionResult | null = null;
+
+          try {
+            ocr = await options.perceiveOcr(loadedImage.imagePath);
+          } catch {
+            // Recognition failure is handled by the original visual path below.
+          }
+
+          if (ocr && processing.exportOcrResults) {
+            if (!options.exportOcr) {
+              notices.push(OCR_EXPORT_FAILURE_NOTICE);
+            } else {
+              try {
+                await options.exportOcr({
+                  result: ocr,
+                  asset: input.asset,
+                });
+              } catch {
+                notices.push(OCR_EXPORT_FAILURE_NOTICE);
+              }
+            }
+          }
+
+          if (!ocr || ocr.lines.length === 0 || ocr.degraded) {
+            extraction = await perceiveVisually();
+            notices.unshift(OCR_FALLBACK_NOTICE);
+          } else {
+            try {
+              extraction = await options.perceiveOcrText({
+                ocr,
+                note,
+                provider: textProvider,
+                now: timestamp,
+              });
+            } catch {
+              extraction = await perceiveVisually();
+              notices.unshift(OCR_FALLBACK_NOTICE);
+            }
+          }
+        } else {
+          extraction = await perceiveVisually();
+        }
+
         const contacts = listResolvableContacts(options.store);
         const resolutions = await resolveParticipants({
           extraction,
@@ -70,6 +153,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
         return {
           screenshot_id: screenshot.id,
           cards,
+          ...(notices.length ? { processing_notice: notices.join(" ") } : {}),
         };
       } catch (error) {
         try {

@@ -223,6 +223,7 @@ export type HealthResponse = {
 export type ScreenshotUploadResponse = {
   screenshot_id: number;
   cards: ActionCardRecord[];
+  processing_notice?: string;
 };
 
 export type ConfirmCardRequest = {

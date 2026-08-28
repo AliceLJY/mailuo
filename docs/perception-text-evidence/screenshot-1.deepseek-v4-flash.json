@@ -1,0 +1,71 @@
+{
+  "sourceFixture": "screenshot-1.png",
+  "sourceFixtureMd5": "2f1d980ef213e8ea536826ae182384b9",
+  "inputKind": "manual-transcription-with-side-markers",
+  "provider": "DeepSeek",
+  "model": "deepseek-v4-flash",
+  "baselineNow": "2026-08-29T08:00:00+08:00",
+  "annotatedText": [
+    "[side=me] 上次你提的联名方案，我们这边已经把方向梳理好了。",
+    "[side=them] 收到，我是栖川数据的林岚，下周三下午 3 点来我们公司聊合作。",
+    "[side=them] 我把会议室先留出来，你到了前台报我的名字就行。",
+    "[side=me] 可以，我提前十分钟到。你们公司是在云栖路 88 号对吧？",
+    "[side=them] 对，A 座 7 层。到时直接微信"
+  ],
+  "result": {
+    "participants": [
+      {
+        "name": "我",
+        "is_self": true,
+        "confidence": "high",
+        "source_quote": "上次你提的联名方案，我们这边已经把方向梳理好了。"
+      },
+      {
+        "name": "林岚",
+        "is_self": false,
+        "company": "栖川数据",
+        "interaction_summary": "林岚约我下周三下午3点到栖川数据聊合作，并确认公司地址在云栖路88号A座7层，让我到时直接微信联系。",
+        "confidence": "high",
+        "source_quote": "收到，我是栖川数据的林岚，下周三下午 3 点来我们公司聊合作。"
+      }
+    ],
+    "events": [
+      {
+        "kind": "meeting",
+        "title": "到栖川数据聊合作",
+        "time_text": "下周三下午 3 点",
+        "time_iso": "2026-09-02T15:00:00+08:00",
+        "has_time_signal": true,
+        "location": "云栖路 88 号 A 座 7 层",
+        "participant_names": [
+          "林岚",
+          "我"
+        ],
+        "agenda": "聊合作",
+        "confidence": "high",
+        "source_quote": "下周三下午 3 点来我们公司聊合作。"
+      }
+    ],
+    "facts": [
+      {
+        "subject_name": "林岚",
+        "field": "company",
+        "value": "栖川数据",
+        "confidence": "high",
+        "source_quote": "我是栖川数据的林岚"
+      }
+    ],
+    "quotes": [
+      {
+        "speaker_name": "林岚",
+        "text": "下周三下午 3 点来我们公司聊合作。",
+        "source_quote": "下周三下午 3 点来我们公司聊合作。"
+      },
+      {
+        "speaker_name": "我",
+        "text": "可以，我提前十分钟到。",
+        "source_quote": "可以，我提前十分钟到。"
+      }
+    ]
+  }
+}

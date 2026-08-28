@@ -1,0 +1,83 @@
+{
+  "participants": [
+    {
+      "name": "王磊",
+      "is_self": false,
+      "company": "潜曜实验室",
+      "title": "市场总监",
+      "phone": "138-0000-2468",
+      "wechat_id": "wl-chenyao",
+      "interaction_summary": "王磊主动联系，介绍自己为潜曜实验室市场总监，并提及之前在品牌私享会聊过内容合作，提供了联系方式并表示后续会发送方案。",
+      "confidence": "high",
+      "source_quote": "你好，我是潜曜实验室的市场总监王磊，前两天在品牌私享会和你聊过内容合作。这是我的联系方式，电话 138-0000-2468，微信是 wl-chenyao，后面方案我直接发你。"
+    },
+    {
+      "name": "我",
+      "is_self": true,
+      "confidence": "high",
+      "source_quote": "收到，我这边存一下，明天下午"
+    }
+  ],
+  "events": [
+    {
+      "kind": "other",
+      "title": "收到联系方式并存档",
+      "time_text": "明天下午",
+      "time_iso": "2026-08-30T00:00:00+08:00",
+      "has_time_signal": true,
+      "participant_names": [
+        "我",
+        "王磊"
+      ],
+      "confidence": "high",
+      "source_quote": "收到，我这边存一下，明天下午"
+    }
+  ],
+  "facts": [
+    {
+      "subject_name": "王磊",
+      "field": "company",
+      "value": "潜曜实验室",
+      "confidence": "high",
+      "source_quote": "我是潜曜实验室的市场总监王磊"
+    },
+    {
+      "subject_name": "王磊",
+      "field": "title",
+      "value": "市场总监",
+      "confidence": "high",
+      "source_quote": "我是潜曜实验室的市场总监王磊"
+    },
+    {
+      "subject_name": "王磊",
+      "field": "phone",
+      "value": "138-0000-2468",
+      "confidence": "high",
+      "source_quote": "电话 138-0000-2468"
+    },
+    {
+      "subject_name": "王磊",
+      "field": "wechat_id",
+      "value": "wl-chenyao",
+      "confidence": "high",
+      "source_quote": "微信是 wl-chenyao"
+    }
+  ],
+  "quotes": [
+    {
+      "speaker_name": "王磊",
+      "text": "你好，我是潜曜实验室的市场总监王磊，前两天在品牌私享会和你聊过内容合作。",
+      "source_quote": "你好，我是潜曜实验室的市场总监王磊，前两天在品牌私享会和你聊过内容合作。"
+    },
+    {
+      "speaker_name": "王磊",
+      "text": "这是我的联系方式，电话 138-0000-2468，微信是 wl-chenyao，后面方案我直接发你。",
+      "source_quote": "这是我的联系方式，电话 138-0000-2468，微信是 wl-chenyao，后面方案我直接发你。"
+    },
+    {
+      "speaker_name": "我",
+      "text": "收到，我这边存一下，明天下午",
+      "source_quote": "收到，我这边存一下，明天下午"
+    }
+  ]
+}

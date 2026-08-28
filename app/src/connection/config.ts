@@ -1,6 +1,15 @@
+export type PerceptionPath = "ocr" | "cloud";
+
 export type ConnectionConfig = {
   mode: "server" | "local";
   serverUrl?: string;
+  perceptionPath?: PerceptionPath;
+  exportOcrResults?: boolean;
+};
+
+export type LocalProcessingSettings = {
+  perceptionPath: PerceptionPath;
+  exportOcrResults: boolean;
 };
 
 export interface TextStorage {
@@ -22,6 +31,15 @@ function normalizeServerUrl(value: string | undefined): string | undefined {
   return normalized || undefined;
 }
 
+export function getLocalProcessingSettings(
+  config: ConnectionConfig | null | undefined,
+): LocalProcessingSettings {
+  return {
+    perceptionPath: config?.perceptionPath === "cloud" ? "cloud" : "ocr",
+    exportOcrResults: config?.exportOcrResults === true,
+  };
+}
+
 function parseConnectionConfig(value: string | null): ConnectionConfig | null {
   if (!value) {
     return null;
@@ -35,9 +53,12 @@ function parseConnectionConfig(value: string | null): ConnectionConfig | null {
     }
 
     const serverUrl = normalizeServerUrl(parsed.serverUrl);
+    const processing = getLocalProcessingSettings(parsed as ConnectionConfig);
     return {
       mode: parsed.mode,
       ...(serverUrl ? { serverUrl } : {}),
+      ...(processing.perceptionPath === "cloud" ? { perceptionPath: "cloud" as const } : {}),
+      ...(processing.exportOcrResults ? { exportOcrResults: true } : {}),
     };
   } catch {
     return null;
@@ -51,11 +72,14 @@ export function createConnectionConfigStore(storage: TextStorage): ConnectionCon
     },
     async set(config) {
       const serverUrl = normalizeServerUrl(config.serverUrl);
+      const processing = getLocalProcessingSettings(config);
       await storage.setItem(
         CONNECTION_CONFIG_KEY,
         JSON.stringify({
           mode: config.mode,
           ...(serverUrl ? { serverUrl } : {}),
+          ...(processing.perceptionPath === "cloud" ? { perceptionPath: "cloud" as const } : {}),
+          ...(processing.exportOcrResults ? { exportOcrResults: true } : {}),
         } satisfies ConnectionConfig),
       );
     },

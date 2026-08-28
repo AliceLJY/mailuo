@@ -19,6 +19,7 @@ type FlowContextValue = {
   contactDetailsById: Record<number, ContactDetail>;
   affectedContactIds: number[];
   hasInsightFailure: boolean;
+  processingNotice: string | null;
   seedFromUpload: (payload: ScreenshotUploadResponse) => void;
   setScreenshotDetail: (detail: ScreenshotDetail) => void;
   applyConfirmResult: (payload: ConfirmCardResponse) => void;
@@ -52,6 +53,7 @@ export function FlowProvider({ children }: PropsWithChildren) {
   const [contactDetailsById, setContactDetailsById] = useState<Record<number, ContactDetail>>({});
   const [affectedContactIds, setAffectedContactIds] = useState<number[]>([]);
   const [hasInsightFailure, setHasInsightFailure] = useState(false);
+  const [processingNotice, setProcessingNotice] = useState<string | null>(null);
 
   const value: FlowContextValue = {
     screenshotId,
@@ -62,6 +64,7 @@ export function FlowProvider({ children }: PropsWithChildren) {
     contactDetailsById,
     affectedContactIds,
     hasInsightFailure,
+    processingNotice,
     seedFromUpload(payload) {
       setScreenshotId(payload.screenshot_id);
       setCards(sortCards(payload.cards));
@@ -71,6 +74,7 @@ export function FlowProvider({ children }: PropsWithChildren) {
       setContactDetailsById({});
       setAffectedContactIds([]);
       setHasInsightFailure(false);
+      setProcessingNotice(payload.processing_notice ?? null);
     },
     setScreenshotDetail(detail) {
       const isSameScreenshot = detail.id === screenshotId;
@@ -84,6 +88,7 @@ export function FlowProvider({ children }: PropsWithChildren) {
         setContactDetailsById({});
         setAffectedContactIds([]);
         setHasInsightFailure(false);
+        setProcessingNotice(null);
       }
     },
     applyConfirmResult(payload) {
@@ -144,6 +149,7 @@ export function FlowProvider({ children }: PropsWithChildren) {
       setContactDetailsById({});
       setAffectedContactIds([]);
       setHasInsightFailure(false);
+      setProcessingNotice(null);
     },
   };
 

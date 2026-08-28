@@ -21,6 +21,7 @@ export default function InsightsScreen() {
     hasInsightFailure,
     insights,
     mergeContactDetail,
+    processingNotice,
     resetFlow,
   } = useFlow();
   const { showError } = useToast();
@@ -70,6 +71,12 @@ export default function InsightsScreen() {
         />
       }
     >
+      {processingNotice ? (
+        <SectionCard title="处理提示">
+          <EmptyHint text={processingNotice} />
+        </SectionCard>
+      ) : null}
+
       {hasInsightFailure ? (
         <SectionCard title="提示">
           <EmptyHint text="这次洞察暂时没生成，但档案已经保存。" />
