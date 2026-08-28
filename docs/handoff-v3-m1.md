@@ -28,13 +28,19 @@
    官方 2.0.0 的 `TextRecognitionModule.java` 不返回 `line.getConfidence()`，这个补丁把它加回来。
    补丁会校验包版本，版本不符直接抛错拒绝打——保留这个行为，不要改成静默跳过。
 3. **像素采样模块**：`tenglu/modules/tenglu-region-sampler/` 整个目录复制过来。
-   `sampleRegions(requests)` 接口是 `{id, uri, x, y, width, height}` → `{side: "me"|"them"|null, rgb, ...}`，
-   只需要图片 uri 和矩形，不依赖视频帧，脉络能直接用。
+   `sampleRegions(requests)` 的请求项是 `{id, frameIndex, uri, x, y, width, height}`，
+   **`frameIndex` 必填**（Kotlin 侧 `item.getInt("frameIndex")` 不给会抛）——脉络是单张静态图，固定传 `0`。
+   返回的是**批对象** `{samples: RegionSample[], decoderCount, elapsedMs}`，不是裸数组；
+   每个 sample 才是 `{id, side: "me"|"them"|null, rgb, ...}`。
+   除 `frameIndex` 外只需要图片 uri 和矩形，不依赖视频帧，脉络能直接用。
    **有意保留原模块名与 Kotlin package 名**（`com.aliceljy.tenglu.regionsampler`）：
    两个 app 不会同时安装，改名要动 Kotlin + gradle + expo-module.config 三处，
    收益只是可读性、成本是三处出错面。在复制过来的目录里加一行注释说明来源即可。
-4. **底色阈值**：`tenglu/src/postprocess.js:64-66`，白色地板 245（每通道严格大于）。
-   绿色（自己）判据是 `G-B >= 40`。两条都不满足时返回 `null`。
+4. **底色阈值**：白色地板 245（每通道严格大于，见 `tenglu/src/postprocess.js:64-66`）。
+   绿色（自己）判据是 **`G - B > 40`，严格大于**——
+   JS 侧 `tenglu/src/postprocess.js:62` 与 Kotlin 侧
+   `tenglu/modules/tenglu-region-sampler/android/src/main/java/com/aliceljy/tenglu/regionsampler/TengluRegionSamplerModule.kt:396`
+   两处一致。两条都不满足时返回 `null`。
 
 **必读的一条教训**（`tenglu/PLAN.md:587`）：纯文本框坐标判不出满宽消息的发言人。
 微信左右气泡布局对称，消息只要占满气泡宽度，左右两侧的 `x/w` 完全一致
@@ -91,14 +97,31 @@
   不要把 side / RGB / confidence 这些内部明细暴露给用户
 - 加一个设置项让用户强制走云端视觉路径（对应誊录的"处理路径开关"）
 
-### 4. 质量对比脚本（先跑，结果决定后面怎么调）
+### 4. 质量闸门（分两段，Mac 侧这段现在就能做）
 
-新增 `scripts/compare-perception.mjs`：同一张截图分别走 OCR 路径和 Qwen-VL 路径，
-输出两份抽取 JSON 的字段级差异（哪些字段一致、哪些不一致、各自的 source_quote）。
+**这一节 2026-08-29 重写过。** 初版把"同素材双路径对比"写成施工前的第一步，那是错的：
+生产 OCR 是 React Native 原生 ML Kit，Node 脚本调不到；而脉络此刻还没有 OCR 实现，
+也就产不出可比的 OCR 结果。誊录当初也是**先实现、再在第四轮加导出开关、拿真机 bundle 回 Mac 离线对比**，
+顺序本来就是这样。不要为了让闸门跑起来去连 ADB 或拿 Mac Vision 顶包。
 
-这个脚本是本批的第一步，不是收尾——**先拿它跑 fixtures 里那三张，看差异长什么样，再决定提示词怎么调**。
-`fixtures/screenshot-{1,2,3}.png` 是 HTML 渲染的合成数据、不是真实微信截图，
-所以它只能保证不回归，不能证明真实场景可用。真实截图的验收由 owner 在真机上做。
+闸门拆成三半，各自的证据来源不同：
+
+**半 A —— ML Kit 读微信界面准不准：已有答案，不必重测。**
+誊录 v0.3.0 真机实测（同一个 ML Kit 引擎、同一类微信界面）：字符级 **91.4%**，
+群聊段内容召回 59/60，失分几乎全是认错一两个字（硬→便、懂→憧、接→援），不是整行崩掉。
+出处 `tenglu/PLAN.md:999` 那节。直接引用，不要重跑。
+
+**半 B —— Qwen-VL 在同一批图上准不准：Mac 侧现在就能测，本批要做。**
+Qwen-VL 是云端 API，Node 直接调得到。新增 `scripts/perception-baseline.mjs`：
+对 `fixtures/screenshot-{1,2,3}.png` 跑现有视觉路径，把抽取 JSON 落盘成基线快照。
+这份快照有两个用途——给半 C 当对照组，以及在你改 `prompts.ts` 之后回归验证视觉路径没被改坏。
+
+**半 C —— 同素材严格对比：推迟到真机批，本批不做。**
+参照誊录 `verify/M3-DEVICE-ACCEPTANCE.md` 的形态：app 内加一个导出开关，
+把 OCR 原始结果（每行 text/x/y/w/h/conf + side 判定 + warnings）写成单个 JSON，
+owner 在真机上跑完用系统目录选择器导出、回传到 Mac，再离线比对。
+**全程不需要 USB 或 ADB**，誊录整个 M3 都是这么验的。
+本批只需要保证这个导出开关做出来、格式定好，不需要拿到数据。
 
 ## Scope
 
@@ -121,19 +144,26 @@ Mac 侧：
 
 1. `cd server && npm test` 全绿 + `npx tsc --noEmit` 零报错
 2. `cd app && npx tsc --noEmit` 零报错
-3. `node scripts/compare-perception.mjs fixtures/screenshot-1.png` 能跑出两条路径的字段级差异表，
-   贴出完整输出
-4. 三张 fixtures 全跑一遍，说明每一处字段差异是"OCR 认错字"、"提示词理解差异"还是"缺陷"
+3. `node scripts/perception-baseline.mjs` 对三张 fixtures 跑通视觉路径并落盘基线快照，贴出完整输出。
+   需要 `DASHSCOPE_API_KEY`；owner 已配置，缺失时报清晰错误而不是静默跳过
+4. 改完 `prompts.ts` 之后重跑第 3 步，确认视觉路径的抽取结果与改动前**逐字节一致**——
+   本批新增的是平行的文本版提示词，视觉版一个字都不该变。有差异就是改错了地方
 5. 构造用例覆盖三条降级路径：OCR 抛错、零文本行、采样全部返回 `null`，
    三种都要能正确回退到 Qwen-VL 且不崩
+6. OCR 结果导出开关做出来：格式定义写进 `docs/`，并用一个构造的 OCR 结果验证能导出成合法 JSON
+   （不需要真机数据，只验格式与落盘）
 
 真机侧（owner 跑，你只需保证 APK 可构建）：
 
-6. `npx expo config --type public` 不报错，`eas.json` 的 preview profile 仍能出 APK
+7. `npx expo config --type public` 不报错，`eas.json` 的 preview profile 仍能出 APK
 
 完成后照旧：逐条贴实际输出、列文件清单、说明偏离决定及理由。
-**如果第 4 步发现 OCR 路径的抽取质量明显差于 Qwen-VL，停下来报告，不要自己调提示词硬凑**——
-那种情况下的正确处置是把默认路径反过来（默认云端、OCR 作为可选），而不是让数字看起来好看。
+
+**关于质量判断**：本批不判 OCR 路径的抽取质量，因为拿不到同素材证据（理由见 Goal 第 4 节）。
+真机 bundle 回来之后才判，判据是：OCR 路径的抽取结果与视觉基线相比，
+每一处字段差异要能归到"OCR 认错字"、"提示词理解差异"还是"缺陷"三类之一。
+**如果那时发现 OCR 路径明显差于 Qwen-VL，正确处置是把默认路径反过来（默认云端、OCR 作为可选），
+不是调提示词让数字好看。** 这句话现在写在这里，是为了那时候不用重新讨论一遍。
 
 ## 下一批预告（v3-M2，本批不做）
 
