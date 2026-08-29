@@ -7,17 +7,18 @@ import { FormNotice } from "@/components/connection-fields";
 import { Page, SectionCard } from "@/components/page";
 import { getLocalProcessingSettings, type LocalProcessingSettings } from "@/connection/config";
 import { useConnection } from "@/connection/context";
-import { useFlow } from "@/flow-context";
+import { hasInProgressFlowItems, useFlow } from "@/flow-context";
 import { theme } from "@/theme";
 
 export default function SettingsScreen() {
   const { clearConfig, config, saveConfig } = useConnection();
-  const { resetFlow } = useFlow();
+  const { batchItems, resetFlow } = useFlow();
   const [switching, setSwitching] = useState(false);
   const [savingPreference, setSavingPreference] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const isLocal = config?.mode === "local";
   const localProcessing = getLocalProcessingSettings(config);
+  const hasInProgressUpload = hasInProgressFlowItems(batchItems);
 
   async function saveLocalProcessing(patch: Partial<LocalProcessingSettings>) {
     if (!config || config.mode !== "local") {
@@ -42,6 +43,11 @@ export default function SettingsScreen() {
   }
 
   async function switchMode() {
+    if (hasInProgressUpload) {
+      setMessage("当前内容仍在整理，请完成后再切换连接方式。");
+      return;
+    }
+
     setSwitching(true);
     setMessage(null);
 
@@ -77,7 +83,7 @@ export default function SettingsScreen() {
         <>
           <SectionCard title="截图处理路径">
             <Text style={styles.description}>
-              默认先在手机上识字，再把带发言方标记的文字交给模型整理；本地识别不完整时会自动改用云端视觉处理。
+              默认先在手机上识字，再把带发言方标记的文字交给模型整理；只有没认出文字或多数文字置信度明显偏低时才改用云端视觉，发言人不确定仍会继续整理文字。
             </Text>
             <View style={styles.switchRow}>
               <Text style={styles.switchLabel}>始终使用云端视觉识别</Text>
@@ -109,11 +115,13 @@ export default function SettingsScreen() {
 
       <SectionCard title="更换使用方式">
         <Text style={styles.description}>
-          更换后会回到选择页。手机里已经保存的模型 Key 不会被显示或删除。
+          {hasInProgressUpload
+            ? "当前内容仍在整理。处理完成后可以切换连接方式，避免遗漏待确认卡片。"
+            : "更换后会回到选择页。手机里已经保存的模型 Key 不会被显示或删除。"}
         </Text>
         <AppButton
-          disabled={switching}
-          label={switching ? "正在切换..." : "切换连接方式"}
+          disabled={switching || hasInProgressUpload}
+          label={switching ? "正在切换..." : hasInProgressUpload ? "整理完成后可切换" : "切换连接方式"}
           onPress={() => void switchMode()}
           tone="secondary"
         />

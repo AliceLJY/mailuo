@@ -11,8 +11,9 @@ function proposeCards(
   extraction: PerceptionResult,
   resolutions?: ParticipantResolution[],
   contacts: ResolvableContact[] = [],
+  now = proposalNow,
 ) {
-  return baseProposeCards(extraction, resolutions, contacts, proposalNow);
+  return baseProposeCards(extraction, resolutions, contacts, now);
 }
 
 test('proposeCards creates contact and meeting cards from perception output', () => {
@@ -203,7 +204,7 @@ test('proposeCards creates update_contact, meeting contact ids, and one interact
     type: 'create_meeting',
     payload: {
       title: '喝咖啡聊合作',
-      time_iso: '2026-08-28T14:00:00+08:00',
+      time_iso: '2026-08-27T14:00:00+08:00',
       time_text: '明天下午两点',
       participants: [{ contact_id: 1, name: '王磊' }, { name: '路人甲' }],
     },
@@ -289,36 +290,146 @@ test('proposeCards prefers participant interaction_summary for interaction paylo
   );
 });
 
-test('proposeCards overrides model time_iso with locally resolved time_text', () => {
+test('proposeCards resolves an absolute month/day with the current year and ignores a relative prefix', () => {
   const extraction: PerceptionResult = {
     participants: [],
     events: [
       {
         kind: 'meeting',
-        title: '继续聊',
-        time_text: '明晚',
-        time_iso: '2026-08-28T18:00:00+08:00',
+        title: '复盘会',
+        time_text: '明天8月26日（周三）上午9:30',
+        time_iso: null,
         has_time_signal: true,
         participant_names: [],
         confidence: 'medium',
-        source_quote: '明晚继续聊',
+        source_quote: '明天8月26日（周三）上午9:30开复盘会',
       },
     ],
     facts: [],
     quotes: [],
   };
 
-  assert.deepEqual(proposeCards(extraction), [
+  assert.deepEqual(proposeCards(extraction, [], [], new Date('2026-08-29T08:00:00+08:00')), [
+    {
+      type: 'create_meeting',
+      payload: {
+        title: '复盘会',
+        time_iso: '2026-08-26T09:30:00+08:00',
+        time_text: '明天8月26日（周三）上午9:30',
+        participants: [],
+      },
+      confidence: 'medium',
+      source_quote: '明天8月26日（周三）上午9:30开复盘会',
+    },
+  ]);
+});
+
+test('proposeCards keeps bare weekday labels from overriding an absolute calendar date', () => {
+  const cases = [
+    ['8月26日周三上午9:30', '2026-08-26T09:30:00+08:00'],
+    ['8月26日星期三上午9:30', '2026-08-26T09:30:00+08:00'],
+    ['8月26日礼拜三上午9:30', '2026-08-26T09:30:00+08:00'],
+    ['8月26日週三上午9:30', '2026-08-26T09:30:00+08:00'],
+    ['8 月 26 日 上午 9 点 30 分', '2026-08-26T09:30:00+08:00'],
+    ['8月26日 16 时 30 分', '2026-08-26T16:30:00+08:00'],
+    ['2025 年 8 月 26 日上午9:30', '2025-08-26T09:30:00+08:00'],
+    ['2025年8月26日周三上午9:30', '2025-08-26T09:30:00+08:00'],
+    ['二〇二五年八月二十六日上午九点半', '2025-08-26T09:30:00+08:00'],
+    ['二零二五年8月26日上午9:30', '2025-08-26T09:30:00+08:00'],
+  ] as const;
+
+  for (const [timeText, expectedTimeIso] of cases) {
+    const extraction: PerceptionResult = {
+      participants: [],
+      events: [
+        {
+          kind: 'meeting',
+          title: '复盘会',
+          time_text: timeText,
+          time_iso: null,
+          has_time_signal: true,
+          participant_names: [],
+          confidence: 'medium',
+          source_quote: `${timeText}开复盘会`,
+        },
+      ],
+      facts: [],
+      quotes: [],
+    };
+
+    const [card] = proposeCards(
+      extraction,
+      [],
+      [],
+      new Date('2026-08-29T08:00:00+08:00'),
+    );
+
+    assert.equal(card?.type, 'create_meeting');
+    assert.equal(card?.payload.time_iso, expectedTimeIso);
+  }
+});
+
+test('proposeCards leaves a date-only absolute expression without an invented hour', () => {
+  const extraction: PerceptionResult = {
+    participants: [],
+    events: [
+      {
+        kind: 'meeting',
+        title: '复盘会',
+        time_text: '8月27日（周四）',
+        time_iso: '2026-08-27T00:00:00+08:00',
+        has_time_signal: true,
+        participant_names: [],
+        confidence: 'medium',
+        source_quote: '8月27日（周四）开复盘会',
+      },
+    ],
+    facts: [],
+    quotes: [],
+  };
+
+  const [card] = proposeCards(
+    extraction,
+    [],
+    [],
+    new Date('2026-08-29T08:00:00+08:00'),
+  );
+
+  assert.equal(card?.type, 'create_meeting');
+  assert.equal(card?.payload.time_iso, null);
+  assert.equal(card?.payload.time_text, '8月27日（周四）');
+});
+
+test('proposeCards leaves relative-only time_iso null when a time signal exists', () => {
+  const extraction: PerceptionResult = {
+    participants: [],
+    events: [
+      {
+        kind: 'meeting',
+        title: '继续聊',
+        time_text: '下周三下午三点',
+        time_iso: null,
+        has_time_signal: true,
+        participant_names: [],
+        confidence: 'medium',
+        source_quote: '下周三下午三点继续聊',
+      },
+    ],
+    facts: [],
+    quotes: [],
+  };
+
+  assert.deepEqual(proposeCards(extraction, [], [], new Date('2026-08-29T08:00:00+08:00')), [
     {
       type: 'create_meeting',
       payload: {
         title: '继续聊',
-        time_iso: '2026-08-28T19:00:00+08:00',
-        time_text: '明晚',
+        time_iso: null,
+        time_text: '下周三下午三点',
         participants: [],
       },
       confidence: 'medium',
-      source_quote: '明晚继续聊',
+      source_quote: '下周三下午三点继续聊',
     },
   ]);
 });
@@ -357,7 +468,7 @@ test('proposeCards preserves model time_iso when legacy time_text is blank', () 
   ]);
 });
 
-test('proposeCards preserves model time_iso when local resolution returns null', () => {
+test('proposeCards preserves model time_iso when no absolute month/day is present', () => {
   const extraction: PerceptionResult = {
     participants: [],
     events: [

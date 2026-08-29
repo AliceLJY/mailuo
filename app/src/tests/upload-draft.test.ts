@@ -71,6 +71,29 @@ test("successful batch reset clears every selected image and the shared note", (
 
   assert.deepEqual(uploadDraftReducer(withNote, { type: "reset" }), {
     assets: [],
+    text: "",
     note: "",
   });
+});
+
+test("image and pasted-text drafts are mutually exclusive and reset together", () => {
+  const withImages = uploadDraftReducer(initialUploadDraft, {
+    type: "add-assets",
+    assets: [asset(1), asset(2)],
+  });
+  const withText = uploadDraftReducer(withImages, {
+    type: "set-text",
+    text: "明天 9:30 开会",
+  });
+
+  assert.deepEqual(withText.assets, []);
+  assert.equal(withText.text, "明天 9:30 开会");
+
+  const backToImages = uploadDraftReducer(withText, {
+    type: "add-assets",
+    assets: [asset(3)],
+  });
+  assert.deepEqual(backToImages.assets, [asset(3)]);
+  assert.equal(backToImages.text, "");
+  assert.deepEqual(uploadDraftReducer(backToImages, { type: "reset" }), initialUploadDraft);
 });

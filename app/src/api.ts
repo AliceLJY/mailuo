@@ -153,6 +153,23 @@ async function uploadScreenshotFromServer(input: {
   }
 }
 
+async function uploadTextFromServer(input: {
+  text: string;
+  note?: string;
+}, serverUrl?: string) {
+  const note = input.note?.trim();
+  return request<ScreenshotUploadResponse>("/api/notes", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      text: input.text.trim(),
+      ...(note ? { note } : {}),
+    }),
+  }, serverUrl);
+}
+
 async function confirmCardFromServer(
   cardId: number,
   body: ConfirmCardRequest = {},
@@ -192,6 +209,7 @@ async function getScreenshotDetailFromServer(screenshotId: number, serverUrl?: s
 function createServerApi(serverUrl?: string): RoutedApi {
   return {
     uploadScreenshot: (input) => uploadScreenshotFromServer(input, serverUrl),
+    uploadText: (input) => uploadTextFromServer(input, serverUrl),
     confirmCard: (cardId, body = {}) => confirmCardFromServer(cardId, body, serverUrl),
     rejectCard: (cardId) => rejectCardFromServer(cardId, serverUrl),
     getContacts: () => getContactsFromServer(serverUrl),
@@ -222,6 +240,7 @@ const apiDispatcher = createApiDispatcher({
 });
 
 export const uploadScreenshot = apiDispatcher.uploadScreenshot;
+export const uploadText = apiDispatcher.uploadText;
 export const confirmCard = apiDispatcher.confirmCard;
 export const rejectCard = apiDispatcher.rejectCard;
 export const getContacts = apiDispatcher.getContacts;

@@ -54,6 +54,9 @@ function apiWithUpload(
 ): RoutedApi {
   return {
     uploadScreenshot: upload,
+    async uploadText() {
+      throw new Error("unused");
+    },
     async confirmCard() {
       throw new Error("unused");
     },

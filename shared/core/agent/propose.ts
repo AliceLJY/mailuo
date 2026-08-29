@@ -645,13 +645,70 @@ export function proposeCards(
 ): ProposedCard[] {
   const cards: ProposedCard[] = [];
   const participants = extraction.participants as ProposeParticipant[];
-  // M4-fix2 真机里模型会把“下周三”落成错日期；代码解析成功才覆盖，解析不到仍保留模型值与原门槛。
-  const events = (extraction.events as ProposeEvent[]).map((event) => ({
-    ...event,
-    time_iso: normalizeOptionalText(event.time_text)
-      ? (resolveChineseTime(event.time_text, now) ?? event.time_iso)
-      : event.time_iso,
-  }));
+  // Only an explicit month/day permits deterministic local resolution. Relative-only text stays with the model value, which the prompt requires to be null.
+  const events = (extraction.events as ProposeEvent[]).map((event) => {
+    const timeText = normalizeOptionalText(event.time_text);
+
+    if (!timeText) {
+      return event;
+    }
+
+    const normalizedTimeText = timeText
+      .normalize('NFKC')
+      .replace(/礼拜/gu, '星期')
+      .replace(/週/gu, '周')
+      .replace(/\s+/gu, '');
+    const absoluteDateMatch = normalizedTimeText.match(
+      /(?:(\d{4}|[〇零一二三四五六七八九]{4})年)?(?:\d{1,2}|[〇零一二两三四五六七八九十]{1,3})月(?:\d{1,2}|[〇零一二两三四五六七八九十]{1,3})(?:日|号)/u,
+    );
+
+    if (!absoluteDateMatch) {
+      return event;
+    }
+
+    const currentYear = Number(new Intl.DateTimeFormat('en', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+    }).format(now));
+    const explicitYearToken = absoluteDateMatch[1];
+    const chineseYearDigitMap: Record<string, string> = {
+      '〇': '0',
+      '零': '0',
+      '一': '1',
+      '二': '2',
+      '三': '3',
+      '四': '4',
+      '五': '5',
+      '六': '6',
+      '七': '7',
+      '八': '8',
+      '九': '9',
+    };
+    const absoluteYear = explicitYearToken
+      ? Number(Array.from(explicitYearToken, (digit) => chineseYearDigitMap[digit] ?? digit).join(''))
+      : currentYear;
+    const absoluteTimeText = normalizedTimeText
+      .slice(absoluteDateMatch.index ?? 0)
+      .replace(
+        /\s*(?:\(\s*)?(?:周|星期)[一二三四五六日天末1-7](?:\s*\))?/gu,
+        '',
+      );
+    const hasExplicitClockTime = /(?:\d{1,2}:\d{1,2}|[0-9〇零一二两三四五六七八九十]{1,4}(?:点|时)(?:半|[0-9〇零一二两三四五六七八九十]{1,4}分?)?)/u
+      .test(absoluteTimeText);
+
+    if (!hasExplicitClockTime) {
+      return {
+        ...event,
+        time_iso: null,
+      };
+    }
+    const absoluteAnchor = new Date(`${absoluteYear}-01-01T00:00:00+08:00`);
+
+    return {
+      ...event,
+      time_iso: resolveChineseTime(absoluteTimeText, absoluteAnchor) ?? event.time_iso,
+    };
+  });
   const selfParticipantNames = buildSelfParticipantNames(participants);
   const factsBySubject = indexFactsBySubject(extraction.facts);
   const quotesBySpeaker = indexQuotesBySpeaker(extraction.quotes);

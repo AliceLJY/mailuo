@@ -1,7 +1,5 @@
 // Platform-neutral prompt builders shared by server and native runtimes.
 const shanghaiTimeZone = 'Asia/Shanghai';
-const weekdayLabels = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
-const weekdayShortLabels = ['日', '一', '二', '三', '四', '五', '六'];
 
 type ShanghaiDateParts = {
   year: number;
@@ -45,80 +43,8 @@ function getShanghaiDateParts(now: Date): ShanghaiDateParts {
   };
 }
 
-function toUtcCalendarDate(date: CalendarDate): Date {
-  return new Date(Date.UTC(date.year, date.month - 1, date.day));
-}
-
-function addCalendarDays(date: CalendarDate, deltaDays: number): CalendarDate {
-  const nextDate = toUtcCalendarDate(date);
-  nextDate.setUTCDate(nextDate.getUTCDate() + deltaDays);
-
-  return {
-    year: nextDate.getUTCFullYear(),
-    month: nextDate.getUTCMonth() + 1,
-    day: nextDate.getUTCDate(),
-  };
-}
-
 function formatCalendarDate(date: CalendarDate): string {
   return `${date.year}-${formatTwoDigits(date.month)}-${formatTwoDigits(date.day)}`;
-}
-
-function getWeekdayIndex(date: CalendarDate): number {
-  return toUtcCalendarDate(date).getUTCDay();
-}
-
-function getWeekStart(date: CalendarDate): CalendarDate {
-  const weekdayIndex = getWeekdayIndex(date);
-  const mondayBasedWeekday = (weekdayIndex + 6) % 7;
-
-  return addCalendarDays(date, -mondayBasedWeekday);
-}
-
-function getRelativeWeekLabel(date: CalendarDate, today: CalendarDate): string | null {
-  const weekdayIndex = getWeekdayIndex(date);
-
-  if (weekdayIndex === 0 || weekdayIndex === 6) {
-    return null;
-  }
-
-  const weekStart = getWeekStart(date);
-  const todayWeekStart = getWeekStart(today);
-  const weekDeltaDays =
-    (toUtcCalendarDate(weekStart).getTime() - toUtcCalendarDate(todayWeekStart).getTime()) /
-    (24 * 60 * 60 * 1000);
-  const weekdayShortLabel = weekdayShortLabels[weekdayIndex];
-
-  if (weekDeltaDays === 0) {
-    return `本周${weekdayShortLabel}`;
-  }
-
-  if (weekDeltaDays === 7) {
-    return `下周${weekdayShortLabel}`;
-  }
-
-  return null;
-}
-
-function formatCalendarLookupLine(date: CalendarDate, today: CalendarDate, offsetDays: number): string {
-  const weekdayIndex = getWeekdayIndex(date);
-  const labels: string[] = [];
-
-  if (offsetDays === 0) {
-    labels.push('今天');
-  } else if (offsetDays === 1) {
-    labels.push('明天');
-  }
-
-  const relativeWeekLabel = getRelativeWeekLabel(date, today);
-
-  if (relativeWeekLabel) {
-    labels.push(relativeWeekLabel);
-  }
-
-  const suffix = labels.length > 0 ? `（${labels.join('、')}）` : '';
-
-  return `${formatCalendarDate(date)} = ${weekdayLabels[weekdayIndex]}${suffix}`;
 }
 
 function formatShanghaiDateTime(now: Date): string {
@@ -127,23 +53,16 @@ function formatShanghaiDateTime(now: Date): string {
   return `${formatCalendarDate(parts)}T${parts.hour}:${parts.minute}:${parts.second}+08:00`;
 }
 
-function buildShanghaiCalendarAnchor(now: Date): string {
-  const today = getShanghaiDateParts(now);
-  const todayDate: CalendarDate = {
-    year: today.year,
-    month: today.month,
-    day: today.day,
-  };
-  const lookupLines = Array.from({ length: 14 }, (_, offsetDays) =>
-    formatCalendarLookupLine(addCalendarDays(todayDate, offsetDays), todayDate, offsetDays),
-  );
+function buildTimeExtractionRules(now: Date): string {
+  const currentYear = getShanghaiDateParts(now).year;
 
   return [
-    'Calendar anchor (Asia/Shanghai):',
-    'Resolve every relative date in time_iso by selecting the matching YYYY-MM-DD from the table below.',
-    'Do not calculate weekdays or dates yourself.',
-    'The date part of every time_iso must be one of these 14 dates:',
-    ...lookupLines,
+    'Time extraction rules (Asia/Shanghai):',
+    '- Always preserve the original scheduling expression verbatim in time_text.',
+    '- If the evidence contains an absolute calendar date such as "8月27日（周四）" or "8月12日 下午16:00", use that explicit month and day in time_iso. An absolute date takes priority over relative words such as "明天" in the same expression; never replace the explicit month and day by calculating from a relative word.',
+    '- If an absolute date has no explicit clock time, set time_iso=null rather than inventing a default hour. Preserve time_text and set has_time_signal=true.',
+    `- If an absolute month and day omit the year, use ${currentYear}, even when that date is earlier than the current date. Never roll it into the next year.`,
+    '- If the evidence contains only a relative date such as "明天", "下周三", or "今天下午", set time_iso=null. Do not calculate a calendar date from the current datetime. Preserve time_text and set has_time_signal=true.',
   ].join('\n');
 }
 
@@ -191,8 +110,7 @@ export function buildPerceptionSystemPrompt(now: Date): string {
     'In a chat screenshot, the device owner is the self side of the conversation: messages shown as "我" or the right-side bubbles. Mark that participant with is_self=true. Mark everyone else with is_self=false.',
     'Do not turn another person into the device owner unless the screenshot itself shows that self-side evidence.',
     `Current datetime (Asia/Shanghai): ${formatShanghaiDateTime(now)}`,
-    buildShanghaiCalendarAnchor(now),
-    'If the screenshot uses relative time like tomorrow or next Wednesday, resolve it to ISO 8601 using Asia/Shanghai, select the date from the calendar table above instead of doing your own weekday math, and also preserve the original time_text.',
+    buildTimeExtractionRules(now),
     'A meeting or appointment must be a mutually agreed time when both sides will meet, attend together, or talk on a call together.',
     'A one-sided delivery promise or task commitment such as "明天把方案发你" is not a meeting, even when it has a clear date or time. Extract it as kind="other".',
     'For event titles, stay as close as possible to the original wording and meaning. Do not invent an agenda like "讨论合作" unless the screenshot explicitly says it.',
@@ -224,8 +142,7 @@ export function buildPerceptionTextSystemPrompt(now: Date): string {
     'For a side=null line, determine is_self or speaker_name only from explicit text such as "我". Otherwise do not guess, and use speaker_name=null when applicable.',
     'Do not turn another person into the device owner unless a side=me marker or the provided OCR text explicitly shows that self-side evidence.',
     `Current datetime (Asia/Shanghai): ${formatShanghaiDateTime(now)}`,
-    buildShanghaiCalendarAnchor(now),
-    'If the provided OCR text uses relative time like tomorrow or next Wednesday, resolve it to ISO 8601 using Asia/Shanghai, select the date from the calendar table above instead of doing your own weekday math, and also preserve the original time_text.',
+    buildTimeExtractionRules(now),
     'A meeting or appointment must be a mutually agreed time when both sides will meet, attend together, or talk on a call together.',
     'A one-sided delivery promise or task commitment such as "明天把方案发你" is not a meeting, even when it has a clear date or time. Extract it as kind="other".',
     'For event titles, stay as close as possible to the original wording and meaning. Do not invent an agenda like "讨论合作" unless the provided OCR text explicitly says it.',

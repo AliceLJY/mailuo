@@ -1118,6 +1118,92 @@ const emptyExtraction = {
   quotes: [],
 };
 
+test("pasted text uses the shared text perception path without loading or perceiving an image", async () => {
+  const store = new FakeLocalStore();
+  const textProvider = new FakeStructuredOutputProvider(() => emptyExtraction);
+  let imageLoads = 0;
+  let ocrCalls = 0;
+  let qwenProviderCreations = 0;
+  let textPerceptionCalls = 0;
+  let perceivedLines: OcrPerceptionResult["lines"] = [];
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    async loadImage() {
+      imageLoads += 1;
+      throw new Error("text upload must not load an image");
+    },
+    providers: {
+      async createQwenProvider() {
+        qwenProviderCreations += 1;
+        return new FakeStructuredOutputProvider(() => emptyExtraction);
+      },
+      async createTextProvider() {
+        return textProvider;
+      },
+    },
+    async perceiveOcr() {
+      ocrCalls += 1;
+      return { lines: [], warnings: [], degraded: false };
+    },
+    async perceiveOcrText(input) {
+      textPerceptionCalls += 1;
+      perceivedLines = input.ocr.lines;
+      return emptyExtraction;
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  const upload = await api.uploadText({
+    text: "  明天上午 9:30 开会\n会议室 A  ",
+    note: "  项目群通知  ",
+  });
+  const detail = await api.getScreenshotDetail(upload.screenshot_id);
+
+  assert.equal(textPerceptionCalls, 1);
+  assert.deepEqual(
+    perceivedLines.map(({ text, side, x, y, width, height, confidence }) => ({
+      text,
+      side,
+      x,
+      y,
+      width,
+      height,
+      confidence,
+    })),
+    [
+      {
+        text: "明天上午 9:30 开会",
+        side: null,
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        confidence: null,
+      },
+      {
+        text: "会议室 A",
+        side: null,
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        confidence: null,
+      },
+    ],
+  );
+  assert.equal(imageLoads, 0);
+  assert.equal(ocrCalls, 0);
+  assert.equal(qwenProviderCreations, 0);
+  assert.match(detail?.image_path ?? "", /^data:text\/plain;charset=utf-8,/u);
+  assert.equal(
+    decodeURIComponent((detail?.image_path ?? "").split(",", 2)[1] ?? ""),
+    "明天上午 9:30 开会\n会议室 A",
+  );
+  assert.equal(detail?.user_note, "项目群通知");
+  assert.deepEqual(detail?.raw_extraction, emptyExtraction);
+});
+
 async function runOcrFallbackCase(
   perceiveOcr: () => Promise<OcrPerceptionResult>,
   perceiveText: () => Promise<typeof emptyExtraction> = async () => emptyExtraction,
@@ -1163,6 +1249,50 @@ async function runOcrFallbackCase(
   assert.ok(await api.getScreenshotDetail(upload.screenshot_id));
 }
 
+async function runOcrTextOnlyCase(ocr: OcrPerceptionResult) {
+  const store = new FakeLocalStore();
+  const text = new FakeStructuredOutputProvider(() => emptyExtraction);
+  let qwenProviderCreations = 0;
+  let textPerceptionCalls = 0;
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async (asset) => ({
+      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+      imagePath: asset.uri,
+    }),
+    providers: {
+      async createQwenProvider() {
+        qwenProviderCreations += 1;
+        return new FakeStructuredOutputProvider(() => emptyExtraction);
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    async getProcessingSettings() {
+      return { perceptionPath: "ocr", exportOcrResults: false };
+    },
+    async perceiveOcr() {
+      return ocr;
+    },
+    async perceiveOcrText() {
+      textPerceptionCalls += 1;
+      return emptyExtraction;
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  const upload = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/unresolved-speakers.png", mimeType: "image/png" },
+  });
+
+  assert.equal(textPerceptionCalls, 1);
+  assert.equal(qwenProviderCreations, 0);
+  assert.match(upload.processing_notice ?? "", /发言人未能确定/u);
+  assert.doesNotMatch(upload.processing_notice ?? "", /云端模型重新处理/u);
+}
+
 test("OCR exception falls back to Qwen-VL without deleting the screenshot", async () => {
   await runOcrFallbackCase(async () => {
     throw new Error("ML Kit unavailable");
@@ -1177,7 +1307,7 @@ test("zero OCR lines fall back to Qwen-VL without crashing", async () => {
   }));
 });
 
-test("all-null region samples mark OCR degraded and fall back to Qwen-VL", async () => {
+test("all-null region samples stay on OCR text and do not create a Qwen-VL provider", async () => {
   const degradedOcr = await perceiveScreenshotWithOcr({
     uri: "file:///fake/fallback.png",
     async recognize() {
@@ -1200,9 +1330,56 @@ test("all-null region samples mark OCR degraded and fall back to Qwen-VL", async
   });
 
   assert.equal(degradedOcr.degraded, true);
+  assert.equal(degradedOcr.hasUnresolvedMessageSpeakers, true);
   assert.equal(degradedOcr.warnings.length, 2);
   assert.ok(degradedOcr.lines.every((line, index) => index === 0 || index === 3 || line.side === null));
-  await runOcrFallbackCase(async () => degradedOcr);
+
+  await runOcrTextOnlyCase(degradedOcr);
+});
+
+test("recognized text without geometry stays on text perception and skips Qwen-VL", async () => {
+  const ocr = await perceiveScreenshotWithOcr({
+    uri: "file:///fake/no-geometry.png",
+    async recognize() {
+      return {
+        blocks: [{ lines: [{ text: "8月26日上午9:30开会", confidence: 0.94 }] }],
+      };
+    },
+    async sampleRegions() {
+      throw new Error("lines without geometry must not be sampled");
+    },
+  });
+
+  assert.equal(ocr.lines.length, 1);
+  assert.deepEqual(
+    ocr.lines[0],
+    {
+      text: "8月26日上午9:30开会",
+      side: null,
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      confidence: 0.94,
+    },
+  );
+  await runOcrTextOnlyCase(ocr);
+});
+
+test("low-confidence OCR rows above the threshold fall back to Qwen-VL", async () => {
+  await runOcrFallbackCase(async () => ({
+    lines: [0.2, 0.3, 0.4, 0.95].map((confidence, index) => ({
+      text: `第 ${index + 1} 行`,
+      side: null,
+      x: 24,
+      y: 40 + index * 35,
+      width: 120,
+      height: 30,
+      confidence,
+    })),
+    warnings: [],
+    degraded: false,
+  }));
 });
 
 test("OCR text interpretation failure falls back to Qwen-VL once", async () => {

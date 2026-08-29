@@ -16,7 +16,10 @@ import { EmptyHint, Page, SectionCard } from "@/components/page";
 import { ReviewCard } from "@/components/review/review-card";
 import { useConnection } from "@/connection/context";
 import { useFlow, type FlowBatchItem } from "@/flow-context";
-import { findCurrentPendingReviewCard, orderReviewCards } from "@/review-order";
+import {
+  buildOrderedReviewGroups,
+  findCurrentPendingReviewCard,
+} from "@/review-order";
 import { theme } from "@/theme";
 import { useToast } from "@/toast-context";
 import type { ActionCardRecord, ReviewCardDraft } from "@/types";
@@ -107,16 +110,10 @@ export default function ReviewScreen() {
     currentMode,
     currentServerUrl,
   });
-  const orderedGroups = useMemo(() => {
-    const latestCards = new Map(cards.map((card) => [card.id, card]));
-
-    return [...batchItems]
-      .sort((left, right) => left.index - right.index)
-      .map((item) => ({
-        item,
-        cards: orderReviewCards(item.cards.map((card) => latestCards.get(card.id) ?? card)),
-      }));
-  }, [batchItems, cards]);
+  const orderedGroups = useMemo(
+    () => buildOrderedReviewGroups(batchItems, cards),
+    [batchItems, cards],
+  );
   const orderedCards = useMemo(
     () => orderedGroups.flatMap((group) => group.cards),
     [orderedGroups],
@@ -124,9 +121,8 @@ export default function ReviewScreen() {
   const currentPendingCard = useMemo(
     () => findCurrentPendingReviewCard(
       orderedGroups.map((group) => ({ index: group.item.index, cards: group.cards })),
-      batchMode,
     ),
-    [batchMode, orderedGroups],
+    [orderedGroups],
   );
   const successfulScreenshotIds = useMemo(
     () => new Set(batchItems.flatMap((item) =>
@@ -229,9 +225,9 @@ export default function ReviewScreen() {
           return;
         }
 
-        const message = getErrorMessage(error, "这张截图加载失败。");
+        const message = getErrorMessage(error, "这项内容加载失败。");
         setPageError(message);
-        showError(error, "这张截图加载失败。");
+        showError(error, "这项内容加载失败。");
       }
     })();
 
@@ -528,11 +524,7 @@ export default function ReviewScreen() {
   return (
     <Page
       title="确认卡片"
-      subtitle={
-        batchMode === "local"
-          ? "卡片仍按截图选择顺序分组；本地批次会优先确认新联系人，再处理依赖这些联系人的其他卡片。"
-          : "按截图选择顺序处理；每张截图内按 新联系人 → 更新联系人 → 新会议 → 互动记录 的顺序确认。"
-      }
+      subtitle="按来源选择顺序处理；每个来源内按卡片生成顺序依次确认。"
     >
       {pageError ? (
         <SectionCard title="加载失败">
@@ -560,9 +552,9 @@ export default function ReviewScreen() {
                 ) {
                   return;
                 }
-                const message = getErrorMessage(error, "这张截图加载失败。");
+                const message = getErrorMessage(error, "这项内容加载失败。");
                 setPageError(message);
-                showError(error, "这张截图加载失败。");
+                showError(error, "这项内容加载失败。");
               });
             }}
           />
@@ -572,7 +564,7 @@ export default function ReviewScreen() {
       {batchSummary && (batchSummary.totalCount > 1 || batchSummary.failureCount > 0) ? (
         <SectionCard title="批次结果">
           <Text style={styles.summaryText}>
-            成功 {batchSummary.successCount} 张，失败 {batchSummary.failureCount} 张。
+            成功 {batchSummary.successCount} 项，失败 {batchSummary.failureCount} 项。
           </Text>
           {batchItems.filter((item) => item.status === "failure").map((item) => (
             <Text key={item.index} style={styles.failureText}>
@@ -613,25 +605,27 @@ export default function ReviewScreen() {
       ) : null}
 
       {!orderedGroups.length && !pageError ? (
-        <EmptyHint text="正在找回这批截图的待确认内容..." />
+        <EmptyHint text="正在找回这批来源的待确认内容..." />
       ) : null}
 
       {orderedGroups.map(({ item, cards: groupCards }) => (
         <SectionCard
           key={item.index}
-          kicker={`第 ${item.index + 1} 张 · ${
+          kicker={`第 ${item.index + 1} ${item.asset ? "张" : "项"} · ${
             item.screenshotId === screenshotId ? "当前查看" : ITEM_STATUS_LABEL[item.status]
           }`}
           title={item.label}
         >
-          {item.status === "pending" ? <EmptyHint text="等待前面的截图处理完成。" /> : null}
-          {item.status === "processing" ? <EmptyHint text="正在处理这张截图…" /> : null}
+          {item.status === "pending" ? <EmptyHint text="等待前面的来源处理完成。" /> : null}
+          {item.status === "processing" ? (
+            <EmptyHint text={item.asset ? "正在处理这张截图…" : "正在处理这段文本…"} />
+          ) : null}
           {item.status === "failure" ? (
-            <EmptyHint text={item.error ?? "这张截图处理失败。"} />
+            <EmptyHint text={item.error ?? (item.asset ? "这张截图处理失败。" : "这段文本处理失败。")} />
           ) : null}
           {item.processingNotice ? <EmptyHint text={item.processingNotice} /> : null}
           {item.status === "success" && groupCards.length === 0 ? (
-            <EmptyHint text="这张截图没有需要确认的内容。" />
+            <EmptyHint text={item.asset ? "这张截图没有需要确认的内容。" : "这段文本没有需要确认的内容。"} />
           ) : null}
           {groupCards.map((card) => {
             const stage =

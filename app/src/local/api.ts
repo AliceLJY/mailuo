@@ -14,7 +14,15 @@ import type {
 import type { RoutedApi } from "../connection/dispatch";
 
 import { createLocalProviderFactory, type LocalProviderFactory } from "./providers";
-import type { OcrPerceptionResult } from "./perceive-ocr";
+import {
+  isOcrTextQualityPoor,
+  type OcrPerceptionResult,
+} from "./perceive-ocr";
+import {
+  createPastedTextOcrResult,
+  createPastedTextSourceUri,
+  perceiveOcrText as perceiveSharedOcrText,
+} from "./perceive-text";
 import {
   hydrateLocalBatchCardForResponse,
   preparePersistedLocalBatchConfirmation,
@@ -23,6 +31,7 @@ import {
 import type { LocalStore, ScreenshotImageLoader } from "./types";
 
 const OCR_FALLBACK_NOTICE = "部分内容可能识别不全，已用云端模型重新处理。";
+const OCR_SPEAKER_NOTICE = "部分消息的发言人未能确定，已交由模型从文本判断。";
 const OCR_EXPORT_FAILURE_NOTICE = "截图已处理，但 OCR 原始结果没有导出，请再试一次。";
 
 export type OcrPerceiver = (uri: string) => Promise<OcrPerceptionResult>;
@@ -68,6 +77,55 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
   const batchSessionByCardId = new Map<number, LocalBatchContactSession>();
 
   return {
+    async uploadText(input) {
+      const text = input.text.trim();
+      if (!text) {
+        throw new Error("请先粘贴需要整理的聊天文本。");
+      }
+
+      const textProvider = await providerFactory.createTextProvider(options.keys);
+      const note = input.note?.trim() || undefined;
+      const timestamp = now();
+      const screenshot = options.store.createScreenshot({
+        imagePath: createPastedTextSourceUri(text),
+        userNote: note ?? null,
+        uploadedAt: timestamp.toISOString(),
+      });
+
+      try {
+        const extraction = await (options.perceiveOcrText ?? perceiveSharedOcrText)({
+          ocr: createPastedTextOcrResult(text),
+          note,
+          provider: textProvider,
+          now: timestamp,
+        });
+        const contacts = listResolvableContacts(options.store);
+        const resolutions = await resolveParticipants({
+          extraction,
+          contacts,
+          provider: textProvider,
+        });
+        const cards = options.store.saveScreenshotAnalysis({
+          screenshotId: screenshot.id,
+          rawExtraction: extraction,
+          cards: proposeCards(extraction, resolutions, contacts, timestamp),
+          createdAt: timestamp.toISOString(),
+        });
+
+        return {
+          screenshot_id: screenshot.id,
+          cards,
+        };
+      } catch (error) {
+        try {
+          options.store.deleteScreenshotUploadArtifacts(screenshot.id);
+        } catch {
+          // Preserve the processing error; cleanup can be retried during a later storage repair.
+        }
+
+        throw error;
+      }
+    },
     async uploadScreenshot(input) {
       const batchSession = input.localBatch?.session;
       batchSession?.reconcilePendingContacts((cardId) =>
@@ -131,7 +189,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
             }
           }
 
-          if (!ocr || ocr.lines.length === 0 || ocr.degraded) {
+          if (!ocr || ocr.lines.length === 0 || isOcrTextQualityPoor(ocr)) {
             extraction = await perceiveVisually();
             notices.unshift(OCR_FALLBACK_NOTICE);
           } else {
@@ -142,6 +200,9 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
                 provider: textProvider,
                 now: timestamp,
               });
+              if (ocr.hasUnresolvedMessageSpeakers) {
+                notices.unshift(OCR_SPEAKER_NOTICE);
+              }
             } catch {
               extraction = await perceiveVisually();
               notices.unshift(OCR_FALLBACK_NOTICE);

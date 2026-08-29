@@ -8,8 +8,8 @@ const OcrExportLineSchema = z.object({
   text: z.string().min(1),
   x: z.number().finite(),
   y: z.number().finite(),
-  w: z.number().finite().positive(),
-  h: z.number().finite().positive(),
+  w: z.number().finite().nonnegative(),
+  h: z.number().finite().nonnegative(),
   conf: z.number().finite().nullable(),
   side: z.enum(["me", "them"]).nullable(),
 }).strict();

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   collectRecognizedLines,
   findAlignmentPeaks,
+  isOcrTextQualityPoor,
   perceiveScreenshotWithOcr,
   type OcrRecognitionResult,
   type PerceivedOcrLine,
@@ -87,7 +88,47 @@ test("collectRecognizedLines preserves raw text, geometry, confidence, and block
       height: 40,
       confidence: null,
     },
+    {
+      text: "无坐标",
+      side: null,
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+      confidence: null,
+    },
   ]);
+});
+
+test("OCR text quality falls back only when low-confidence rows exceed the conservative ratio", () => {
+  const line = (confidence: number | null): PerceivedOcrLine => ({
+    text: "消息",
+    side: null,
+    x: 0,
+    y: 0,
+    width: 10,
+    height: 10,
+    confidence,
+  });
+
+  assert.equal(
+    isOcrTextQualityPoor({
+      lines: [line(0.2), line(0.3), line(0.4), line(null), line(null)],
+    }),
+    false,
+    "exactly 60% low confidence stays on the text path",
+  );
+  assert.equal(
+    isOcrTextQualityPoor({
+      lines: [line(0.2), line(0.3), line(0.4), line(0.9)],
+    }),
+    true,
+  );
+  assert.equal(
+    isOcrTextQualityPoor({ lines: [line(null), line(null), line(null)] }),
+    false,
+    "missing confidence is unknown, not low confidence",
+  );
 });
 
 test("alignment peaks use left x and right x plus width while rejecting middle repeats and one-character noise", () => {
@@ -149,6 +190,7 @@ test("only a double-peak line is sampled and frameIndex remains zero", async () 
   assert.equal(result.lines[1].confidence, 0.82);
   assert.deepEqual(result.warnings, []);
   assert.equal(result.degraded, false);
+  assert.equal(result.hasUnresolvedMessageSpeakers, false);
 });
 
 test("multi-line bubbles are classified and sampled as one group", async () => {
@@ -258,6 +300,7 @@ test("an unresolved pixel sample leaves side null and marks the result degraded"
   assert.equal(result.warnings.length, 1);
   assert.match(result.warnings[0], /底色未判定/u);
   assert.equal(result.degraded, true);
+  assert.equal(result.hasUnresolvedMessageSpeakers, true);
 });
 
 test("a sampler exception becomes warnings instead of escaping", async () => {
@@ -279,6 +322,7 @@ test("a sampler exception becomes warnings instead of escaping", async () => {
   assert.equal(result.warnings.length, 1);
   assert.match(result.warnings[0], /native decoder failed/u);
   assert.equal(result.degraded, true);
+  assert.equal(result.hasUnresolvedMessageSpeakers, true);
 });
 
 test("zero recognized lines return explicitly without calling the sampler", async () => {
@@ -294,11 +338,16 @@ test("zero recognized lines return explicitly without calling the sampler", asyn
     },
   });
 
-  assert.deepEqual(result, { lines: [], warnings: [], degraded: false });
+  assert.deepEqual(result, {
+    lines: [],
+    warnings: [],
+    degraded: false,
+    hasUnresolvedMessageSpeakers: false,
+  });
   assert.equal(samplerCalls, 0);
 });
 
-test("recognized text without valid geometry marks OCR degraded", async () => {
+test("recognized text without valid geometry is preserved for the text path", async () => {
   let samplerCalls = 0;
   const result = await perceiveScreenshotWithOcr({
     uri: "file:///missing-frame.png",
@@ -311,9 +360,18 @@ test("recognized text without valid geometry marks OCR degraded", async () => {
     },
   });
 
-  assert.deepEqual(result.lines, []);
+  assert.deepEqual(result.lines, [{
+    text: "有文字但没有坐标",
+    side: null,
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    confidence: null,
+  }]);
   assert.equal(result.warnings.length, 1);
   assert.match(result.warnings[0], /缺少有效坐标/u);
   assert.equal(result.degraded, true);
+  assert.equal(result.hasUnresolvedMessageSpeakers, true);
   assert.equal(samplerCalls, 0);
 });

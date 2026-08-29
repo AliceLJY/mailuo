@@ -115,7 +115,7 @@ export default function InsightsScreen() {
       subtitle="这里会汇总这次确认后整理出的洞察，并附上对应依据。"
       footer={
         <AppButton
-          label="继续上传下一张"
+          label="继续整理下一批"
           onPress={() => {
             resetFlow();
             router.replace("/");
@@ -149,7 +149,7 @@ export default function InsightsScreen() {
 
       {!insights.length ? (
         <SectionCard title="暂时没有新洞察">
-          <EmptyHint text="这次还没有新的洞察。你可以继续上传下一张截图，或稍后在人脉页查看更新后的档案。" />
+          <EmptyHint text="这次还没有新的洞察。你可以继续整理下一批内容，或稍后在人脉页查看更新后的档案。" />
         </SectionCard>
       ) : null}
 

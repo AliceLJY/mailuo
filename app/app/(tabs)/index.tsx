@@ -12,12 +12,13 @@ import {
   View,
 } from "react-native";
 
-import { getConfiguredApiUrl, uploadScreenshot } from "@/api";
+import { getConfiguredApiUrl, uploadScreenshot, uploadText } from "@/api";
 import { AppButton } from "@/components/button";
 import { EmptyHint, MetaLine, Page, SectionCard } from "@/components/page";
 import { useConnection } from "@/connection/context";
 import { humanizeLocalProviderError } from "@/connection/presentation";
 import {
+  findCompletedPastedTextItem,
   useFlow,
   type FlowBatchItem,
   type FlowBatchSummary,
@@ -25,6 +26,10 @@ import {
 import { LocalBatchContactSession } from "@/local/batch-contacts";
 import { theme } from "@/theme";
 import { useToast } from "@/toast-context";
+import {
+  canCommitUploadCompletion,
+  shouldAutoOpenUploadReview,
+} from "@/upload-lifecycle";
 import {
   getFailedUploadItems,
   getUploadAssetLabel,
@@ -46,7 +51,10 @@ type BatchSource =
   | { items: UploadBatchSourceItem[] };
 
 export default function UploadScreen() {
-  const [{ assets, note }, dispatchDraft] = useReducer(uploadDraftReducer, initialUploadDraft);
+  const [{ assets, text: pastedText, note }, dispatchDraft] = useReducer(
+    uploadDraftReducer,
+    initialUploadDraft,
+  );
   const [loading, setLoading] = useState(false);
   const [loadingText, setLoadingText] = useState("正在准备截图…");
   const [lastResult, setLastResult] = useState<UploadBatchResult | null>(null);
@@ -57,6 +65,7 @@ export default function UploadScreen() {
     batchServerUrl,
     batchSummary,
     beginBatch,
+    beginTextUpload,
     finishBatch,
     flowGeneration,
     isFlowGenerationCurrent,
@@ -65,6 +74,7 @@ export default function UploadScreen() {
     recordBatchItemFailure,
     recordBatchItemSuccess,
     resetFlow,
+    seedFromUpload,
   } = useFlow();
   const { showError, showToast } = useToast();
   const { config } = useConnection();
@@ -83,18 +93,22 @@ export default function UploadScreen() {
     batchServerUrl,
   );
   const displayResult = lastResult ?? flowResult;
-  const displayMode = displayResult?.mode ?? (isLocal ? "local" : "server");
+  const completedTextItem = findCompletedPastedTextItem(batchItems);
+  const hasStoredResult = displayResult != null || completedTextItem != null;
   const currentMode: UploadBatchMode = isLocal ? "local" : "server";
   const currentServerUrl = normalizeUploadServerUrl(
     config?.serverUrl ?? getConfiguredApiUrl(),
   );
-  const targetMismatch = displayResult != null && !uploadBatchTargetMatches({
-    batchMode: displayResult.mode,
-    batchServerUrl: displayResult.serverUrl,
+  const resultMode = displayResult?.mode ?? (completedTextItem ? batchMode : null);
+  const resultServerUrl = displayResult?.serverUrl ?? batchServerUrl;
+  const displayMode = resultMode ?? currentMode;
+  const targetMismatch = resultMode != null && !uploadBatchTargetMatches({
+    batchMode: resultMode,
+    batchServerUrl: resultServerUrl,
     currentMode,
     currentServerUrl,
   });
-  const displayNote = displayResult && assets.length === 0 ? batchNote : note;
+  const displayNote = hasStoredResult && assets.length === 0 ? batchNote : note;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -127,7 +141,7 @@ export default function UploadScreen() {
   }, [batchItems.length, batchSummary, flowGeneration]);
 
   async function pickImages() {
-    const startsNewDraft = displayResult != null;
+    const startsNewDraft = hasStoredResult;
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!mountedRef.current) {
       return;
@@ -294,7 +308,11 @@ export default function UploadScreen() {
 
       if (combined.failureCount === 0) {
         dispatchDraft({ type: "reset" });
-        if (focusedRef.current && focusEpochRef.current === focusEpoch) {
+        if (shouldAutoOpenUploadReview({
+          focused: focusedRef.current,
+          currentFocusEpoch: focusEpochRef.current,
+          submitFocusEpoch: focusEpoch,
+        })) {
           openReview(combined);
         }
       } else if (combined.successCount === 0) {
@@ -343,13 +361,116 @@ export default function UploadScreen() {
     router.push(`/review/${firstSuccess.response.screenshot_id}`);
   }
 
+  function openCompletedTextReview() {
+    if (!completedTextItem?.screenshotId) {
+      showToast("这段文本还没有可确认的内容。", "info");
+      return;
+    }
+
+    if (targetMismatch) {
+      showToast("请先切回这段文本使用的处理模式与服务地址，再继续确认。", "info");
+      return;
+    }
+
+    router.push(`/review/${completedTextItem.screenshotId}`);
+  }
+
   async function submit() {
+    if (pastedText.trim()) {
+      await processText();
+      return;
+    }
+
     if (assets.length === 0) {
-      showToast("先选一张或多张聊天截图。", "info");
+      showToast("先选择聊天截图，或粘贴一段聊天文本。", "info");
       return;
     }
 
     await processBatch({ assets }, null);
+  }
+
+  async function processText() {
+    const text = pastedText.trim();
+    if (
+      !text ||
+      runningRef.current ||
+      !mountedRef.current ||
+      !focusedRef.current
+    ) {
+      return;
+    }
+
+    runningRef.current = true;
+    const submitToken = submitTokenRef.current + 1;
+    submitTokenRef.current = submitToken;
+    const focusEpoch = focusEpochRef.current;
+    const mode: UploadBatchMode = isLocal ? "local" : "server";
+    const serverUrl = mode === "server" ? currentServerUrl : null;
+    const generation = beginTextUpload({ mode, serverUrl, note });
+
+    try {
+      clearLoadingTimer(loadingTimerRef.current);
+      setLoading(true);
+      setLoadingText("正在整理粘贴文本…");
+      const response = await uploadText({
+        text,
+        note: note.trim() || undefined,
+        expectedTarget: mode === "local"
+          ? { mode: "local" }
+          : { mode: "server", serverUrl },
+      });
+
+      if (
+        !canCommitSubmitResult(mountedRef, submitTokenRef, submitToken) ||
+        !isFlowGenerationCurrent(generation)
+      ) {
+        return;
+      }
+
+      seedFromUpload(response, {
+        label: "粘贴文本",
+        mode,
+        serverUrl,
+        note,
+      });
+      dispatchDraft({ type: "reset" });
+      setLastResult(null);
+
+      if (shouldAutoOpenUploadReview({
+        focused: focusedRef.current,
+        currentFocusEpoch: focusEpochRef.current,
+        submitFocusEpoch: focusEpoch,
+      })) {
+        router.push(`/review/${response.screenshot_id}`);
+      }
+    } catch (error) {
+      if (
+        !canCommitSubmitResult(mountedRef, submitTokenRef, submitToken) ||
+        !isFlowGenerationCurrent(generation)
+      ) {
+        return;
+      }
+      showError(
+        mode === "local" ? new Error(humanizeLocalProviderError(error)) : error,
+        "这段文本暂时没有处理完成。",
+      );
+      recordBatchItemFailure(0, "这段文本暂时没有处理完成。");
+    } finally {
+      runningRef.current = false;
+      clearLoadingTimer(loadingTimerRef.current);
+      loadingTimerRef.current = null;
+      if (mountedRef.current) {
+        setLoading(false);
+        setLoadingText("正在准备截图…");
+      }
+    }
+  }
+
+  function startTextDraft() {
+    resetFlow();
+    dispatchDraft({ type: "reset" });
+    setLastResult(null);
+    localBatchSessionRef.current = null;
   }
 
   async function retryFailures() {
@@ -371,7 +492,7 @@ export default function UploadScreen() {
   }
 
   function removeAsset(index: number) {
-    if (displayResult) {
+    if (hasStoredResult) {
       return;
     }
 
@@ -386,6 +507,10 @@ export default function UploadScreen() {
         <Text style={styles.costText}>
           共 {displayResult?.totalCount ?? assets.length} 张；每张需要一次模型调用，将按选择顺序逐张处理。
         </Text>
+      ) : completedTextItem ? (
+        <Text style={styles.costText}>粘贴文本已整理完成，可以继续确认生成的卡片。</Text>
+      ) : pastedText.trim() ? (
+        <Text style={styles.costText}>粘贴文本会直接交给文本模型整理，不会上传图片。</Text>
       ) : null}
       {displayResult?.failureCount ? (
         <AppButton
@@ -399,10 +524,16 @@ export default function UploadScreen() {
           disabled={loading || targetMismatch}
           onPress={() => openReview(displayResult)}
         />
+      ) : completedTextItem ? (
+        <AppButton
+          label={targetMismatch ? "切回本次处理目标后确认" : "查看待确认卡片"}
+          disabled={loading || targetMismatch}
+          onPress={openCompletedTextReview}
+        />
       ) : (
         <AppButton
           label={loading ? "处理中..." : "提交并开始整理"}
-          disabled={loading || assets.length === 0}
+          disabled={loading || (assets.length === 0 && !pastedText.trim())}
           onPress={() => void submit()}
         />
       )}
@@ -420,24 +551,24 @@ export default function UploadScreen() {
   return (
     <View style={styles.screen}>
       <Page
-        title="上传截图"
+        title="整理聊天内容"
         subtitle={
           isLocal
-            ? "可按顺序选择多张聊天截图，并共用一条背景说明。档案只会保存在这台手机上。"
-            : "可按顺序选择多张聊天截图，并共用一条背景说明。处理完成后会进入卡片确认页。"
+            ? "可以按顺序选择多张聊天截图，也可以直接粘贴聊天文本。档案只会保存在这台手机上。"
+            : "可以按顺序选择多张聊天截图，也可以直接粘贴聊天文本。处理完成后会进入卡片确认页。"
         }
         footer={footer}
       >
         <SectionCard kicker="上传后会发生什么" title="这次会整理什么">
           <MetaLine label="选图" value={`最多 ${MAX_UPLOAD_ASSETS} 张，系统严格按相册里的选择顺序处理。`} />
-          <MetaLine label="说明" value="补充说明会供整批截图共同参考。" />
-          <MetaLine label="下一步" value="每张截图的卡片会按来源分组，逐张等待确认。" />
+          <MetaLine label="文本" value="也可以直接粘贴一段聊天文字，不必先截图。" />
+          <MetaLine label="下一步" value="整理出的卡片会按来源分组，逐条等待确认。" />
         </SectionCard>
 
         {displayMode === "server" ? (
           <SectionCard title="服务器模式说明">
             <Text style={styles.serverNote}>
-              服务器会逐张独立整理；同一联系人跨截图时，可能出现多张待确认卡片。
+              截图会逐张独立整理；同一联系人跨截图时，可能出现多张待确认卡片。粘贴文本按单条内容处理。
             </Text>
           </SectionCard>
         ) : null}
@@ -445,7 +576,7 @@ export default function UploadScreen() {
         {targetMismatch ? (
           <SectionCard title="处理目标已变更">
             <Text style={styles.serverNote}>
-              这批截图仍保留在原来的处理模式与服务地址中。切回原目标后可以继续重试或确认；也可以重新选图开始新一批。
+              这次内容仍保留在原来的处理模式与服务地址中。切回原目标后可以继续重试或确认；也可以重新选择来源开始整理。
             </Text>
           </SectionCard>
         ) : null}
@@ -461,7 +592,7 @@ export default function UploadScreen() {
                     <Text numberOfLines={2} style={styles.previewName}>{getUploadAssetLabel(asset)}</Text>
                   </View>
                   <AppButton
-                    disabled={loading || Boolean(displayResult)}
+                    disabled={loading || hasStoredResult}
                     label="移除"
                     onPress={() => removeAsset(index)}
                     style={styles.removeButton}
@@ -469,7 +600,7 @@ export default function UploadScreen() {
                   />
                 </View>
               ))}
-              {displayResult ? (
+              {hasStoredResult ? (
                 <AppButton
                   disabled={loading}
                   label="开始新一批"
@@ -497,9 +628,33 @@ export default function UploadScreen() {
           )}
         </SectionCard>
 
-        <SectionCard title="补充说明（整批共用，可选）">
+        <SectionCard title="粘贴聊天文本">
+          {hasStoredResult ? (
+            <AppButton
+              disabled={loading}
+              label="改为整理一段新文本"
+              onPress={startTextDraft}
+              tone="secondary"
+            />
+          ) : (
+            <TextInput
+              editable={!loading}
+              multiline
+              onChangeText={(value) => dispatchDraft({ type: "set-text", text: value })}
+              placeholder="长按粘贴群通知、会议安排或聊天片段。"
+              placeholderTextColor={theme.colors.textMuted}
+              style={styles.input}
+              value={pastedText}
+            />
+          )}
+          <Text style={styles.helperText}>
+            输入文本后会自动清空已选图片；重新选图也会清空文本，避免两种来源混在一起。
+          </Text>
+        </SectionCard>
+
+        <SectionCard title="补充说明（可选）">
           <TextInput
-            editable={!loading && !displayResult}
+            editable={!loading && !hasStoredResult}
             multiline
             onChangeText={(value) => dispatchDraft({ type: "set-note", note: value })}
             placeholder="例如：这是我和陈老师最近三天的聊天，重点看会议时间和他的新公司。"
@@ -507,7 +662,7 @@ export default function UploadScreen() {
             style={styles.input}
             value={displayNote}
           />
-          <Text style={styles.helperText}>不写也可以，系统会分别根据每张截图整理待确认内容。</Text>
+          <Text style={styles.helperText}>不写也可以；这段说明只用于补充背景，不会覆盖截图或粘贴文本里的内容。</Text>
         </SectionCard>
 
         {displayResult ? (
@@ -523,7 +678,9 @@ export default function UploadScreen() {
           </SectionCard>
         ) : null}
 
-        {assets.length === 0 && !displayResult ? <EmptyHint text="先选一张或多张图，再开始整理。" /> : null}
+        {assets.length === 0 && !pastedText.trim() && !hasStoredResult ? (
+          <EmptyHint text="先选择一张或多张截图，或粘贴聊天文本，再开始整理。" />
+        ) : null}
       </Page>
 
       {loading ? (
@@ -594,10 +751,11 @@ function canCommitSubmitResult(
   submitTokenRef: { current: number },
   submitToken: number,
 ) {
-  return (
-    mountedRef.current &&
-    submitTokenRef.current === submitToken
-  );
+  return canCommitUploadCompletion({
+    mounted: mountedRef.current,
+    currentSubmitToken: submitTokenRef.current,
+    submitToken,
+  });
 }
 
 const styles = StyleSheet.create({

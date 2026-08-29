@@ -94,3 +94,33 @@ test("zero lines add an explicit warning and derive degraded from warnings", () 
   assert.deepEqual(bundle.warnings, ["未识别到文本行"]);
   assert.equal(bundle.degraded, true);
 });
+
+test("a preserved OCR line without geometry remains exportable with zero coordinates", () => {
+  const bundle = buildOcrExportBundle({
+    exportedAt: new Date("2026-08-29T03:04:05.000Z"),
+    source: { md5: "0123456789abcdef0123456789abcdef" },
+    result: {
+      lines: [{
+        text: "有文字但没有坐标",
+        side: null,
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        confidence: 0.9,
+      }],
+      warnings: ["OCR 文本行缺少有效坐标"],
+      degraded: true,
+    },
+  });
+
+  assert.deepEqual(bundle.lines[0], {
+    text: "有文字但没有坐标",
+    x: 0,
+    y: 0,
+    w: 0,
+    h: 0,
+    conf: 0.9,
+    side: null,
+  });
+});

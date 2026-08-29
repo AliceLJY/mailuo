@@ -6,7 +6,19 @@ import {
   PerceptionParticipantSchema,
   parseStoredPerceptionResult,
 } from '../../../shared/core/agent/perceive.ts';
-import { buildPerceptionSystemPrompt } from '../../../shared/core/llm/prompts.ts';
+import {
+  buildPerceptionSystemPrompt,
+  buildPerceptionTextSystemPrompt,
+} from '../../../shared/core/llm/prompts.ts';
+
+function extractTimeRules(prompt: string): string {
+  const match = prompt.match(
+    /Time extraction rules \(Asia\/Shanghai\):[\s\S]+?(?=\nA meeting or appointment)/u,
+  );
+
+  assert.ok(match);
+  return match[0];
+}
 
 test('PerceptionParticipantSchema requires explicit is_self', () => {
   const result = PerceptionParticipantSchema.safeParse({
@@ -86,21 +98,22 @@ test('PerceptionEventSchema requires explicit has_time_signal', () => {
   assert.equal(result.error.issues[0]?.path.join('.'), 'has_time_signal');
 });
 
-test('buildPerceptionSystemPrompt injects a 14-day Shanghai calendar lookup table for relative dates', () => {
-  const prompt = buildPerceptionSystemPrompt(new Date('2026-12-27T10:15:30+08:00'));
-  const calendarLines = prompt.match(/^\d{4}-\d{2}-\d{2} = .+$/gm) ?? [];
+test('visual and text perception prompts share the no-inference time rules', () => {
+  const now = new Date('2026-12-27T10:15:30+08:00');
+  const prompt = buildPerceptionSystemPrompt(now);
+  const textPrompt = buildPerceptionTextSystemPrompt(now);
 
   assert.match(
     prompt,
     /Current datetime \(Asia\/Shanghai\): 2026-12-27T10:15:30\+08:00/,
   );
-  assert.equal(calendarLines.length, 14);
-  assert.deepEqual(calendarLines[0], '2026-12-27 = 星期日（今天）');
-  assert.deepEqual(calendarLines[1], '2026-12-28 = 星期一（明天、下周一）');
-  assert.ok(calendarLines.includes('2026-12-30 = 星期三（下周三）'));
-  assert.ok(calendarLines.includes('2027-01-01 = 星期五（下周五）'));
-  assert.match(prompt, /Resolve every relative date in time_iso by selecting the matching YYYY-MM-DD from the table below/);
-  assert.match(prompt, /Do not calculate weekdays or dates yourself/);
+  assert.equal(extractTimeRules(prompt), extractTimeRules(textPrompt));
+  assert.match(prompt, /An absolute date takes priority over relative words/u);
+  assert.match(prompt, /absolute date has no explicit clock time.+time_iso=null/u);
+  assert.match(prompt, /omit the year, use 2026/u);
+  assert.match(prompt, /contains only a relative date.+set time_iso=null/u);
+  assert.match(prompt, /Preserve time_text and set has_time_signal=true/u);
+  assert.doesNotMatch(prompt, /Resolve every relative date in time_iso/u);
   assert.match(prompt, /A one-sided delivery promise or task commitment such as "明天把方案发你" is not a meeting/);
   assert.match(
     prompt,

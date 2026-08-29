@@ -25,6 +25,10 @@ function fakeApi(label: string, calls: string[]): RoutedApi {
       calls.push(label);
       return { screenshot_id: 1, cards: [] };
     },
+    async uploadText(input) {
+      calls.push(`${label}:text:${input.text}:${input.note ?? ""}`);
+      return { screenshot_id: 2, cards: [] };
+    },
     async confirmCard() {
       throw new Error("unused");
     },
@@ -74,6 +78,66 @@ test("native local config dispatches to local API while web remains server-only"
   await webApi.getMeetings();
 
   assert.deepEqual(calls, ["local", "web-server"]);
+});
+
+test("text uploads route through native local, native server, and web server targets", async () => {
+  const calls: string[] = [];
+  const localApi = createApiDispatcher({
+    configStore: configStore({ mode: "local" }),
+    platform: "android",
+    publicApiUrl: "https://env.example.test/",
+    createServerApi: () => fakeApi("unexpected-server", calls),
+    async getLocalApi() {
+      return fakeApi("local", calls);
+    },
+  });
+  const serverApi = createApiDispatcher({
+    configStore: configStore({
+      mode: "server",
+      serverUrl: "https://chosen.example.test/",
+    }),
+    platform: "ios",
+    publicApiUrl: "https://env.example.test/",
+    createServerApi: (serverUrl) => fakeApi(`server:${serverUrl}`, calls),
+    async getLocalApi() {
+      throw new Error("server mode must not load local API");
+    },
+  });
+  const webApi = createApiDispatcher({
+    configStore: configStore({ mode: "local" }),
+    platform: "web",
+    publicApiUrl: "https://web.example.test/",
+    createServerApi: (serverUrl) => fakeApi(`web-server:${serverUrl}`, calls),
+    async getLocalApi() {
+      throw new Error("web must not load local API");
+    },
+  });
+
+  await localApi.uploadText({
+    text: "本地文本",
+    note: "本地说明",
+    expectedTarget: { mode: "local" },
+  });
+  await serverApi.uploadText({
+    text: "服务器文本",
+    expectedTarget: {
+      mode: "server",
+      serverUrl: "https://chosen.example.test",
+    },
+  });
+  await webApi.uploadText({
+    text: "网页文本",
+    expectedTarget: {
+      mode: "server",
+      serverUrl: "https://web.example.test",
+    },
+  });
+
+  assert.deepEqual(calls, [
+    "local:text:本地文本:本地说明",
+    "server:https://chosen.example.test:text:服务器文本:",
+    "web-server:https://web.example.test:text:网页文本:",
+  ]);
 });
 
 test("server config overrides env and missing config preserves the env server default", async () => {

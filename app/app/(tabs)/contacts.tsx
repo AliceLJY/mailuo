@@ -75,7 +75,7 @@ export default function ContactsScreen() {
             ) : null}
 
             {!loading && !errorMessage ? (
-              <EmptyHint text="还没有联系人，先去上传一张聊天截图。" />
+              <EmptyHint text="还没有联系人，先去上传截图或粘贴聊天文本。" />
             ) : null}
           </View>
         }

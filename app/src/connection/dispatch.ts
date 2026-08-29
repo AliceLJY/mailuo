@@ -13,18 +13,29 @@ import type { LocalBatchContactSession } from "../local/batch-contacts";
 
 import type { ConnectionConfigStore } from "./config";
 
+export type ApiTargetExpectation =
+  | { mode: "local" }
+  | { mode: "server"; serverUrl: string | null };
+
+export type UploadTextInput = {
+  text: string;
+  note?: string;
+  expectedTarget?: ApiTargetExpectation;
+};
+
+type UploadTextFn = (input: UploadTextInput) => Promise<ScreenshotUploadResponse>;
+
 export interface RoutedApi {
   uploadScreenshot(input: {
     asset: UploadImageAsset;
     note?: string;
-    expectedTarget?:
-      | { mode: "local" }
-      | { mode: "server"; serverUrl: string | null };
+    expectedTarget?: ApiTargetExpectation;
     localBatch?: {
       session: LocalBatchContactSession;
       index: number;
     };
   }): Promise<ScreenshotUploadResponse>;
+  uploadText: UploadTextFn;
   confirmCard(cardId: number, body?: ConfirmCardRequest): Promise<ConfirmCardResponse>;
   rejectCard(cardId: number): Promise<RejectCardResponse>;
   getContacts(): Promise<ContactListItem[]>;
@@ -52,9 +63,7 @@ export class ApiTargetChangedError extends Error {
   readonly code = "BATCH_TARGET_CHANGED";
 
   constructor(
-    readonly expectedTarget:
-      | { mode: "local" }
-      | { mode: "server"; serverUrl: string | null },
+    readonly expectedTarget: ApiTargetExpectation,
     readonly actualTarget:
       | { mode: "local" }
       | { mode: "server"; serverUrl?: string },
@@ -82,9 +91,7 @@ export async function selectApiTarget(options: Pick<
 
 export function createApiDispatcher(options: ApiDispatcherOptions): RoutedApi {
   async function selectedApi(
-    expectedTarget?:
-      | { mode: "local" }
-      | { mode: "server"; serverUrl: string | null },
+    expectedTarget?: ApiTargetExpectation,
   ): Promise<RoutedApi> {
     const target = await selectApiTarget(options);
 
@@ -112,6 +119,11 @@ export function createApiDispatcher(options: ApiDispatcherOptions): RoutedApi {
     async uploadScreenshot(input) {
       const { expectedTarget, ...routedInput } = input;
       return (await selectedApi(expectedTarget)).uploadScreenshot(routedInput);
+    },
+    async uploadText(input) {
+      const { expectedTarget, ...routedInput } = input;
+      const api = await selectedApi(expectedTarget);
+      return api.uploadText(routedInput);
     },
     async confirmCard(cardId, body = {}) {
       return (await selectedApi()).confirmCard(cardId, body);

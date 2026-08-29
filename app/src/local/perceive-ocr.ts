@@ -1,6 +1,11 @@
 export const OCR_ALIGNMENT_TOLERANCE = 30;
 export const OCR_MESSAGE_MERGE_DY = 62;
 export const OCR_MESSAGE_MERGE_DX = 60;
+// ML Kit confidence is 0..1. A line below 0.5 is clearly uncertain, but visual
+// fallback is expensive, so require more than 60% of all recognized lines to be
+// below that mark. Missing confidence is unknown rather than low confidence.
+export const OCR_LOW_CONFIDENCE_LINE_THRESHOLD = 0.5;
+export const OCR_LOW_CONFIDENCE_RATIO_THRESHOLD = 0.6;
 
 const WECHAT_TIME = /^(昨天\s*)?\d{1,2}[:：]\d{2}$/;
 
@@ -68,6 +73,12 @@ export type OcrPerceptionResult = {
   lines: PerceivedOcrLine[];
   warnings: string[];
   degraded: boolean;
+  hasUnresolvedMessageSpeakers?: boolean;
+};
+
+export type OcrTextQualityPolicy = {
+  lowConfidenceLineThreshold: number;
+  lowConfidenceRatioThreshold: number;
 };
 
 export type AlignmentPeaks = {
@@ -81,6 +92,27 @@ export type PerceiveScreenshotWithOcrOptions = {
   sampleRegions: RegionSampler;
 };
 
+export function isOcrTextQualityPoor(
+  result: Pick<OcrPerceptionResult, "lines">,
+  policy: OcrTextQualityPolicy = {
+    lowConfidenceLineThreshold: OCR_LOW_CONFIDENCE_LINE_THRESHOLD,
+    lowConfidenceRatioThreshold: OCR_LOW_CONFIDENCE_RATIO_THRESHOLD,
+  },
+): boolean {
+  if (result.lines.length === 0) {
+    return false;
+  }
+
+  const lowConfidenceLines = result.lines.filter(
+    (line) =>
+      typeof line.confidence === "number" &&
+      Number.isFinite(line.confidence) &&
+      line.confidence < policy.lowConfidenceLineThreshold,
+  ).length;
+
+  return lowConfidenceLines / result.lines.length > policy.lowConfidenceRatioThreshold;
+}
+
 function isValidFrame(frame: OcrFrame | null | undefined): frame is OcrFrame {
   return Boolean(
     frame &&
@@ -93,10 +125,12 @@ function isValidFrame(frame: OcrFrame | null | undefined): frame is OcrFrame {
 function collectRecognizedLinesWithWarnings(result: OcrRecognitionResult): {
   lines: PerceivedOcrLine[];
   warnings: string[];
+  hasMissingGeometry: boolean;
 } {
   const lines: PerceivedOcrLine[] = [];
   const warnings: string[] = [];
   let recognizedLineNumber = 0;
+  let hasMissingGeometry = false;
 
   for (const block of result.blocks ?? []) {
     for (const line of block.lines ?? []) {
@@ -112,7 +146,17 @@ function collectRecognizedLinesWithWarnings(result: OcrRecognitionResult): {
           : null;
 
       if (!frame) {
-        warnings.push(`第 ${recognizedLineNumber} 个 OCR 文本行缺少有效坐标，已忽略`);
+        hasMissingGeometry = true;
+        warnings.push(`第 ${recognizedLineNumber} 个 OCR 文本行缺少有效坐标，已保留文字但无法判断发言人`);
+        lines.push({
+          text: line.text,
+          side: null,
+          x: 0,
+          y: 0,
+          width: 0,
+          height: 0,
+          confidence: Number.isFinite(line.confidence) ? (line.confidence ?? null) : null,
+        });
         continue;
       }
 
@@ -128,7 +172,7 @@ function collectRecognizedLinesWithWarnings(result: OcrRecognitionResult): {
     }
   }
 
-  return { lines, warnings };
+  return { lines, warnings, hasMissingGeometry };
 }
 
 /** Convert ML Kit's block/line result without normalizing recognized text or geometry. */
@@ -140,6 +184,14 @@ function findPeak(counts: Map<number, number>): number | null {
   return [...counts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] ?? null;
 }
 
+function hasUsableGeometry(line: PerceivedOcrLine): boolean {
+  return (
+    [line.x, line.y, line.width, line.height].every(Number.isFinite) &&
+    line.width > 0 &&
+    line.height > 0
+  );
+}
+
 /** Tenglu's verified peak rule: left uses x, right uses x + width. */
 export function findAlignmentPeaks(lines: readonly PerceivedOcrLine[]): AlignmentPeaks {
   const contentWidth = Math.max(...lines.map((line) => line.x + line.width), 1);
@@ -148,7 +200,7 @@ export function findAlignmentPeaks(lines: readonly PerceivedOcrLine[]): Alignmen
   const rightCounts = new Map<number, number>();
 
   for (const line of lines) {
-    if (Array.from(line.text.trim()).length < 2) {
+    if (!hasUsableGeometry(line) || Array.from(line.text.trim()).length < 2) {
       continue;
     }
 
@@ -219,6 +271,7 @@ function groupAlignedLines(
     .filter((lineIndex) => {
       const line = lines[lineIndex];
       return (
+        hasUsableGeometry(line) &&
         !WECHAT_TIME.test(line.text.trim()) &&
         (isLeftAligned(line, peaks) || isRightAligned(line, peaks))
       );
@@ -293,7 +346,12 @@ export async function perceiveScreenshotWithOcr({
   const warnings = [...collected.warnings];
 
   if (lines.length === 0) {
-    return { lines: [], warnings, degraded: warnings.length > 0 };
+    return {
+      lines: [],
+      warnings,
+      degraded: warnings.length > 0,
+      hasUnresolvedMessageSpeakers: collected.hasMissingGeometry,
+    };
   }
 
   const peaks = findAlignmentPeaks(lines);
@@ -335,7 +393,12 @@ export async function perceiveScreenshotWithOcr({
   }
 
   if (ambiguousGroups.length === 0) {
-    return { lines, warnings, degraded: warnings.length > 0 };
+    return {
+      lines,
+      warnings,
+      degraded: warnings.length > 0,
+      hasUnresolvedMessageSpeakers: collected.hasMissingGeometry,
+    };
   }
 
   const requests = ambiguousGroups.map(({ groupIndex, sampleLineIndex }) =>
@@ -351,7 +414,12 @@ export async function perceiveScreenshotWithOcr({
     for (const { groupIndex } of ambiguousGroups) {
       warnings.push(`气泡 ${groupIndex + 1} 底色采样失败：${detail}`);
     }
-    return { lines, warnings, degraded: true };
+    return {
+      lines,
+      warnings,
+      degraded: true,
+      hasUnresolvedMessageSpeakers: true,
+    };
   }
 
   const samplesById = new Map(samples.map((sample) => [sample.id, sample]));
@@ -380,5 +448,10 @@ export async function perceiveScreenshotWithOcr({
     lines,
     warnings,
     degraded: warnings.length > 0,
+    hasUnresolvedMessageSpeakers:
+      collected.hasMissingGeometry ||
+      ambiguousGroups.some((group) =>
+        group.lineIndexes.some((lineIndex) => lines[lineIndex].side === null),
+      ),
   };
 }

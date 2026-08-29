@@ -57,6 +57,19 @@ type BeginBatchInput = {
   localBatchSession?: LocalBatchContactSession | null;
 };
 
+type BeginTextUploadInput = {
+  mode: UploadBatchMode;
+  serverUrl?: string | null;
+  note?: string;
+};
+
+type SeedFromUploadOptions = {
+  label?: string;
+  mode?: UploadBatchMode;
+  serverUrl?: string | null;
+  note?: string;
+};
+
 export type ResetFlowOptions = {
   preserveExistingBatch?: boolean;
 };
@@ -80,13 +93,17 @@ type FlowContextValue = {
   hasInsightFailure: boolean;
   processingNotice: string | null;
   beginBatch: (input: BeginBatchInput) => number;
+  beginTextUpload: (input: BeginTextUploadInput) => number;
   isFlowGenerationCurrent: (generation: number) => boolean;
   markBatchItemProcessing: (index: number) => void;
   recordBatchItemSuccess: (index: number, payload: ScreenshotUploadResponse) => void;
   recordBatchItemFailure: (index: number, reason: string) => void;
   finishBatch: (result: UploadBatchResult) => void;
   selectScreenshot: (screenshotId: number) => void;
-  seedFromUpload: (payload: ScreenshotUploadResponse) => void;
+  seedFromUpload: (
+    payload: ScreenshotUploadResponse,
+    options?: SeedFromUploadOptions,
+  ) => void;
   setScreenshotDetail: (detail: ScreenshotDetail) => void;
   applyConfirmResult: (payload: ConfirmCardResponse) => void;
   markRejected: (card: ActionCardRecord) => void;
@@ -169,7 +186,7 @@ function updateCardInBatchItems(items: FlowBatchItem[], card: ActionCardRecord) 
   });
 }
 
-function applyUploadResponseToItems(
+export function applyUploadResponseToItems(
   items: FlowBatchItem[],
   index: number,
   payload: ScreenshotUploadResponse,
@@ -195,7 +212,7 @@ function applyUploadResponseToItems(
   return next;
 }
 
-function applyUploadResponseSources(
+export function applyUploadResponseSources(
   current: Record<number, number[]>,
   payload: ScreenshotUploadResponse,
 ) {
@@ -254,14 +271,72 @@ export function shouldPreserveBatchOnReset(
   hasSummary: boolean,
   options?: ResetFlowOptions,
 ) {
-  const isInProgress = !hasSummary && items.some(
-    (item) => item.status === "pending" || item.status === "processing",
-  );
+  const isInProgress = !hasSummary && hasInProgressFlowItems(items);
 
   return isInProgress || Boolean(options?.preserveExistingBatch && items.length > 0);
 }
 
-function getCardSourceLabels(
+export function hasInProgressFlowItems(
+  items: ReadonlyArray<Pick<FlowBatchItem, "status">>,
+) {
+  return items.some(
+    (item) => item.status === "pending" || item.status === "processing",
+  );
+}
+
+export function findCompletedPastedTextItem(items: FlowBatchItem[]) {
+  return items.find(
+    (item) =>
+      item.label === "粘贴文本" &&
+      item.asset === null &&
+      item.status === "success" &&
+      item.screenshotId != null,
+  ) ?? null;
+}
+
+export function createPendingPastedTextItem(): FlowBatchItem {
+  return {
+    index: 0,
+    asset: null,
+    label: "粘贴文本",
+    status: "processing",
+    screenshotId: null,
+    cards: [],
+    detail: null,
+    processingNotice: null,
+    error: null,
+  };
+}
+
+export function isPastedTextSourcePath(imagePath: string) {
+  return (
+    imagePath === "text-entry://pasted" ||
+    imagePath.startsWith("data:text/plain")
+  );
+}
+
+export function createFlowItemFromScreenshotDetail(
+  detail: ScreenshotDetail,
+): FlowBatchItem {
+  const isPastedText = isPastedTextSourcePath(detail.image_path);
+  const label = isPastedText
+    ? "粘贴文本"
+    : detail.image_path.split("/").filter(Boolean).at(-1) ?? `截图 #${detail.id}`;
+
+  return {
+    index: 0,
+    asset: isPastedText ? null : { uri: detail.image_path, fileName: label },
+    label,
+    status: "success",
+    screenshotId: detail.id,
+    cards: sortCards(detail.cards),
+    detail,
+    processingNotice: null,
+    error: null,
+  };
+}
+
+export function getCardSourceLabels(
   items: FlowBatchItem[],
   sourceScreenshotIdsByCardId: Record<number, number[]>,
 ) {
@@ -360,6 +435,20 @@ export function FlowProvider({ children }: PropsWithChildren) {
           processingNotice: null,
           error: null,
         })),
+      });
+      return nextGeneration;
+    },
+    beginTextUpload({ mode, note = "", serverUrl = null }) {
+      const nextGeneration = advanceFlowGeneration();
+      clearResultState();
+      setBatch({
+        mode,
+        serverUrl: mode === "server" ? serverUrl : null,
+        note,
+        localBatchSession: null,
+        summary: null,
+        sourceScreenshotIdsByCardId: {},
+        items: [createPendingPastedTextItem()],
       });
       return nextGeneration;
     },
@@ -473,9 +562,9 @@ export function FlowProvider({ children }: PropsWithChildren) {
         batch.items.find((item) => item.screenshotId === nextScreenshotId)?.detail ?? null,
       );
     },
-    seedFromUpload(payload) {
+    seedFromUpload(payload, options = {}) {
       advanceFlowGeneration();
-      const label = `截图 #${payload.screenshot_id}`;
+      const label = options.label ?? `截图 #${payload.screenshot_id}`;
       const item: FlowBatchItem = {
         index: 0,
         asset: null,
@@ -496,9 +585,9 @@ export function FlowProvider({ children }: PropsWithChildren) {
         ...(payload.local_batch_contact_merges ?? []).map((merge) => merge.anchor_card),
       ]));
       setBatch({
-        mode: null,
-        serverUrl: null,
-        note: "",
+        mode: options.mode ?? null,
+        serverUrl: options.mode === "server" ? (options.serverUrl ?? null) : null,
+        note: options.note?.trim() ?? "",
         localBatchSession: null,
         items,
         summary: summaryFromItems(items),
@@ -534,18 +623,7 @@ export function FlowProvider({ children }: PropsWithChildren) {
           };
         }
 
-        const label = detail.image_path.split("/").filter(Boolean).at(-1) ?? `截图 #${detail.id}`;
-        const item: FlowBatchItem = {
-          index: 0,
-          asset: { uri: detail.image_path, fileName: label },
-          label,
-          status: "success",
-          screenshotId: detail.id,
-          cards: sortCards(detail.cards),
-          detail,
-          processingNotice: null,
-          error: null,
-        };
+        const item = createFlowItemFromScreenshotDetail(detail);
 
         return {
           mode: null,

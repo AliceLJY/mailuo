@@ -26,6 +26,12 @@ import {
   type ConfirmCardBody,
 } from "../../shared/core/schemas.ts";
 import {
+  createPastedTextOcrResult,
+  createPastedTextSourceUri,
+  perceiveOcrText,
+} from "../../shared/core/agent/perceive-text.ts";
+import type { StructuredOutputProvider } from "../../shared/core/llm/provider.ts";
+import {
   executeCard as defaultExecuteCard,
   ExecuteError,
   rejectCard as defaultRejectCard,
@@ -55,6 +61,7 @@ import {
   normalizeImageMimeType,
   UnsupportedImageTypeError,
 } from "./llm/qwen.ts";
+import { createTextProvider as defaultCreateTextProvider } from "./llm/text.ts";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const defaultScreenshotDir = resolve(currentDir, "..", "data", "screenshots");
@@ -78,6 +85,7 @@ type ResolveParticipantsFn = typeof defaultResolveParticipants;
 type ExecuteCardFn = typeof defaultExecuteCard;
 type RejectCardFn = typeof defaultRejectCard;
 type GenerateInsightsFn = typeof defaultGenerateInsights;
+type CreateTextProviderFn = () => StructuredOutputProvider;
 
 type ConfirmCardResponse = {
   executed: true;
@@ -226,6 +234,32 @@ function parseConfirmCardBody(body: unknown): ConfirmCardBody {
   }
 
   return parsed.data;
+}
+
+type TextUploadBody = {
+  text: string;
+  note?: string;
+};
+
+function parseTextUploadBody(body: unknown): TextUploadBody {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new HttpError(422, "Invalid request body", "INVALID_REQUEST_BODY");
+  }
+
+  const candidate = body as Record<string, unknown>;
+  if (typeof candidate.text !== "string" || !candidate.text.trim()) {
+    throw new HttpError(422, "Text is required", "INVALID_TEXT");
+  }
+
+  if (candidate.note !== undefined && typeof candidate.note !== "string") {
+    throw new HttpError(422, "Invalid request body", "INVALID_REQUEST_BODY");
+  }
+
+  const note = candidate.note?.trim();
+  return {
+    text: candidate.text.trim(),
+    ...(note ? { note } : {}),
+  };
 }
 
 function listResolvableContacts(db: MailuoDb): ResolvableContact[] {
@@ -385,6 +419,7 @@ type BuildAppOptions = {
   executeCard?: ExecuteCardFn;
   rejectCard?: RejectCardFn;
   generateInsights?: GenerateInsightsFn;
+  createTextProvider?: CreateTextProviderFn;
 };
 
 async function cleanupPartialScreenshotUpload(
@@ -416,6 +451,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const executeCard = options.executeCard ?? defaultExecuteCard;
   const rejectCard = options.rejectCard ?? defaultRejectCard;
   const generateInsights = options.generateInsights ?? defaultGenerateInsights;
+  const createTextProvider = options.createTextProvider ?? defaultCreateTextProvider;
   const webRoot = resolveWebRoot(options.webRoot);
   const canServeSpaIndex = webRoot ? existsSync(resolve(webRoot, "index.html")) : false;
   const app = Fastify({ logger: true });
@@ -474,6 +510,45 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     } catch (error) {
       await cleanupPartialScreenshotUpload(db, screenshotId, imagePath, request);
       request.log.error({ err: error }, "Failed to process screenshot upload");
+      return sendError(reply, error);
+    }
+  });
+
+  app.post("/api/notes", async (request, reply) => {
+    let screenshotId: number | undefined;
+
+    try {
+      const { text, note } = parseTextUploadBody(request.body);
+      const screenshot = db.createScreenshot({
+        imagePath: createPastedTextSourceUri(text),
+        userNote: note ?? null,
+      });
+      screenshotId = screenshot.id;
+      const extraction = await perceiveOcrText({
+        ocr: createPastedTextOcrResult(text),
+        note,
+        provider: createTextProvider(),
+      });
+      const contacts = listResolvableContacts(db);
+      const resolutions = await resolveParticipants({ extraction, contacts });
+      const cards = db.saveScreenshotAnalysis({
+        screenshotId: screenshot.id,
+        rawExtraction: extraction,
+        cards: await Promise.resolve(proposeCards(extraction, resolutions, contacts)),
+      });
+
+      const payload: ApiSuccess<ScreenshotUploadResponse> = {
+        ok: true,
+        data: {
+          screenshot_id: screenshot.id,
+          cards,
+        },
+      };
+
+      return reply.status(201).send(payload);
+    } catch (error) {
+      await cleanupPartialScreenshotUpload(db, screenshotId, undefined, request);
+      request.log.error({ err: error }, "Failed to process text upload");
       return sendError(reply, error);
     }
   });
