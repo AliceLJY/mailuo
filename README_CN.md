@@ -162,6 +162,7 @@ M4 的构建和部署入口在 [deploy/README.md](deploy/README.md) 和 [scripts
 - 应用数据存放在服务端主机本地的 SQLite。
 - 截图文件本地存放在 `server/data/screenshots/`。
 - 原始截图二进制只会在感知阶段发给 Qwen。
+- **通过「粘贴文本」入口提交的内容，会原样发送给所配置的文本模型**（DeepSeek，或未配置 DeepSeek 时的 DashScope Qwen 文本模型）用于抽取，不经过视觉模型。粘贴什么就发送什么，请自行判断内容敏感度。
 - DeepSeek 不接收原始图片。人物归并时，它只接收身份判断所需的截图抽取文本，例如 `source_quote`、`facts`、`quotes`、`events`，以及最小联系人摘要。
 - 洞察生成时，DeepSeek 只接收已落库的截图证据文本，以及生成有依据输出所需的最小档案与 observation 上下文。未配置 DeepSeek 时，上述文本任务由 DashScope 的 Qwen 文本模型完成，数据不发往 DeepSeek。
 - **说白了**：档案的存储是全本地的，但推理阶段截图与相关文本会到达模型服务商（阿里云 / DeepSeek），受其各自的数据政策约束。介意这一层的用户可以走下一条。
