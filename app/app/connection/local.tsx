@@ -144,7 +144,7 @@ export default function LocalConnectionScreen() {
         ...(config?.perceptionPath === "cloud" ? { perceptionPath: "cloud" } : {}),
         ...(config?.exportOcrResults ? { exportOcrResults: true } : {}),
       });
-      resetFlow();
+      resetFlow({ preserveExistingBatch: true });
       router.replace("/(tabs)");
     } catch {
       setMessage("配置暂时没有保存成功，请再试一次。");

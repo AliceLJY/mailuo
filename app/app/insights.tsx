@@ -1,12 +1,18 @@
 import { router } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Platform } from "react-native";
 
-import { getContactDetail, getErrorMessage } from "@/api";
+import { getConfiguredApiUrl, getContactDetail, getErrorMessage } from "@/api";
 import { AppButton } from "@/components/button";
 import { InsightCard } from "@/components/insight/insight-card";
 import { EmptyHint, Page, SectionCard } from "@/components/page";
+import { useConnection } from "@/connection/context";
 import { useFlow } from "@/flow-context";
 import { useToast } from "@/toast-context";
+import {
+  normalizeUploadServerUrl,
+  uploadBatchTargetMatches,
+} from "@/upload-batch";
 
 function uniqueIds(values: number[]) {
   return [...new Set(values)];
@@ -16,29 +22,60 @@ export default function InsightsScreen() {
   const [pageError, setPageError] = useState<string | null>(null);
   const {
     affectedContactIds,
+    batchMode,
+    batchServerUrl,
     contactDetailsById,
     evidenceById,
+    flowGeneration,
     hasInsightFailure,
     insights,
+    isFlowGenerationCurrent,
     mergeContactDetail,
     processingNotice,
     resetFlow,
   } = useFlow();
   const { showError } = useToast();
+  const { config } = useConnection();
+  const currentMode = Platform.OS !== "web" && config?.mode === "local" ? "local" : "server";
+  const currentServerUrl = normalizeUploadServerUrl(
+    config?.serverUrl ?? getConfiguredApiUrl(),
+  );
+  const targetMismatch = batchMode != null && !uploadBatchTargetMatches({
+    batchMode,
+    batchServerUrl,
+    currentMode,
+    currentServerUrl,
+  });
+  const loadRunTokenRef = useRef(0);
   const targetContactIds = useMemo(
     () => uniqueIds([...affectedContactIds, ...insights.map((item) => item.contact_id)]),
     [affectedContactIds, insights],
   );
 
   useEffect(() => {
-    const missingIds = targetContactIds.filter((contactId) => !contactDetailsById[contactId]);
+    const requestGeneration = flowGeneration;
+    const runToken = loadRunTokenRef.current + 1;
+    loadRunTokenRef.current = runToken;
+    const missingIds = targetMismatch
+      ? []
+      : targetContactIds.filter((contactId) => !contactDetailsById[contactId]);
 
     if (!missingIds.length) {
       return;
     }
 
+    let active = true;
+
     void (async () => {
       const results = await Promise.allSettled(missingIds.map((contactId) => getContactDetail(contactId)));
+      if (
+        !active ||
+        loadRunTokenRef.current !== runToken ||
+        !isFlowGenerationCurrent(requestGeneration)
+      ) {
+        return;
+      }
+
       const failed = results.some((item) => item.status === "rejected");
 
       for (const result of results) {
@@ -55,7 +92,22 @@ export default function InsightsScreen() {
         setPageError(null);
       }
     })();
-  }, [contactDetailsById, mergeContactDetail, showError, targetContactIds]);
+
+    return () => {
+      active = false;
+      if (loadRunTokenRef.current === runToken) {
+        loadRunTokenRef.current += 1;
+      }
+    };
+  }, [
+    contactDetailsById,
+    flowGeneration,
+    isFlowGenerationCurrent,
+    mergeContactDetail,
+    targetMismatch,
+    showError,
+    targetContactIds,
+  ]);
 
   return (
     <Page
@@ -74,6 +126,12 @@ export default function InsightsScreen() {
       {processingNotice ? (
         <SectionCard title="处理提示">
           <EmptyHint text={processingNotice} />
+        </SectionCard>
+      ) : null}
+
+      {targetMismatch ? (
+        <SectionCard title="处理目标已变更">
+          <EmptyHint text="这批洞察属于原来的处理模式与服务地址。切回原目标后再查看依据，避免读取另一套档案。" />
         </SectionCard>
       ) : null}
 

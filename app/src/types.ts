@@ -37,12 +37,37 @@ export type RecordInteractionPayload = {
   summary: string;
 };
 
+export type LocalBatchDeferredDependency =
+  | {
+      kind: "meeting_participant";
+      anchor_card_id: number;
+      participant_index: number;
+    }
+  | {
+      kind: "record_interaction";
+      anchor_card_id: number;
+    }
+  | {
+      kind: "disambiguation_candidate";
+      anchor_card_id: number;
+      candidate: {
+        name: string;
+        company?: string | null;
+      };
+    };
+
+export type LocalBatchDeferredMarker = {
+  version: 1;
+  dependencies: LocalBatchDeferredDependency[];
+};
+
 export type ActionCardDisambiguation = {
   candidates: Array<{
     contact_id: number;
     name: string;
     company?: string | null;
   }>;
+  local_batch_deferred?: LocalBatchDeferredMarker;
 };
 
 type ActionCardBase<TType extends ActionCardType, TPayload> = {
@@ -224,6 +249,17 @@ export type ScreenshotUploadResponse = {
   screenshot_id: number;
   cards: ActionCardRecord[];
   processing_notice?: string;
+  local_batch_contact_merges?: LocalBatchContactMerge[];
+};
+
+export type LocalBatchContactEvidence = {
+  screenshot_id: number;
+  source_quotes: string[];
+};
+
+export type LocalBatchContactMerge = {
+  anchor_card: ActionCardRecord;
+  evidence: LocalBatchContactEvidence[];
 };
 
 export type ConfirmCardRequest = {

@@ -68,6 +68,10 @@ test("local provider errors distinguish key, network, and rate-limit failures wi
     humanizeLocalProviderError({ statusCode: 429, message: "rate limit" }),
     "模型服务现在请求太多，请稍等一会再试。",
   );
+  assert.equal(
+    humanizeLocalProviderError({ code: "BATCH_TARGET_CHANGED" }),
+    "处理目标已变更，请切回本批次的处理模式与服务地址，或开始新一批。",
+  );
 });
 
 test("server connection test validates the Mailuo health response and reports latency", async () => {

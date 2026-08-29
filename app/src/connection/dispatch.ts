@@ -9,6 +9,7 @@ import type {
   ScreenshotUploadResponse,
   UploadImageAsset,
 } from "../types";
+import type { LocalBatchContactSession } from "../local/batch-contacts";
 
 import type { ConnectionConfigStore } from "./config";
 
@@ -16,6 +17,13 @@ export interface RoutedApi {
   uploadScreenshot(input: {
     asset: UploadImageAsset;
     note?: string;
+    expectedTarget?:
+      | { mode: "local" }
+      | { mode: "server"; serverUrl: string | null };
+    localBatch?: {
+      session: LocalBatchContactSession;
+      index: number;
+    };
   }): Promise<ScreenshotUploadResponse>;
   confirmCard(cardId: number, body?: ConfirmCardRequest): Promise<ConfirmCardResponse>;
   rejectCard(cardId: number): Promise<RejectCardResponse>;
@@ -40,6 +48,22 @@ function normalizeServerUrl(value: string | undefined): string | undefined {
   return normalized || undefined;
 }
 
+export class ApiTargetChangedError extends Error {
+  readonly code = "BATCH_TARGET_CHANGED";
+
+  constructor(
+    readonly expectedTarget:
+      | { mode: "local" }
+      | { mode: "server"; serverUrl: string | null },
+    readonly actualTarget:
+      | { mode: "local" }
+      | { mode: "server"; serverUrl?: string },
+  ) {
+    super("处理目标已变更，请切回本批次的处理模式与服务地址，或开始新一批。");
+    this.name = "ApiTargetChangedError";
+  }
+}
+
 export async function selectApiTarget(options: Pick<
   ApiDispatcherOptions,
   "configStore" | "platform" | "publicApiUrl"
@@ -57,8 +81,25 @@ export async function selectApiTarget(options: Pick<
 }
 
 export function createApiDispatcher(options: ApiDispatcherOptions): RoutedApi {
-  async function selectedApi(): Promise<RoutedApi> {
+  async function selectedApi(
+    expectedTarget?:
+      | { mode: "local" }
+      | { mode: "server"; serverUrl: string | null },
+  ): Promise<RoutedApi> {
     const target = await selectApiTarget(options);
+
+    const targetChanged = expectedTarget && (
+      target.mode !== expectedTarget.mode ||
+      (
+        target.mode === "server" &&
+        expectedTarget.mode === "server" &&
+        normalizeServerUrl(target.serverUrl) !==
+          normalizeServerUrl(expectedTarget.serverUrl ?? undefined)
+      )
+    );
+    if (targetChanged) {
+      throw new ApiTargetChangedError(expectedTarget, target);
+    }
 
     if (target.mode === "local") {
       return options.getLocalApi();
@@ -69,7 +110,8 @@ export function createApiDispatcher(options: ApiDispatcherOptions): RoutedApi {
 
   return {
     async uploadScreenshot(input) {
-      return (await selectedApi()).uploadScreenshot(input);
+      const { expectedTarget, ...routedInput } = input;
+      return (await selectedApi(expectedTarget)).uploadScreenshot(routedInput);
     },
     async confirmCard(cardId, body = {}) {
       return (await selectedApi()).confirmCard(cardId, body);

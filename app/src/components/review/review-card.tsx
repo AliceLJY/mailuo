@@ -25,6 +25,7 @@ type Props = {
   card: ActionCardRecord;
   draft: ReviewCardDraft;
   stage: ReviewStage;
+  sourceLabels?: string[];
   busy?: boolean;
   errorText?: string | null;
   onDraftChange: (draft: ReviewCardDraft) => void;
@@ -63,6 +64,7 @@ export function ReviewCard({
   onConfirm,
   onDraftChange,
   onReject,
+  sourceLabels = [],
   stage,
 }: Props) {
   const editable = stage === "current" && card.status === "pending";
@@ -96,6 +98,10 @@ export function ReviewCard({
           <Text style={styles.confidenceText}>{CONFIDENCE_LABEL[card.confidence]}</Text>
         </View>
       </View>
+
+      {sourceLabels.length ? (
+        <Text style={styles.sourceText}>来自 {sourceLabels.join("、")}</Text>
+      ) : null}
 
       {card.type === "create_contact" ? (
         <ContactFields
@@ -190,6 +196,7 @@ const styles = StyleSheet.create({
   confidenceText: { color: theme.colors.textPrimary, fontSize: 12, fontWeight: "700", textTransform: "uppercase" },
   section: { gap: 12 },
   sectionTitle: { color: theme.colors.textPrimary, fontSize: 14, fontWeight: "700" },
+  sourceText: { color: theme.colors.textMuted, fontSize: 12, lineHeight: 18 },
   quoteText: { color: theme.colors.textSecondary, fontSize: 14, lineHeight: 21 },
   actions: { gap: 10 },
   actionRow: { flexDirection: "row", gap: 10 },

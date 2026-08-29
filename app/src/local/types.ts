@@ -2,6 +2,7 @@ import type { ExecuteStore } from "../../../shared/core/agent/execute.ts";
 import type { InsightGenerationDb } from "../../../shared/core/agent/insight.ts";
 import type { ActionCard } from "../../../shared/types.ts";
 import type {
+  ActionCardDisambiguation,
   ActionCardRecord,
   ContactDetail,
   ContactListItem,
@@ -12,6 +13,7 @@ import type {
 } from "../types";
 
 export interface LocalStore extends ExecuteStore, InsightGenerationDb {
+  getStoredActionCardById(cardId: number): ActionCardRecord | null;
   createScreenshot(input: {
     imagePath: string;
     userNote?: string | null;
@@ -21,8 +23,19 @@ export interface LocalStore extends ExecuteStore, InsightGenerationDb {
     screenshotId: number;
     rawExtraction: unknown;
     cards: ActionCard[];
+    pendingCardUpdates?: Array<{
+      cardId: number;
+      payload: ActionCard["payload"];
+      sourceQuote: string;
+    }>;
     createdAt?: string;
   }): ActionCardRecord[];
+  updatePendingActionCard(input: {
+    cardId: number;
+    payload?: ActionCard["payload"];
+    sourceQuote?: string;
+    disambiguation?: ActionCardDisambiguation | null;
+  }): ActionCardRecord | null;
   deleteScreenshotUploadArtifacts(screenshotId: number): void;
   listContacts(): ContactListItem[];
   getContactDetail(contactId: number): ContactDetail | null;

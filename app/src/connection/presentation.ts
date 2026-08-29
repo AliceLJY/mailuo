@@ -43,6 +43,10 @@ export function humanizeLocalProviderError(error: unknown): string {
   const { code, message, status } = describeError(error);
   const detail = `${code} ${message}`;
 
+  if (code === "batch_target_changed") {
+    return "处理目标已变更，请切回本批次的处理模式与服务地址，或开始新一批。";
+  }
+
   if (status === 401 || status === 403 || /invalid[_ -]?api[_ -]?key|unauthorized|authentication/u.test(detail)) {
     return "模型服务没有接受这个 Key，请检查后重新填写。";
   }

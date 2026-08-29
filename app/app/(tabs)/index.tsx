@@ -1,39 +1,133 @@
 import * as ImagePicker from "expo-image-picker";
-import { router } from "expo-router";
-import { useEffect, useReducer, useRef, useState } from "react";
-import { ActivityIndicator, Image, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Image,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 
-import { uploadScreenshot } from "@/api";
+import { getConfiguredApiUrl, uploadScreenshot } from "@/api";
 import { AppButton } from "@/components/button";
 import { EmptyHint, MetaLine, Page, SectionCard } from "@/components/page";
 import { useConnection } from "@/connection/context";
 import { humanizeLocalProviderError } from "@/connection/presentation";
-import { useFlow } from "@/flow-context";
+import {
+  useFlow,
+  type FlowBatchItem,
+  type FlowBatchSummary,
+} from "@/flow-context";
+import { LocalBatchContactSession } from "@/local/batch-contacts";
 import { theme } from "@/theme";
 import { useToast } from "@/toast-context";
-import type { UploadImageAsset } from "@/types";
-import { initialUploadDraft, uploadDraftReducer } from "@/upload-draft";
+import {
+  getFailedUploadItems,
+  getUploadAssetLabel,
+  mergeUploadBatchResults,
+  normalizeUploadServerUrl,
+  uploadBatchTargetMatches,
+  uploadScreenshotBatch,
+  type UploadBatchResult,
+  type UploadBatchSourceItem,
+  type UploadBatchSuccessItem,
+  type UploadBatchMode,
+  type UploadBatchItem,
+  type UploadBatchProgress,
+} from "@/upload-batch";
+import { initialUploadDraft, MAX_UPLOAD_ASSETS, uploadDraftReducer } from "@/upload-draft";
+
+type BatchSource =
+  | { assets: NonNullable<Parameters<typeof uploadScreenshotBatch>[0]["assets"]> }
+  | { items: UploadBatchSourceItem[] };
 
 export default function UploadScreen() {
-  const [{ asset, note }, dispatchDraft] = useReducer(uploadDraftReducer, initialUploadDraft);
+  const [{ assets, note }, dispatchDraft] = useReducer(uploadDraftReducer, initialUploadDraft);
   const [loading, setLoading] = useState(false);
   const [loadingText, setLoadingText] = useState("正在准备截图…");
-  const { seedFromUpload } = useFlow();
+  const [lastResult, setLastResult] = useState<UploadBatchResult | null>(null);
+  const {
+    batchItems,
+    batchMode,
+    batchNote,
+    batchServerUrl,
+    batchSummary,
+    beginBatch,
+    finishBatch,
+    flowGeneration,
+    isFlowGenerationCurrent,
+    localBatchSession,
+    markBatchItemProcessing,
+    recordBatchItemFailure,
+    recordBatchItemSuccess,
+    resetFlow,
+  } = useFlow();
   const { showError, showToast } = useToast();
   const { config } = useConnection();
-  const isLocal = config?.mode === "local";
+  const isLocal = Platform.OS !== "web" && config?.mode === "local";
   const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const localBatchSessionRef = useRef<LocalBatchContactSession | null>(null);
   const mountedRef = useRef(true);
+  const focusedRef = useRef(false);
+  const focusEpochRef = useRef(0);
+  const runningRef = useRef(false);
   const submitTokenRef = useRef(0);
+  const flowResult = buildFlowBatchResult(
+    batchItems,
+    batchSummary,
+    batchMode,
+    batchServerUrl,
+  );
+  const displayResult = lastResult ?? flowResult;
+  const displayMode = displayResult?.mode ?? (isLocal ? "local" : "server");
+  const currentMode: UploadBatchMode = isLocal ? "local" : "server";
+  const currentServerUrl = normalizeUploadServerUrl(
+    config?.serverUrl ?? getConfiguredApiUrl(),
+  );
+  const targetMismatch = displayResult != null && !uploadBatchTargetMatches({
+    batchMode: displayResult.mode,
+    batchServerUrl: displayResult.serverUrl,
+    currentMode,
+    currentServerUrl,
+  });
+  const displayNote = displayResult && assets.length === 0 ? batchNote : note;
 
   useEffect(() => {
+    mountedRef.current = true;
+
     return () => {
       mountedRef.current = false;
+      submitTokenRef.current += 1;
       clearLoadingTimer(loadingTimerRef.current);
     };
   }, []);
 
-  async function pickImage() {
+  useFocusEffect(
+    useCallback(() => {
+      focusedRef.current = true;
+
+      return () => {
+        focusedRef.current = false;
+        focusEpochRef.current += 1;
+        clearLoadingTimer(loadingTimerRef.current);
+        loadingTimerRef.current = null;
+      };
+    }, []),
+  );
+
+  useEffect(() => {
+    if (batchItems.length === 0 && batchSummary == null) {
+      setLastResult(null);
+      localBatchSessionRef.current = null;
+    }
+  }, [batchItems.length, batchSummary, flowGeneration]);
+
+  async function pickImages() {
+    const startsNewDraft = displayResult != null;
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!mountedRef.current) {
       return;
@@ -47,73 +141,281 @@ export default function UploadScreen() {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
       quality: 1,
-      selectionLimit: 1,
+      allowsMultipleSelection: true,
+      orderedSelection: true,
+      selectionLimit: startsNewDraft
+        ? MAX_UPLOAD_ASSETS
+        : MAX_UPLOAD_ASSETS - assets.length,
     });
-    if (!mountedRef.current) {
+    if (!mountedRef.current || result.canceled || result.assets.length === 0) {
       return;
     }
 
-    if (result.canceled || !result.assets[0]) {
-      return;
+    if (startsNewDraft) {
+      resetFlow();
+      dispatchDraft({ type: "reset" });
+      setLastResult(null);
+      localBatchSessionRef.current = null;
     }
-
     dispatchDraft({
-      type: "select-asset",
-      asset: {
-        uri: result.assets[0].uri,
-        fileName: result.assets[0].fileName,
-        mimeType: result.assets[0].mimeType,
-        width: result.assets[0].width,
-        height: result.assets[0].height,
-      },
+      type: "add-assets",
+      assets: result.assets.map((asset) => ({
+        uri: asset.uri,
+        fileName: asset.fileName,
+        mimeType: asset.mimeType,
+        width: asset.width,
+        height: asset.height,
+      })),
     });
   }
 
-  async function submit() {
-    if (!asset) {
-      showToast("先选一张聊天截图。", "info");
+  function handleProgress(
+    progress: UploadBatchProgress,
+    submitToken: number,
+    generation: number,
+  ) {
+    if (
+      !canCommitSubmitResult(mountedRef, submitTokenRef, submitToken) ||
+      !isFlowGenerationCurrent(generation)
+    ) {
       return;
     }
 
+    clearLoadingTimer(loadingTimerRef.current);
+    loadingTimerRef.current = null;
+
+    if (progress.status === "processing") {
+      markBatchItemProcessing(progress.index);
+      setLoadingText(`正在处理第 ${progress.position}/${progress.totalCount} 张…`);
+      loadingTimerRef.current = setTimeout(() => {
+        if (
+          !canCommitSubmitResult(mountedRef, submitTokenRef, submitToken) ||
+          !isFlowGenerationCurrent(generation)
+        ) {
+          return;
+        }
+        setLoadingText(`AI 正在整理第 ${progress.position}/${progress.totalCount} 张…`);
+      }, 2000);
+      return;
+    }
+
+    if (progress.status === "success") {
+      recordBatchItemSuccess(progress.index, progress.response);
+      return;
+    }
+
+    recordBatchItemFailure(progress.index, progress.reason);
+  }
+
+  async function processBatch(
+    source: BatchSource,
+    previousResult: UploadBatchResult | null,
+  ) {
+    if (
+      runningRef.current ||
+      !mountedRef.current ||
+      !focusedRef.current
+    ) {
+      return;
+    }
+
+    runningRef.current = true;
     const submitToken = submitTokenRef.current + 1;
     submitTokenRef.current = submitToken;
+    const focusEpoch = focusEpochRef.current;
+    const mode: UploadBatchMode = previousResult?.mode ?? (isLocal ? "local" : "server");
+    const serverUrl = previousResult
+      ? previousResult.serverUrl
+      : mode === "server"
+        ? currentServerUrl
+        : null;
+    let generation = flowGeneration;
+
+    if (!previousResult) {
+      localBatchSessionRef.current = mode === "local" ? new LocalBatchContactSession() : null;
+      generation = beginBatch({
+        assets,
+        note,
+        mode,
+        localBatchSession: localBatchSessionRef.current,
+        serverUrl,
+      });
+    } else if (mode === "local" && !localBatchSessionRef.current) {
+      localBatchSessionRef.current = localBatchSession;
+    }
 
     try {
       clearLoadingTimer(loadingTimerRef.current);
       setLoading(true);
       setLoadingText("正在准备截图…");
-      loadingTimerRef.current = setTimeout(() => {
-        if (!canCommitSubmitResult(mountedRef, submitTokenRef, submitToken)) {
-          return;
+      const session = localBatchSessionRef.current;
+      const batchNoteForRun = previousResult ? batchNote : note;
+      const result = await uploadScreenshotBatch({
+        ...source,
+        mode,
+        note: batchNoteForRun,
+        serverUrl,
+        async uploadScreenshot(input) {
+          try {
+            return await uploadScreenshot({
+              asset: input.asset,
+              note: input.note,
+              expectedTarget: mode === "local"
+                ? { mode: "local" }
+                : { mode: "server", serverUrl },
+              ...(mode === "local" && session
+                ? { localBatch: { session, index: input.index } }
+                : {}),
+            });
+          } catch (error) {
+            if (mode === "local") {
+              throw new Error(humanizeLocalProviderError(error));
+            }
+            throw error;
+          }
+        },
+        onProgress: (progress) => handleProgress(progress, submitToken, generation),
+        shouldContinue: () => (
+          canCommitSubmitResult(mountedRef, submitTokenRef, submitToken) &&
+          isFlowGenerationCurrent(generation)
+        ),
+      });
+
+      if (
+        !canCommitSubmitResult(mountedRef, submitTokenRef, submitToken) ||
+        !isFlowGenerationCurrent(generation)
+      ) {
+        return;
+      }
+
+      finishBatch(result);
+      const combined = previousResult ? mergeUploadBatchResults(previousResult, result) : result;
+      setLastResult(combined);
+
+      if (combined.failureCount === 0) {
+        dispatchDraft({ type: "reset" });
+        if (focusedRef.current && focusEpochRef.current === focusEpoch) {
+          openReview(combined);
         }
-        setLoadingText("AI 正在读图，通常 10-20 秒…");
-      }, 2000);
-      const response = await uploadScreenshot({ asset, note });
-      if (!canCommitSubmitResult(mountedRef, submitTokenRef, submitToken)) {
-        return;
-      }
-      seedFromUpload(response);
-      dispatchDraft({ type: "reset" });
-      router.push(`/review/${response.screenshot_id}`);
-    } catch (error) {
-      if (!canCommitSubmitResult(mountedRef, submitTokenRef, submitToken)) {
-        return;
-      }
-      if (isLocal) {
-        showToast(humanizeLocalProviderError(error), "error");
+      } else if (combined.successCount === 0) {
+        showToast("这批截图暂时都没处理成功，可以只重试失败项。", "error");
       } else {
-        showError(error, "上传失败，请检查服务是否可用后再试一次。");
+        showToast(`已处理 ${combined.successCount} 张，另有 ${combined.failureCount} 张可以重试。`, "info");
       }
-    } finally {
-      if (!canCommitSubmitResult(mountedRef, submitTokenRef, submitToken)) {
+    } catch (error) {
+      if (
+        !canCommitSubmitResult(mountedRef, submitTokenRef, submitToken) ||
+        !isFlowGenerationCurrent(generation)
+      ) {
         return;
       }
+      showError(error, "这批截图暂时没有处理完成。");
+    } finally {
+      runningRef.current = false;
       clearLoadingTimer(loadingTimerRef.current);
       loadingTimerRef.current = null;
-      setLoading(false);
-      setLoadingText("正在准备截图…");
+      if (mountedRef.current) {
+        setLoading(false);
+        setLoadingText("正在准备截图…");
+      }
     }
   }
+
+  function openReview(result: UploadBatchResult) {
+    if (!uploadBatchTargetMatches({
+      batchMode: result.mode,
+      batchServerUrl: result.serverUrl,
+      currentMode,
+      currentServerUrl,
+    })) {
+      showToast("请先切回这批截图使用的处理模式与服务地址，再继续确认。", "info");
+      return;
+    }
+
+    const firstSuccess = result.items.find(
+      (item): item is UploadBatchSuccessItem => item.status === "success",
+    );
+    if (!firstSuccess) {
+      showToast("这批截图还没有可确认的内容。", "info");
+      return;
+    }
+
+    router.push(`/review/${firstSuccess.response.screenshot_id}`);
+  }
+
+  async function submit() {
+    if (assets.length === 0) {
+      showToast("先选一张或多张聊天截图。", "info");
+      return;
+    }
+
+    await processBatch({ assets }, null);
+  }
+
+  async function retryFailures() {
+    if (!displayResult) {
+      return;
+    }
+
+    if (!uploadBatchTargetMatches({
+      batchMode: displayResult.mode,
+      batchServerUrl: displayResult.serverUrl,
+      currentMode,
+      currentServerUrl,
+    })) {
+      showToast("请先切回这批截图使用的处理模式与服务地址，再重试失败项。", "info");
+      return;
+    }
+
+    await processBatch({ items: getFailedUploadItems(displayResult) }, displayResult);
+  }
+
+  function removeAsset(index: number) {
+    if (displayResult) {
+      return;
+    }
+
+    setLastResult(null);
+    localBatchSessionRef.current = null;
+    dispatchDraft({ type: "remove-asset", index });
+  }
+
+  const footer = (
+    <View style={styles.footerContent}>
+      {assets.length > 0 || displayResult ? (
+        <Text style={styles.costText}>
+          共 {displayResult?.totalCount ?? assets.length} 张；每张需要一次模型调用，将按选择顺序逐张处理。
+        </Text>
+      ) : null}
+      {displayResult?.failureCount ? (
+        <AppButton
+          label={targetMismatch ? "切回本批次目标后重试" : `只重试失败的 ${displayResult.failureCount} 张`}
+          disabled={loading || targetMismatch}
+          onPress={() => void retryFailures()}
+        />
+      ) : displayResult?.successCount ? (
+        <AppButton
+          label={targetMismatch ? "切回本批次目标后确认" : "查看待确认卡片"}
+          disabled={loading || targetMismatch}
+          onPress={() => openReview(displayResult)}
+        />
+      ) : (
+        <AppButton
+          label={loading ? "处理中..." : "提交并开始整理"}
+          disabled={loading || assets.length === 0}
+          onPress={() => void submit()}
+        />
+      )}
+      {displayResult && displayResult.successCount > 0 && displayResult.failureCount > 0 ? (
+        <AppButton
+          label="先确认已成功的截图"
+          disabled={loading || targetMismatch}
+          onPress={() => openReview(displayResult)}
+          tone="secondary"
+        />
+      ) : null}
+    </View>
+  );
 
   return (
     <View style={styles.screen}>
@@ -121,55 +423,107 @@ export default function UploadScreen() {
         title="上传截图"
         subtitle={
           isLocal
-            ? "选一张聊天截图，可补一句背景说明。档案只会保存在这台手机上。"
-            : "选一张聊天截图，可补一句背景说明。上传成功后会直接进入卡片确认页。"
+            ? "可按顺序选择多张聊天截图，并共用一条背景说明。档案只会保存在这台手机上。"
+            : "可按顺序选择多张聊天截图，并共用一条背景说明。处理完成后会进入卡片确认页。"
         }
-        footer={
-          <AppButton
-            label={loading ? "上传中..." : "提交并开始整理"}
-            disabled={loading || !asset}
-            onPress={submit}
-          />
-        }
+        footer={footer}
       >
         <SectionCard kicker="上传后会发生什么" title="这次会整理什么">
-          <MetaLine label="选图" value="从相册挑一张聊天截图，支持单张预览。" />
-          <MetaLine label="说明" value="补充说明会一起参考，方便更快看懂聊天背景。" />
-          <MetaLine label="下一步" value="上传成功后会直接进入卡片确认页。" />
+          <MetaLine label="选图" value={`最多 ${MAX_UPLOAD_ASSETS} 张，系统严格按相册里的选择顺序处理。`} />
+          <MetaLine label="说明" value="补充说明会供整批截图共同参考。" />
+          <MetaLine label="下一步" value="每张截图的卡片会按来源分组，逐张等待确认。" />
         </SectionCard>
 
-        <SectionCard title="聊天截图">
-          {asset ? (
-            <View style={styles.previewBox}>
-              <Image source={{ uri: asset.uri }} style={styles.previewImage} />
-              <Text style={styles.previewName}>{getAssetLabel(asset)}</Text>
-              <AppButton label="重新选择" onPress={pickImage} tone="secondary" />
+        {displayMode === "server" ? (
+          <SectionCard title="服务器模式说明">
+            <Text style={styles.serverNote}>
+              服务器会逐张独立整理；同一联系人跨截图时，可能出现多张待确认卡片。
+            </Text>
+          </SectionCard>
+        ) : null}
+
+        {targetMismatch ? (
+          <SectionCard title="处理目标已变更">
+            <Text style={styles.serverNote}>
+              这批截图仍保留在原来的处理模式与服务地址中。切回原目标后可以继续重试或确认；也可以重新选图开始新一批。
+            </Text>
+          </SectionCard>
+        ) : null}
+
+        <SectionCard title={`聊天截图${assets.length ? `（${assets.length}/${MAX_UPLOAD_ASSETS}）` : ""}`}>
+          {assets.length > 0 ? (
+            <View style={styles.previewList}>
+              {assets.map((asset, index) => (
+                <View key={`${asset.uri}-${index}`} style={styles.previewRow}>
+                  <Image source={{ uri: asset.uri }} style={styles.previewImage} />
+                  <View style={styles.previewCopy}>
+                    <Text style={styles.previewIndex}>第 {index + 1} 张</Text>
+                    <Text numberOfLines={2} style={styles.previewName}>{getUploadAssetLabel(asset)}</Text>
+                  </View>
+                  <AppButton
+                    disabled={loading || Boolean(displayResult)}
+                    label="移除"
+                    onPress={() => removeAsset(index)}
+                    style={styles.removeButton}
+                    tone="secondary"
+                  />
+                </View>
+              ))}
+              {displayResult ? (
+                <AppButton
+                  disabled={loading}
+                  label="开始新一批"
+                  onPress={() => void pickImages()}
+                  tone="secondary"
+                />
+              ) : assets.length < MAX_UPLOAD_ASSETS ? (
+                <AppButton
+                  disabled={loading}
+                  label="继续选择"
+                  onPress={() => void pickImages()}
+                  tone="secondary"
+                />
+              ) : null}
             </View>
           ) : (
             <Pressable
               accessibilityRole="button"
-              onPress={() => void pickImage()}
+              onPress={() => void pickImages()}
               style={({ pressed }) => [styles.pickBox, pressed ? styles.pickPressed : null]}
             >
               <Text style={styles.pickTitle}>从相册选截图</Text>
-              <Text style={styles.pickText}>支持微信聊天截图，选中后会在这里显示预览。</Text>
+              <Text style={styles.pickText}>最多选择 20 张；选中的先后顺序就是处理顺序。</Text>
             </Pressable>
           )}
         </SectionCard>
 
-        <SectionCard title="补充说明（可选）">
+        <SectionCard title="补充说明（整批共用，可选）">
           <TextInput
+            editable={!loading && !displayResult}
             multiline
             onChangeText={(value) => dispatchDraft({ type: "set-note", note: value })}
             placeholder="例如：这是我和陈老师最近三天的聊天，重点看会议时间和他的新公司。"
             placeholderTextColor={theme.colors.textMuted}
             style={styles.input}
-            value={note}
+            value={displayNote}
           />
-          <Text style={styles.helperText}>不写也可以，系统会先根据截图整理出待确认内容。</Text>
+          <Text style={styles.helperText}>不写也可以，系统会分别根据每张截图整理待确认内容。</Text>
         </SectionCard>
 
-        {!asset ? <EmptyHint text="先选一张图，再开始整理。" /> : null}
+        {displayResult ? (
+          <SectionCard title="批次处理结果">
+            <MetaLine label="成功" value={`${displayResult.successCount} 张`} />
+            <MetaLine label="失败" value={`${displayResult.failureCount} 张`} />
+            {getFailedUploadItems(displayResult).map((item) => (
+              <View key={`${item.index}-${item.fileName}`} style={styles.failureRow}>
+                <Text style={styles.failureName}>{item.fileName}</Text>
+                <Text style={styles.failureReason}>{item.reason}</Text>
+              </View>
+            ))}
+          </SectionCard>
+        ) : null}
+
+        {assets.length === 0 && !displayResult ? <EmptyHint text="先选一张或多张图，再开始整理。" /> : null}
       </Page>
 
       {loading ? (
@@ -184,12 +538,49 @@ export default function UploadScreen() {
   );
 }
 
-function getAssetLabel(asset: UploadImageAsset) {
-  if (asset.fileName?.trim()) {
-    return asset.fileName.trim();
+function buildFlowBatchResult(
+  items: FlowBatchItem[],
+  summary: FlowBatchSummary | null,
+  mode: UploadBatchMode | null,
+  serverUrl: string | null,
+): UploadBatchResult | null {
+  if (!summary || !mode || items.some((item) => item.asset == null)) {
+    return null;
   }
 
-  return asset.uri.split("/").filter(Boolean).at(-1) ?? asset.uri;
+  const resultItems: UploadBatchItem[] = items.map((item) => {
+    if (item.status === "success" && item.screenshotId != null) {
+      return {
+        asset: item.asset!,
+        fileName: item.label,
+        index: item.index,
+        status: "success",
+        response: {
+          screenshot_id: item.screenshotId,
+          cards: item.cards,
+          ...(item.processingNotice ? { processing_notice: item.processingNotice } : {}),
+        },
+      };
+    }
+
+    return {
+      asset: item.asset!,
+      fileName: item.label,
+      index: item.index,
+      status: "failure",
+      reason: item.error ?? "处理失败，请稍后重试。",
+    };
+  });
+
+  return {
+    mode,
+    serverUrl: mode === "server" ? serverUrl : null,
+    status: summary.status,
+    totalCount: summary.totalCount,
+    successCount: summary.successCount,
+    failureCount: summary.failureCount,
+    items: resultItems,
+  };
 }
 
 function clearLoadingTimer(timer: ReturnType<typeof setTimeout> | null) {
@@ -203,7 +594,10 @@ function canCommitSubmitResult(
   submitTokenRef: { current: number },
   submitToken: number,
 ) {
-  return mountedRef.current && submitTokenRef.current === submitToken;
+  return (
+    mountedRef.current &&
+    submitTokenRef.current === submitToken
+  );
 }
 
 const styles = StyleSheet.create({
@@ -211,19 +605,51 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.background,
     flex: 1,
   },
-  previewBox: {
+  footerContent: {
     gap: 10,
+  },
+  costText: {
+    color: theme.colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: "center",
+  },
+  serverNote: {
+    color: theme.colors.textSecondary,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  previewList: {
+    gap: 12,
+  },
+  previewRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 12,
   },
   previewImage: {
     backgroundColor: theme.colors.surfaceMuted,
-    borderRadius: 18,
-    height: 220,
-    width: "100%",
+    borderRadius: 12,
+    height: 68,
+    width: 68,
+  },
+  previewCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  previewIndex: {
+    color: theme.colors.primary,
+    fontSize: 12,
+    fontWeight: "700",
   },
   previewName: {
     color: theme.colors.textSecondary,
     fontSize: 13,
     lineHeight: 18,
+  },
+  removeButton: {
+    minHeight: 40,
+    width: 76,
   },
   pickBox: {
     alignItems: "center",
@@ -265,6 +691,22 @@ const styles = StyleSheet.create({
   helperText: {
     color: theme.colors.textMuted,
     fontSize: 12,
+    lineHeight: 18,
+  },
+  failureRow: {
+    backgroundColor: theme.colors.surfaceMuted,
+    borderRadius: 14,
+    gap: 4,
+    padding: 12,
+  },
+  failureName: {
+    color: theme.colors.textPrimary,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  failureReason: {
+    color: theme.colors.textSecondary,
+    fontSize: 13,
     lineHeight: 18,
   },
   overlay: {

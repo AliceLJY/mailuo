@@ -209,6 +209,11 @@ export class ExpoSqliteLocalStore implements LocalStore {
     screenshotId: number;
     rawExtraction: unknown;
     cards: ActionCard[];
+    pendingCardUpdates?: Array<{
+      cardId: number;
+      payload: ActionCard["payload"];
+      sourceQuote: string;
+    }>;
     createdAt?: string;
   }): ActionCardRecord[] {
     const createdAt = input.createdAt ?? new Date().toISOString();
@@ -220,10 +225,64 @@ export class ExpoSqliteLocalStore implements LocalStore {
         input.screenshotId,
       );
 
+      for (const update of input.pendingCardUpdates ?? []) {
+        const updated = this.applyPendingActionCardUpdate(update);
+        if (!updated) {
+          throw new Error(`Pending action card ${update.cardId} could not be updated`);
+        }
+      }
+
       return input.cards.map((card) =>
         this.insertActionCard(input.screenshotId, card, createdAt),
       );
     });
+  }
+
+  updatePendingActionCard(input: {
+    cardId: number;
+    payload?: ActionCard["payload"];
+    sourceQuote?: string;
+    disambiguation?: ActionCard["disambiguation"] | null;
+  }): ActionCardRecord | null {
+    return this.withTransaction(() => this.applyPendingActionCardUpdate(input));
+  }
+
+  private applyPendingActionCardUpdate(input: {
+    cardId: number;
+    payload?: ActionCard["payload"];
+    sourceQuote?: string;
+    disambiguation?: ActionCard["disambiguation"] | null;
+  }): ActionCardRecord | null {
+    const current = this.getStoredActionCardById(input.cardId);
+    if (!current || current.status !== "pending") {
+      return null;
+    }
+
+    const payload = input.payload ?? current.payload;
+    const sourceQuote = input.sourceQuote ?? current.source_quote;
+    const disambiguation = input.disambiguation === undefined
+      ? current.disambiguation
+      : input.disambiguation;
+    const result = this.db.runSync(
+      `UPDATE action_cards
+       SET payload = ?, source_quote = ?, disambiguation = ?
+       WHERE id = ? AND status = 'pending'`,
+      JSON.stringify(payload),
+      sourceQuote,
+      disambiguation ? JSON.stringify(disambiguation) : null,
+      input.cardId,
+    );
+
+    if (result.changes === 0) {
+      return null;
+    }
+
+    return {
+      ...current,
+      payload,
+      source_quote: sourceQuote,
+      disambiguation,
+    } as ActionCardRecord;
   }
 
   private insertActionCard(

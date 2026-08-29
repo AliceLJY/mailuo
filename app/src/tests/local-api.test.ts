@@ -25,6 +25,11 @@ import type {
   ScreenshotRecord,
 } from "../types";
 import { createLocalApi } from "../local/api";
+import {
+  hydrateLocalBatchCardForResponse,
+  LocalBatchContactMappingError,
+  LocalBatchContactSession,
+} from "../local/batch-contacts";
 import { perceiveScreenshotWithOcr, type OcrPerceptionResult } from "../local/perceive-ocr";
 import type { LocalStore } from "../local/types";
 import type { LocalLlmSecretStore } from "../connection/secrets";
@@ -62,8 +67,11 @@ class FakeLocalStore implements LocalStore {
   private readonly observations: ObservationRecord[] = [];
   private readonly meetings: MeetingRecord[] = [];
   private readonly insights: InsightRecord[] = [];
+  transactionCalls = 0;
+  pendingCardUpdateCalls = 0;
 
   withTransaction<T>(callback: () => T): T {
+    this.transactionCalls += 1;
     return callback();
   }
 
@@ -93,6 +101,13 @@ class FakeLocalStore implements LocalStore {
       raw_extraction: input.rawExtraction as ScreenshotRecord["raw_extraction"],
     });
 
+    for (const update of input.pendingCardUpdates ?? []) {
+      const updated = this.updatePendingActionCard(update);
+      if (!updated) {
+        throw new Error(`missing pending card ${update.cardId}`);
+      }
+    }
+
     return input.cards.map((card) => {
       const record = {
         ...card,
@@ -107,6 +122,28 @@ class FakeLocalStore implements LocalStore {
       this.cards.set(record.id, record);
       return record;
     });
+  }
+
+  updatePendingActionCard(
+    input: Parameters<LocalStore["updatePendingActionCard"]>[0],
+  ): ActionCardRecord | null {
+    this.pendingCardUpdateCalls += 1;
+    const current = this.cards.get(input.cardId);
+
+    if (!current || current.status !== "pending") {
+      return null;
+    }
+
+    const updated = {
+      ...current,
+      payload: input.payload ?? current.payload,
+      source_quote: input.sourceQuote ?? current.source_quote,
+      disambiguation: input.disambiguation === undefined
+        ? current.disambiguation
+        : input.disambiguation,
+    } as ActionCardRecord;
+    this.cards.set(updated.id, updated);
+    return updated;
   }
 
   deleteScreenshotUploadArtifacts(screenshotId: number): void {
@@ -400,6 +437,566 @@ const fakeKeys: LocalLlmSecretStore = {
   async clear() {},
   async clearAll() {},
 };
+
+function collectContactIds(value: unknown): number[] {
+  if (Array.isArray(value)) {
+    return value.flatMap(collectContactIds);
+  }
+
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+
+  const ids: number[] = [];
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "contact_id" && typeof entry === "number") {
+      ids.push(entry);
+    }
+    ids.push(...collectContactIds(entry));
+  }
+  return ids;
+}
+
+test("local batch merges pending contacts and maps every deferred contact id before execution", async () => {
+  const store = new FakeLocalStore();
+  const extractions = [
+    {
+      participants: [{
+        name: "张三",
+        is_self: false,
+        company: "甲公司",
+        interaction_summary: "聊了项目近况",
+        confidence: "high" as const,
+        source_quote: "张三：我现在在甲公司",
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+    {
+      participants: [{
+        name: "张三",
+        is_self: false,
+        title: "产品总监",
+        interaction_summary: "约了周一复盘",
+        confidence: "high" as const,
+        source_quote: "张三：我升产品总监了，周一复盘",
+      }],
+      events: [{
+        kind: "meeting" as const,
+        title: "项目复盘",
+        time_text: "周一上午十点",
+        time_iso: "2026-08-31T10:00:00+08:00",
+        has_time_signal: true,
+        participant_names: ["张三"],
+        confidence: "high" as const,
+        source_quote: "周一上午十点做项目复盘",
+      }],
+      facts: [],
+      quotes: [],
+    },
+    {
+      participants: [],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+  ];
+  const qwen = new FakeStructuredOutputProvider(() => {
+    const extraction = extractions.shift();
+    if (!extraction) {
+      throw new Error("unexpected perception call");
+    }
+    return extraction;
+  });
+  const text = new FakeStructuredOutputProvider(() => ({ insights: [] }));
+  const createApi = () => createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async (asset) => ({
+      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+      imagePath: asset.uri,
+    }),
+    providers: {
+      async createQwenProvider() {
+        return qwen;
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+  const api = createApi();
+  const session = new LocalBatchContactSession();
+
+  const first = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/batch-1.png", mimeType: "image/png" },
+    localBatch: { session, index: 0 },
+  });
+  const anchor = first.cards.find((card) => card.type === "create_contact");
+  assert.ok(anchor);
+  assert.deepEqual(session.listPendingContacts().map((contact) => contact.id), [-1]);
+
+  const second = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/batch-2.png", mimeType: "image/png" },
+    localBatch: { session, index: 1 },
+  });
+  assert.equal(
+    [...first.cards, ...second.cards].filter((card) => card.type === "create_contact").length,
+    1,
+  );
+  assert.deepEqual(second.cards.map((card) => card.type), [
+    "create_meeting",
+    "record_interaction",
+  ]);
+
+  const merge = second.local_batch_contact_merges?.[0];
+  assert.ok(merge);
+  assert.equal(merge.anchor_card.id, anchor.id);
+  assert.equal(merge.anchor_card.type, "create_contact");
+  assert.equal(merge.anchor_card.payload.title, "产品总监");
+  assert.deepEqual(merge.evidence.map((entry) => entry.screenshot_id), [
+    first.screenshot_id,
+    second.screenshot_id,
+  ]);
+  assert.match(merge.anchor_card.source_quote, /我现在在甲公司/u);
+  assert.match(merge.anchor_card.source_quote, /我升产品总监了/u);
+
+  for (const screenshotId of [first.screenshot_id, second.screenshot_id]) {
+    const detail = await api.getScreenshotDetail(screenshotId);
+    for (const card of detail.cards) {
+      assert.ok(collectContactIds(card).every((contactId) => contactId >= 0));
+    }
+  }
+
+  const interaction = second.cards.find((card) => card.type === "record_interaction");
+  const meeting = second.cards.find((card) => card.type === "create_meeting");
+  assert.ok(interaction);
+  assert.ok(meeting);
+  const storedInteraction = store.getStoredActionCardById(interaction.id) as ActionCardRecord;
+  assert.deepEqual(
+    storedInteraction.disambiguation?.local_batch_deferred?.dependencies,
+    [{ kind: "record_interaction", anchor_card_id: anchor.id }],
+  );
+  assert.ok(collectContactIds(storedInteraction).every((contactId) => contactId >= 0));
+
+  const rebuiltApi = createApi();
+  const transactionsBeforeMissingMapping = store.transactionCalls;
+  const writesBeforeMissingMapping = store.pendingCardUpdateCalls;
+  await assert.rejects(rebuiltApi.confirmCard(interaction.id), LocalBatchContactMappingError);
+  assert.equal(store.transactionCalls, transactionsBeforeMissingMapping);
+  assert.equal(store.pendingCardUpdateCalls, writesBeforeMissingMapping);
+  assert.equal((await rebuiltApi.getScreenshotDetail(second.screenshot_id)).cards
+    .find((card) => card.id === interaction.id)?.status, "pending");
+  assert.equal((await rebuiltApi.getContacts()).length, 0);
+
+  const createResult = await rebuiltApi.confirmCard(anchor.id, {
+    payload: merge.anchor_card.payload,
+  });
+  const realContactId = createResult.card.resolved_contact_id;
+  assert.ok(realContactId && realContactId > 0);
+  assert.equal((await rebuiltApi.getContacts())[0]?.title, "产品总监");
+
+  const meetingResult = await rebuiltApi.confirmCard(meeting.id);
+  const interactionResult = await rebuiltApi.confirmCard(interaction.id);
+  assert.equal(meetingResult.card.type, "create_meeting");
+  assert.equal(interactionResult.card.type, "record_interaction");
+  if (meetingResult.card.type !== "create_meeting" || interactionResult.card.type !== "record_interaction") {
+    throw new Error("unexpected confirmed card types");
+  }
+  assert.equal(meetingResult.card.payload.participants[0]?.contact_id, realContactId);
+  assert.equal(interactionResult.card.payload.contact_id, realContactId);
+  assert.equal((await rebuiltApi.getMeetings())[0]?.participants[0]?.contact_id, realContactId);
+
+  const contact = await rebuiltApi.getContactDetail(realContactId);
+  assert.ok(contact.observations.some((observation) =>
+    observation.screenshot_id === second.screenshot_id && observation.contact_id === realContactId));
+  for (const screenshotId of [first.screenshot_id, second.screenshot_id]) {
+    const detail = await rebuiltApi.getScreenshotDetail(screenshotId);
+    for (const card of detail.cards) {
+      assert.ok(collectContactIds(card).every((contactId) => contactId >= 0));
+    }
+  }
+  assert.deepEqual(session.listPendingContacts().map((pending) => pending.id), [-1]);
+  await api.uploadScreenshot({
+    asset: { uri: "file:///fake/batch-3.png", mimeType: "image/png" },
+    localBatch: { session, index: 2 },
+  });
+  assert.deepEqual(session.listPendingContacts(), []);
+});
+
+test("local batch keeps temporary disambiguation candidates out of storage and maps a selected one", () => {
+  const session = new LocalBatchContactSession();
+  const firstExtraction = {
+    participants: [{
+      name: "张三",
+      is_self: false,
+      confidence: "high" as const,
+      source_quote: "张三：你好",
+    }],
+    events: [],
+    facts: [],
+    quotes: [],
+  };
+  const firstPlan = session.prepareScreenshot({
+    screenshotId: 1,
+    batchIndex: 0,
+    extraction: firstExtraction,
+    resolutions: [{
+      participant_name: "张三",
+      normalized_name: "张三",
+      status: "new",
+      source: "empty_db",
+    }],
+    cards: [{
+      type: "create_contact",
+      payload: { name: "张三" },
+      confidence: "high",
+      source_quote: "张三：你好",
+    }],
+  });
+  const anchor = {
+    ...firstPlan.cards[0],
+    id: 11,
+    screenshot_id: 1,
+    disambiguation: null,
+    status: "pending" as const,
+    resolved_contact_id: null,
+    created_at: FIXED_NOW.toISOString(),
+    resolved_at: null,
+  } as ActionCardRecord;
+  session.commitScreenshot({
+    plan: firstPlan,
+    savedCards: [anchor],
+    updatedAnchorCards: new Map(),
+  });
+
+  const secondPlan = session.prepareScreenshot({
+    screenshotId: 2,
+    batchIndex: 1,
+    extraction: {
+      participants: [{
+        name: "老张",
+        is_self: false,
+        confidence: "medium" as const,
+        source_quote: "老张：最近怎么样",
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+    resolutions: [{
+      participant_name: "老张",
+      normalized_name: "老张",
+      status: "unsure",
+      candidate_ids: [-1],
+      source: "llm",
+    }],
+    cards: [{
+      type: "create_contact",
+      payload: { name: "老张" },
+      confidence: "medium",
+      source_quote: "老张：最近怎么样",
+      disambiguation: {
+        candidates: [{ contact_id: -1, name: "张三", company: null }],
+      },
+    }],
+  });
+  assert.deepEqual(secondPlan.cards[0]?.disambiguation, {
+    candidates: [],
+    local_batch_deferred: {
+      version: 1,
+      dependencies: [{
+        kind: "disambiguation_candidate",
+        anchor_card_id: anchor.id,
+        candidate: { name: "张三", company: null },
+      }],
+    },
+  });
+  const storedCandidateCard = {
+    ...secondPlan.cards[0],
+    id: 12,
+    screenshot_id: 2,
+    disambiguation: secondPlan.cards[0]?.disambiguation ?? null,
+    status: "pending" as const,
+    resolved_contact_id: null,
+    created_at: FIXED_NOW.toISOString(),
+    resolved_at: null,
+  } as ActionCardRecord;
+  const committed = session.commitScreenshot({
+    plan: secondPlan,
+    savedCards: [storedCandidateCard],
+    updatedAnchorCards: new Map(),
+  });
+  assert.deepEqual(collectContactIds(storedCandidateCard), []);
+  assert.deepEqual(committed.cards[0]?.disambiguation?.candidates.map((candidate) => candidate.contact_id), [-11]);
+  assert.deepEqual(
+    hydrateLocalBatchCardForResponse(storedCandidateCard, () => anchor)
+      .disambiguation?.candidates.map((candidate) => candidate.contact_id),
+    [-11],
+  );
+  assert.throws(
+    () => session.prepareConfirmation({
+      card: storedCandidateCard,
+      payload: storedCandidateCard.payload,
+      resolvedContactId: -11,
+    }),
+    LocalBatchContactMappingError,
+  );
+
+  session.registerConfirmedContact(anchor.id, 42);
+  assert.deepEqual(
+    hydrateLocalBatchCardForResponse(storedCandidateCard, () => ({
+      ...anchor,
+      status: "confirmed",
+      resolved_contact_id: 42,
+    })).disambiguation?.candidates.map((candidate) => candidate.contact_id),
+    [42],
+  );
+  const prepared = session.prepareConfirmation({
+    card: storedCandidateCard,
+    payload: storedCandidateCard.payload,
+    resolvedContactId: -11,
+  });
+  assert.equal(prepared.resolvedContactId, 42);
+  assert.deepEqual(prepared.disambiguation?.candidates.map((candidate) => candidate.contact_id), [42]);
+});
+
+test("local batch retries merge fields and evidence by original batch index", () => {
+  const session = new LocalBatchContactSession();
+  const firstPlan = session.prepareScreenshot({
+    screenshotId: 10,
+    batchIndex: 0,
+    extraction: {
+      participants: [{
+        name: "张三",
+        is_self: false,
+        company: "初始公司",
+        title: "初始职位",
+        confidence: "high",
+        source_quote: "index-0 participant",
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+    resolutions: [{
+      participant_name: "张三",
+      normalized_name: "张三",
+      status: "new",
+      source: "empty_db",
+    }],
+    cards: [{
+      type: "create_contact",
+      payload: { name: "张三", company: "初始公司", title: "初始职位" },
+      confidence: "high",
+      source_quote: "index-0 card",
+    }],
+  });
+  let anchor = {
+    ...firstPlan.cards[0],
+    id: 21,
+    screenshot_id: 10,
+    disambiguation: firstPlan.cards[0]?.disambiguation ?? null,
+    status: "pending" as const,
+    resolved_contact_id: null,
+    created_at: FIXED_NOW.toISOString(),
+    resolved_at: null,
+  } as ActionCardRecord;
+  session.commitScreenshot({
+    plan: firstPlan,
+    savedCards: [anchor],
+    updatedAnchorCards: new Map(),
+  });
+
+  const commitMerge = (plan: ReturnType<LocalBatchContactSession["prepareScreenshot"]>) => {
+    const update = plan.pendingCardUpdates[0];
+    assert.ok(update);
+    anchor = {
+      ...anchor,
+      payload: update.payload,
+      source_quote: update.sourceQuote,
+    } as ActionCardRecord;
+    const committed = session.commitScreenshot({
+      plan,
+      savedCards: [],
+      updatedAnchorCards: new Map([[anchor.id, anchor]]),
+    });
+    assert.equal(committed.merges.length, 1);
+    return committed.merges[0];
+  };
+
+  const newerPlan = session.prepareScreenshot({
+    screenshotId: 30,
+    batchIndex: 2,
+    extraction: {
+      participants: [{
+        name: "张三",
+        is_self: false,
+        company: "新公司",
+        confidence: "high",
+        source_quote: "index-2 participant",
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+    resolutions: [{
+      participant_name: "张三",
+      normalized_name: "张三",
+      status: "same_as",
+      contact_id: -1,
+      source: "exact",
+    }],
+    cards: [{
+      type: "update_contact",
+      payload: {
+        contact_id: -1,
+        contact_name: "张三",
+        changes: { title: { old: "初始职位", new: "新职位" } },
+      },
+      confidence: "high",
+      source_quote: "index-2 update",
+    }],
+  });
+  commitMerge(newerPlan);
+
+  const retriedOlderPlan = session.prepareScreenshot({
+    screenshotId: 20,
+    batchIndex: 1,
+    extraction: {
+      participants: [{
+        name: "张三",
+        is_self: false,
+        company: "旧重试公司",
+        phone: "13800000000",
+        confidence: "high",
+        source_quote: "index-1 participant",
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+    resolutions: [{
+      participant_name: "张三",
+      normalized_name: "张三",
+      status: "same_as",
+      contact_id: -1,
+      source: "exact",
+    }],
+    cards: [{
+      type: "update_contact",
+      payload: {
+        contact_id: -1,
+        contact_name: "张三",
+        changes: {
+          title: { old: "初始职位", new: "旧重试职位" },
+          wechat_id: { old: null, new: "wx-from-retry" },
+        },
+      },
+      confidence: "high",
+      source_quote: "index-1 update",
+    }],
+  });
+  const merged = commitMerge(retriedOlderPlan);
+  assert.equal(merged.anchor_card.type, "create_contact");
+  if (merged.anchor_card.type !== "create_contact") {
+    throw new Error("unexpected anchor card type");
+  }
+  assert.equal(merged.anchor_card.payload.company, "新公司");
+  assert.equal(merged.anchor_card.payload.title, "新职位");
+  assert.equal(merged.anchor_card.payload.phone, "13800000000");
+  assert.equal(merged.anchor_card.payload.wechat_id, "wx-from-retry");
+  assert.deepEqual(merged.evidence.map((entry) => entry.screenshot_id), [10, 20, 30]);
+  const sourceQuote = merged.anchor_card.source_quote;
+  assert.ok(sourceQuote.indexOf("index-0") < sourceQuote.indexOf("index-1"));
+  assert.ok(sourceQuote.indexOf("index-1") < sourceQuote.indexOf("index-2"));
+});
+
+test("rejecting a local batch anchor removes stale pending contacts across API recreation", async () => {
+  const runCase = async (recreateBeforeReject: boolean) => {
+    const store = new FakeLocalStore();
+    const extractions = [
+      {
+        participants: [{
+          name: "张三",
+          is_self: false,
+          confidence: "high" as const,
+          source_quote: "张三：你好",
+        }],
+        events: [],
+        facts: [],
+        quotes: [],
+      },
+      {
+        participants: [{
+          name: "张三",
+          is_self: false,
+          confidence: "high" as const,
+          source_quote: "张三：再次上传",
+        }],
+        events: [],
+        facts: [],
+        quotes: [],
+      },
+    ];
+    const qwen = new FakeStructuredOutputProvider(() => {
+      const extraction = extractions.shift();
+      if (!extraction) {
+        throw new Error("unexpected perception call");
+      }
+      return extraction;
+    });
+    const text = new FakeStructuredOutputProvider(() => ({ insights: [] }));
+    const createApi = () => createLocalApi({
+      store,
+      keys: fakeKeys,
+      loadImage: async (asset) => ({
+        image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+        imagePath: asset.uri,
+      }),
+      providers: {
+        async createQwenProvider() {
+          return qwen;
+        },
+        async createTextProvider() {
+          return text;
+        },
+      },
+      now: () => new Date(FIXED_NOW),
+    });
+    const api = createApi();
+    const session = new LocalBatchContactSession();
+    const uploaded = await api.uploadScreenshot({
+      asset: { uri: "file:///fake/reject-1.png", mimeType: "image/png" },
+      localBatch: { session, index: 0 },
+    });
+    const anchor = uploaded.cards.find((card) => card.type === "create_contact");
+    assert.ok(anchor);
+
+    const rejectingApi = recreateBeforeReject ? createApi() : api;
+    await rejectingApi.rejectCard(anchor.id);
+    if (!recreateBeforeReject) {
+      assert.deepEqual(session.listPendingContacts(), []);
+      return;
+    }
+
+    assert.deepEqual(session.listPendingContacts().map((contact) => contact.id), [-1]);
+    const retried = await api.uploadScreenshot({
+      asset: { uri: "file:///fake/reject-2.png", mimeType: "image/png" },
+      localBatch: { session, index: 1 },
+    });
+    assert.equal(
+      retried.cards.filter((card) => card.type === "create_contact").length,
+      1,
+    );
+    assert.deepEqual(session.listPendingContacts().map((contact) => contact.id), [-2]);
+  };
+
+  await runCase(false);
+  await runCase(true);
+});
 
 test("local orchestration reaches terminal contacts, observations, meetings, and insights", async () => {
   const store = new FakeLocalStore();

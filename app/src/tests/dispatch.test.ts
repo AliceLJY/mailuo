@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ConnectionConfig, ConnectionConfigStore } from "../connection/config";
-import { createApiDispatcher, selectApiTarget, type RoutedApi } from "../connection/dispatch";
+import {
+  ApiTargetChangedError,
+  createApiDispatcher,
+  selectApiTarget,
+  type RoutedApi,
+} from "../connection/dispatch";
 
 function configStore(config: ConnectionConfig | null): ConnectionConfigStore {
   return {
@@ -88,4 +93,83 @@ test("server config overrides env and missing config preserves the env server de
     }),
     { mode: "server", serverUrl: "https://env.example.test" },
   );
+});
+
+test("a batch-bound upload refuses to cross local and server storage", async () => {
+  let config: ConnectionConfig = { mode: "local" };
+  const calls: string[] = [];
+  const store: ConnectionConfigStore = {
+    async get() {
+      return config;
+    },
+    async set(next) {
+      config = next;
+    },
+    async clear() {},
+  };
+  const api = createApiDispatcher({
+    configStore: store,
+    platform: "ios",
+    createServerApi: () => fakeApi("server", calls),
+    async getLocalApi() {
+      return fakeApi("local", calls);
+    },
+  });
+  const asset = { uri: "file:///batch.png", mimeType: "image/png" };
+
+  await api.uploadScreenshot({ asset, expectedTarget: { mode: "local" } });
+  config = { mode: "server", serverUrl: "https://mailuo.example.test" };
+
+  await assert.rejects(
+    api.uploadScreenshot({ asset, expectedTarget: { mode: "local" } }),
+    (error: unknown) => {
+      assert.ok(error instanceof ApiTargetChangedError);
+      assert.deepEqual(error.expectedTarget, { mode: "local" });
+      assert.deepEqual(error.actualTarget, {
+        mode: "server",
+        serverUrl: "https://mailuo.example.test",
+      });
+      return true;
+    },
+  );
+  assert.deepEqual(calls, ["local"]);
+});
+
+test("a batch-bound server upload refuses to switch server addresses", async () => {
+  let config: ConnectionConfig = {
+    mode: "server",
+    serverUrl: "https://server-a.example.test/",
+  };
+  const calls: string[] = [];
+  const store: ConnectionConfigStore = {
+    async get() {
+      return config;
+    },
+    async set(next) {
+      config = next;
+    },
+    async clear() {},
+  };
+  const api = createApiDispatcher({
+    configStore: store,
+    platform: "ios",
+    createServerApi: (serverUrl) => fakeApi(`server:${serverUrl}`, calls),
+    async getLocalApi() {
+      return fakeApi("local", calls);
+    },
+  });
+  const asset = { uri: "file:///batch.png", mimeType: "image/png" };
+  const expectedTarget = {
+    mode: "server" as const,
+    serverUrl: "https://server-a.example.test",
+  };
+
+  await api.uploadScreenshot({ asset, expectedTarget });
+  config = { mode: "server", serverUrl: "https://server-b.example.test" };
+
+  await assert.rejects(
+    api.uploadScreenshot({ asset, expectedTarget }),
+    ApiTargetChangedError,
+  );
+  assert.deepEqual(calls, ["server:https://server-a.example.test"]);
 });

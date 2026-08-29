@@ -57,7 +57,7 @@ export default function ServerConnectionScreen() {
     setSaving(true);
     try {
       await saveConfig({ mode: "server", serverUrl: status.serverUrl });
-      resetFlow();
+      resetFlow({ preserveExistingBatch: true });
       router.replace("/(tabs)");
     } catch {
       setStatus({ kind: "error", message: "地址暂时没有保存成功，请再试一次。" });

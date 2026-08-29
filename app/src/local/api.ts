@@ -6,11 +6,20 @@ import { proposeCards } from "../../../shared/core/agent/propose.ts";
 import { resolveParticipants, type ResolvableContact } from "../../../shared/core/agent/resolve.ts";
 import type { LocalLlmSecretStore } from "../connection/secrets";
 import type { LocalProcessingSettings } from "../connection/config";
-import type { UploadImageAsset } from "../types";
+import type {
+  ActionCardRecord,
+  LocalBatchContactMerge,
+  UploadImageAsset,
+} from "../types";
 import type { RoutedApi } from "../connection/dispatch";
 
 import { createLocalProviderFactory, type LocalProviderFactory } from "./providers";
 import type { OcrPerceptionResult } from "./perceive-ocr";
+import {
+  hydrateLocalBatchCardForResponse,
+  preparePersistedLocalBatchConfirmation,
+  type LocalBatchContactSession,
+} from "./batch-contacts";
 import type { LocalStore, ScreenshotImageLoader } from "./types";
 
 const OCR_FALLBACK_NOTICE = "部分内容可能识别不全，已用云端模型重新处理。";
@@ -56,9 +65,14 @@ function notFound(entity: string, id: number): Error {
 export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
   const providerFactory = options.providers ?? createLocalProviderFactory();
   const now = options.now ?? (() => new Date());
+  const batchSessionByCardId = new Map<number, LocalBatchContactSession>();
 
   return {
     async uploadScreenshot(input) {
+      const batchSession = input.localBatch?.session;
+      batchSession?.reconcilePendingContacts((cardId) =>
+        options.store.getStoredActionCardById(cardId),
+      );
       const [loadedImage, textProvider, processing] = await Promise.all([
         options.loadImage(input.asset),
         providerFactory.createTextProvider(options.keys),
@@ -137,23 +151,69 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           extraction = await perceiveVisually();
         }
 
-        const contacts = listResolvableContacts(options.store);
+        const contacts = [
+          ...listResolvableContacts(options.store),
+          ...(batchSession?.listPendingContacts() ?? []),
+        ];
         const resolutions = await resolveParticipants({
           extraction,
           contacts,
           provider: textProvider,
         });
-        const cards = options.store.saveScreenshotAnalysis({
-          screenshotId: screenshot.id,
-          rawExtraction: extraction,
-          cards: proposeCards(extraction, resolutions, contacts, timestamp),
-          createdAt: timestamp.toISOString(),
-        });
+        const proposedCards = proposeCards(extraction, resolutions, contacts, timestamp);
+        let cards: ActionCardRecord[];
+        let localBatchContactMerges: LocalBatchContactMerge[] | undefined;
+
+        if (batchSession) {
+          const plan = batchSession.prepareScreenshot({
+            screenshotId: screenshot.id,
+            batchIndex: input.localBatch!.index,
+            extraction,
+            resolutions,
+            cards: proposedCards,
+          });
+          const savedCards = options.store.saveScreenshotAnalysis({
+            screenshotId: screenshot.id,
+            rawExtraction: extraction,
+            cards: plan.cards,
+            pendingCardUpdates: plan.pendingCardUpdates,
+            createdAt: timestamp.toISOString(),
+          });
+          const updatedAnchorCards = new Map(
+            plan.pendingCardUpdates.map((update) => {
+              const card = options.store.getStoredActionCardById(update.cardId);
+              if (!card) {
+                throw new Error(`Updated anchor card ${update.cardId} not found`);
+              }
+              return [update.cardId, card];
+            }),
+          );
+          const committed = batchSession.commitScreenshot({
+            plan,
+            savedCards,
+            updatedAnchorCards,
+          });
+          cards = committed.cards;
+          localBatchContactMerges = committed.merges;
+          for (const cardId of committed.trackedCardIds) {
+            batchSessionByCardId.set(cardId, batchSession);
+          }
+        } else {
+          cards = options.store.saveScreenshotAnalysis({
+            screenshotId: screenshot.id,
+            rawExtraction: extraction,
+            cards: proposedCards,
+            createdAt: timestamp.toISOString(),
+          });
+        }
 
         return {
           screenshot_id: screenshot.id,
           cards,
           ...(notices.length ? { processing_notice: notices.join(" ") } : {}),
+          ...(localBatchContactMerges?.length
+            ? { local_batch_contact_merges: localBatchContactMerges }
+            : {}),
         };
       } catch (error) {
         try {
@@ -166,12 +226,41 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
       }
     },
     async confirmCard(cardId, body = {}) {
+      const batchSession = batchSessionByCardId.get(cardId);
+      const storedCard = options.store.getStoredActionCardById(cardId);
+      const prepared = storedCard
+        ? preparePersistedLocalBatchConfirmation({
+            card: storedCard,
+            payload: body.payload ?? storedCard.payload,
+            resolvedContactId: body.resolved_contact_id,
+            getAnchorCard: (anchorCardId) =>
+              options.store.getStoredActionCardById(anchorCardId),
+          })
+        : null;
+
+      if (prepared && Object.prototype.hasOwnProperty.call(prepared, "disambiguation")) {
+        const updated = options.store.updatePendingActionCard({
+          cardId,
+          disambiguation: prepared.disambiguation ?? null,
+        });
+        if (!updated) {
+          throw new Error(`Pending action card ${cardId} could not be prepared for confirmation`);
+        }
+      }
+
       const execution = executeCard({
         db: options.store,
         cardId,
-        payload: body.payload,
-        resolvedContactId: body.resolved_contact_id,
+        payload: prepared?.payload ?? body.payload,
+        resolvedContactId: prepared?.resolvedContactId ?? body.resolved_contact_id,
       });
+
+      if (batchSession && execution.confirmedCard.resolved_contact_id != null) {
+        batchSession.registerConfirmedContact(
+          cardId,
+          execution.confirmedCard.resolved_contact_id,
+        );
+      }
 
       try {
         const provider = await providerFactory.createTextProvider(options.keys);
@@ -205,8 +294,11 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
       }
     },
     async rejectCard(cardId) {
+      const batchSession = batchSessionByCardId.get(cardId);
+      const card = rejectActionCard({ db: options.store, cardId });
+      batchSession?.registerRejectedAnchor(cardId);
       return {
-        card: rejectActionCard({ db: options.store, cardId }),
+        card,
       };
     },
     async getContacts() {
@@ -231,7 +323,14 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
         throw notFound("Screenshot", screenshotId);
       }
 
-      return detail;
+      return {
+        ...detail,
+        cards: detail.cards.map((card) =>
+          hydrateLocalBatchCardForResponse(
+            card,
+            (anchorCardId) => options.store.getStoredActionCardById(anchorCardId),
+          )),
+      };
     },
   };
 }

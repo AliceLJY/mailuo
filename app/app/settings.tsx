@@ -47,7 +47,7 @@ export default function SettingsScreen() {
 
     try {
       await clearConfig();
-      resetFlow();
+      resetFlow({ preserveExistingBatch: true });
       router.replace("/connection");
     } catch {
       setMessage("暂时没有切换成功，请再试一次。");
