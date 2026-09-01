@@ -83,6 +83,22 @@ test('PerceptionEventSchema accepts ISO datetimes with timezone offsets', () => 
   assert.equal(result.time_iso, '2026-09-02T15:00:00+08:00');
 });
 
+test('PerceptionEventSchema accepts a no-time standalone item', () => {
+  const result = PerceptionEventSchema.parse({
+    kind: 'other',
+    title: '准备报名材料',
+    time_text: '',
+    time_iso: null,
+    has_time_signal: false,
+    participant_names: [],
+    confidence: 'high',
+    source_quote: '报名要带身份证复印件和两张照片',
+  });
+
+  assert.equal(result.kind, 'other');
+  assert.equal(result.time_text, '');
+});
+
 test('PerceptionEventSchema requires explicit has_time_signal', () => {
   const result = PerceptionEventSchema.safeParse({
     kind: 'meeting',
@@ -117,8 +133,26 @@ test('visual and text perception prompts share the no-inference time rules', () 
   assert.match(prompt, /A one-sided delivery promise or task commitment such as "明天把方案发你" is not a meeting/);
   assert.match(
     prompt,
-    /Any freeform descriptive text that may later feed a record_interaction summary, such as participant\.notes, facts with field="notes", or kind="other" event titles, should be a 1-2 sentence gist about who discussed what plus any explicit progress signal or emotion/,
+    /Explicit tasks, requirements, material checklists, and file-format instructions are kind="other" events, even when they have no time or participants\. Use a concise evidence-only title and participant_names=\[\] when no person is explicitly tied to the item\./u,
   );
+  assert.match(
+    textPrompt,
+    /Explicit tasks, requirements, material checklists, and file-format instructions are kind="other" events, even when they have no time or participants\. Use a concise evidence-only title and participant_names=\[\] when no person is explicitly tied to the item\./u,
+  );
+  assert.match(
+    prompt,
+    /If an event contains no time wording, use time_text="", time_iso=null, and has_time_signal=false\. Do not omit the event\./u,
+  );
+  assert.match(
+    textPrompt,
+    /If an event contains no time wording, use time_text="", time_iso=null, and has_time_signal=false\. Do not omit the event\./u,
+  );
+  assert.match(
+    prompt,
+    /Any freeform descriptive text that may later feed a record_interaction summary, such as participant\.notes or facts with field="notes", should be a 1-2 sentence gist about who discussed what plus any explicit progress signal or emotion/,
+  );
+  assert.doesNotMatch(prompt, /kind="other" event titles/u);
+  assert.doesNotMatch(textPrompt, /kind="other" event titles/u);
   assert.match(
     prompt,
     /Only include interaction_summary for participants with is_self=false\. Omit interaction_summary for the self participant\./,

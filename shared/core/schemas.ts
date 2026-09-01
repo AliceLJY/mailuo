@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { MEETING_KINDS } from '../types.ts';
+
 export { ZodError } from 'zod';
 
 export const CreateContactPayloadSchema = z
@@ -39,9 +41,10 @@ export const MeetingParticipantSchema = z
 
 export const CreateMeetingPayloadSchema = z
   .object({
+    kind: z.enum(MEETING_KINDS).default('meeting'),
     title: z.string().min(1),
     time_iso: z.string().nullable(),
-    time_text: z.string().min(1),
+    time_text: z.string(),
     location: z.string().optional(),
     participants: z.array(MeetingParticipantSchema),
     agenda: z.string().optional(),

@@ -14,7 +14,16 @@ export type UpdateContactPayload = {
   changes: Record<string, { old: string | null; new: string }>;
 };
 
+export const MEETING_KINDS = ["meeting", "appointment", "other"] as const;
+export type MeetingKind = (typeof MEETING_KINDS)[number];
+
+export function isMeetingKind(value: unknown): value is MeetingKind {
+  return MEETING_KINDS.includes(value as MeetingKind);
+}
+
 export type CreateMeetingPayload = {
+  // Cards saved before schema v1 have no kind; validation upgrades them to meeting on confirmation.
+  kind?: MeetingKind;
   title: string;
   time_iso: string | null;
   time_text: string;

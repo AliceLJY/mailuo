@@ -1,3 +1,5 @@
+import type { MeetingKind } from "../../shared/types.ts";
+
 export type ActionCardConfidence = "high" | "medium" | "low";
 export type ActionCardStatus = "pending" | "confirmed" | "rejected";
 export type ActionCardType =
@@ -23,6 +25,7 @@ export type UpdateContactPayload = {
 };
 
 export type CreateMeetingPayload = {
+  kind?: MeetingKind;
   title: string;
   time_iso: string | null;
   time_text: string;
@@ -158,6 +161,7 @@ export type ObservationRecord = {
 
 export type MeetingRecord = {
   id: number;
+  kind: MeetingKind;
   title: string;
   time_iso: string | null;
   time_text: string;

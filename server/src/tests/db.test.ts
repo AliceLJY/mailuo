@@ -4,7 +4,9 @@ import { mkdtempSync } from "node:fs";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 
+import { MAILUO_SCHEMA_SQL } from "../../../shared/core/schema.ts";
 import type { ActionCard } from "../../../shared/types.ts";
 import { MailuoDb } from "../db.ts";
 
@@ -21,6 +23,136 @@ function withTempDb() {
     },
   };
 }
+
+type TableInfoRow = {
+  cid: number;
+  name: string;
+  type: string;
+  notnull: number;
+  dflt_value: string | null;
+  pk: number;
+};
+
+type SchemaRow = {
+  type: string;
+  name: string;
+  tbl_name: string;
+  sql: string | null;
+};
+
+function readMeetingTableInfo(db: MailuoDb): TableInfoRow[] {
+  return db.getNativeDatabase().prepare("PRAGMA table_info(meetings)").all() as TableInfoRow[];
+}
+
+function readUserVersion(db: MailuoDb): number {
+  const row = db.getNativeDatabase().prepare("PRAGMA user_version").get() as {
+    user_version: number;
+  };
+  return row.user_version;
+}
+
+function readSchema(db: MailuoDb): SchemaRow[] {
+  return db
+    .getNativeDatabase()
+    .prepare(
+      `SELECT type, name, tbl_name, sql
+       FROM sqlite_master
+       WHERE name NOT LIKE 'sqlite_%'
+       ORDER BY type, name`,
+    )
+    .all() as SchemaRow[];
+}
+
+test("migrates the complete legacy v0 schema through v1 and matches a fresh database", () => {
+  const directory = mkdtempSync(join(tmpdir(), "mailuo-migration-"));
+  const legacyPath = join(directory, "legacy.sqlite");
+  const freshPath = join(directory, "fresh.sqlite");
+  const legacyDb = new DatabaseSync(legacyPath);
+  let legacyOpen = true;
+  let migratedDb: MailuoDb | undefined;
+  let freshDb: MailuoDb | undefined;
+
+  try {
+    legacyDb.exec(MAILUO_SCHEMA_SQL);
+    legacyDb.prepare(
+      `INSERT INTO meetings (title, time_iso, time_text, participants, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "旧版会议",
+      "2026-09-03T10:00:00+08:00",
+      "9月3日上午十点",
+      "[]",
+      "upcoming",
+      "2026-09-01T00:00:00.000Z",
+    );
+    const legacyColumns = legacyDb.prepare("PRAGMA table_info(meetings)").all() as TableInfoRow[];
+    const legacyVersion = legacyDb.prepare("PRAGMA user_version").get() as {
+      user_version: number;
+    };
+
+    assert.equal(legacyColumns.some((column) => column.name === "kind"), false);
+    assert.equal(legacyVersion.user_version, 0);
+    legacyDb.close();
+    legacyOpen = false;
+
+    migratedDb = new MailuoDb(legacyPath);
+    freshDb = new MailuoDb(freshPath);
+
+    const migratedRow = migratedDb
+      .getNativeDatabase()
+      .prepare("SELECT title, time_text, kind FROM meetings WHERE title = ?")
+      .get("旧版会议") as { title: string; time_text: string; kind: string };
+    const kindColumn = readMeetingTableInfo(migratedDb).find((column) => column.name === "kind");
+
+    assert.deepEqual(kindColumn, {
+      cid: 10,
+      name: "kind",
+      type: "TEXT",
+      notnull: 1,
+      dflt_value: "'meeting'",
+      pk: 0,
+    });
+    assert.deepEqual(migratedRow, {
+      title: "旧版会议",
+      time_text: "9月3日上午十点",
+      kind: "meeting",
+    });
+    assert.equal(readUserVersion(migratedDb), 1);
+    assert.equal(readUserVersion(freshDb), 1);
+    assert.deepEqual(readMeetingTableInfo(migratedDb), readMeetingTableInfo(freshDb));
+    assert.deepEqual(readSchema(migratedDb), readSchema(freshDb));
+
+    // The DB column deliberately has no enum CHECK; application validation owns legal values.
+    freshDb
+      .getNativeDatabase()
+      .prepare(
+        `INSERT INTO meetings (title, time_text, participants, status, created_at, kind)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run("未来类型探针", "", "[]", "upcoming", "2026-09-01T00:00:00.000Z", "future-kind");
+    const futureKindRow = freshDb
+      .getNativeDatabase()
+      .prepare("SELECT kind FROM meetings WHERE title = ?")
+      .get("未来类型探针") as { kind: string };
+    assert.equal(futureKindRow.kind, "future-kind");
+
+    migratedDb.close();
+    migratedDb = undefined;
+    migratedDb = new MailuoDb(legacyPath);
+    assert.equal(readUserVersion(migratedDb), 1);
+    assert.equal(
+      readMeetingTableInfo(migratedDb).filter((column) => column.name === "kind").length,
+      1,
+    );
+  } finally {
+    if (legacyOpen) {
+      legacyDb.close();
+    }
+    migratedDb?.close();
+    freshDb?.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("initializes the full M1 schema", () => {
   const { db, cleanup } = withTempDb();

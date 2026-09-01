@@ -74,14 +74,14 @@ export default function MeetingsScreen() {
               </SectionCard>
             ) : null}
 
-            {!loading && !errorMessage ? <EmptyHint text="还没有会议安排。" /> : null}
+            {!loading && !errorMessage ? <EmptyHint text="还没有会议或事项。" /> : null}
           </View>
         }
         ListFooterComponent={<View style={styles.bottomGap} />}
         ListHeaderComponent={
           <View style={styles.header}>
             <Text style={styles.title}>日程</Text>
-            <Text style={styles.subtitle}>即将到来的会议都在这里</Text>
+            <Text style={styles.subtitle}>会议和事项都在这里</Text>
           </View>
         }
         onRefresh={() => void loadMeetings("refresh")}

@@ -25,9 +25,7 @@ import type {
   StructuredOutputProvider,
   StructuredOutputRequest,
 } from '../../../shared/core/llm/provider.ts';
-import { MAILUO_SCHEMA_SQL } from '../../../shared/core/schema.ts';
-
-const schemaSql = MAILUO_SCHEMA_SQL;
+import { initializeMailuoSchema } from '../../../shared/core/migrations.ts';
 
 class MockStructuredOutputProvider implements StructuredOutputProvider {
   readonly name = 'MockStructuredOutputProvider';
@@ -67,7 +65,15 @@ class SqliteInsightDb implements InsightGenerationDb {
 
   constructor(databasePath: string) {
     this.nativeDb = new DatabaseSync(databasePath);
-    this.nativeDb.exec(schemaSql);
+    initializeMailuoSchema({
+      exec: (sql) => this.nativeDb.exec(sql),
+      getUserVersion: () => {
+        const row = this.nativeDb.prepare('PRAGMA user_version').get() as {
+          user_version: number;
+        };
+        return row.user_version;
+      },
+    });
   }
 
   close() {

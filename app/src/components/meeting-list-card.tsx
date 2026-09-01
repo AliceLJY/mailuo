@@ -9,15 +9,24 @@ type Props = {
 };
 
 export function MeetingListCard({ meeting }: Props) {
+  const isOther = meeting.kind === "other";
+  const participantNames = meeting.participants.map((item) => item.name).join("、");
+
   return (
     <View style={styles.card}>
+      {isOther ? <Text style={styles.kind}>事项</Text> : null}
       <Text style={styles.title}>{meeting.title}</Text>
-      <MetaLine label="聊天里的时间" value={meeting.time_text} />
-      <MetaLine label="确认时间" value={formatDateTime(meeting.time_iso) ?? "待确认"} />
+      {meeting.time_text.trim() ? (
+        <MetaLine label="聊天里的时间" value={meeting.time_text} />
+      ) : null}
+      <MetaLine
+        label={isOther ? "事项时间" : "确认时间"}
+        value={formatDateTime(meeting.time_iso) ?? (isOther ? "未指定" : "待确认")}
+      />
       <MetaLine label="地点" value={meeting.location ?? "地点待补充"} />
       <MetaLine
-        label="参会人"
-        value={meeting.participants.map((item) => item.name).join("、") || "参会人待补充"}
+        label={isOther ? "相关人" : "参会人"}
+        value={participantNames || (isOther ? "暂无相关人" : "参会人待补充")}
       />
       {meeting.agenda ? <Text style={styles.agenda}>{meeting.agenda}</Text> : null}
     </View>
@@ -60,6 +69,11 @@ const styles = StyleSheet.create({
     color: theme.colors.textPrimary,
     fontSize: 18,
     fontWeight: "800",
+  },
+  kind: {
+    color: theme.colors.primary,
+    fontSize: 12,
+    fontWeight: "700",
   },
   agenda: {
     color: theme.colors.textSecondary,

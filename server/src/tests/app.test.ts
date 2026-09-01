@@ -1078,6 +1078,7 @@ test('GET /api/contacts, /api/contacts/:id, /api/meetings, and /api/screenshots/
     observedAt: '2026-08-26T01:00:00.000Z',
   });
   db.insertMeeting({
+    kind: 'meeting',
     title: '聊合作',
     timeIso: '2026-09-02T15:00:00+08:00',
     timeText: '下周三下午三点',
@@ -1127,6 +1128,7 @@ test('GET /api/contacts, /api/contacts/:id, /api/meetings, and /api/screenshots/
     });
     assert.equal(meetingsResponse.statusCode, 200);
     assert.equal(meetingsResponse.json().data[0]?.title, '聊合作');
+    assert.equal(meetingsResponse.json().data[0]?.kind, 'meeting');
 
     const screenshotResponse = await app.inject({
       method: 'GET',

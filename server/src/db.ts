@@ -3,18 +3,20 @@ import { dirname, resolve } from "node:path";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
-import type {
-  ActionCard,
-  ActionCardConfidence,
-  ActionCardRecord,
-  CreateContactPayload,
-  CreateMeetingPayload,
-  RecordInteractionPayload as SharedRecordInteractionPayload,
-  UpdateContactPayload,
+import {
+  isMeetingKind,
+  type ActionCard,
+  type ActionCardConfidence,
+  type ActionCardRecord,
+  type CreateContactPayload,
+  type CreateMeetingPayload,
+  type MeetingKind,
+  type RecordInteractionPayload as SharedRecordInteractionPayload,
+  type UpdateContactPayload,
 } from "../../shared/types.ts";
 import type { ExecuteStore } from "../../shared/core/agent/execute.ts";
 import type { InsightGenerationDb } from "../../shared/core/agent/insight.ts";
-import { MAILUO_SCHEMA_SQL } from "../../shared/core/schema.ts";
+import { initializeMailuoSchema } from "../../shared/core/migrations.ts";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const defaultDatabasePath = resolve(currentDir, "..", "data", "mailuo.sqlite");
@@ -69,6 +71,7 @@ export type MeetingParticipant = {
 
 export type MeetingRecord = {
   id: number;
+  kind: MeetingKind;
   title: string;
   time_iso: string | null;
   time_text: string;
@@ -161,6 +164,7 @@ export type ObservationInsertInput = {
 };
 
 export type MeetingInsertInput = {
+  kind: MeetingKind;
   title: string;
   timeIso: string | null;
   timeText: string;
@@ -224,6 +228,7 @@ type ObservationRow = {
 
 type MeetingRow = {
   id: number | bigint;
+  kind: string;
   title: string;
   time_iso: string | null;
   time_text: string;
@@ -316,7 +321,20 @@ export class MailuoDb implements InsightGenerationDb, ExecuteStore {
   }
 
   private initializeSchema() {
-    this.db.exec(MAILUO_SCHEMA_SQL);
+    initializeMailuoSchema({
+      exec: (sql) => this.db.exec(sql),
+      getUserVersion: () => {
+        const row = this.db.prepare("PRAGMA user_version").get() as
+          | { user_version: number | bigint }
+          | undefined;
+
+        if (!row) {
+          throw new Error("SQLite did not return PRAGMA user_version");
+        }
+
+        return this.toSafeInteger(row.user_version, "user_version");
+      },
+    });
   }
 
   private normalizeQueryResult<T>(value: T): T {
@@ -441,6 +459,10 @@ export class MailuoDb implements InsightGenerationDb, ExecuteStore {
       return null;
     }
 
+    if (!isMeetingKind(row.kind)) {
+      throw new TypeError(`Invalid meetings.kind: ${row.kind}`);
+    }
+
     const participants = parseJsonArray<MeetingParticipant>(row.participants, []).map((participant) => ({
       ...(participant.contact_id != null ? { contact_id: participant.contact_id } : {}),
       name: participant.name,
@@ -448,6 +470,7 @@ export class MailuoDb implements InsightGenerationDb, ExecuteStore {
 
     return {
       id: this.toSafeInteger(row.id, "meetings.id"),
+      kind: row.kind,
       title: row.title,
       time_iso: row.time_iso,
       time_text: row.time_text,
@@ -1150,10 +1173,14 @@ export class MailuoDb implements InsightGenerationDb, ExecuteStore {
   insertMeeting(input: MeetingInsertInput): MeetingRecord {
     const createdAt = input.createdAt ?? new Date().toISOString();
     const title = normalizeOptionalString(input.title);
-    const timeText = normalizeOptionalString(input.timeText);
+    const timeText = input.timeText.trim();
 
-    if (!title || !timeText) {
-      throw new TypeError("Meeting title and timeText must be non-empty strings");
+    if (!title) {
+      throw new TypeError("Meeting title must be a non-empty string");
+    }
+
+    if (!isMeetingKind(input.kind)) {
+      throw new TypeError(`Invalid meeting kind: ${String(input.kind)}`);
     }
 
     const participants = input.participants.map((participant) => {
@@ -1180,8 +1207,9 @@ export class MailuoDb implements InsightGenerationDb, ExecuteStore {
            agenda,
            source_screenshot_id,
            status,
-           created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           created_at,
+           kind
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         title,
@@ -1193,6 +1221,7 @@ export class MailuoDb implements InsightGenerationDb, ExecuteStore {
         input.sourceScreenshotId ?? null,
         input.status ?? "upcoming",
         createdAt,
+        input.kind,
       );
 
     const meeting = this.hydrateMeeting(
@@ -1208,7 +1237,8 @@ export class MailuoDb implements InsightGenerationDb, ExecuteStore {
              agenda,
              source_screenshot_id,
              status,
-             created_at
+             created_at,
+             kind
            FROM meetings
            WHERE id = ?`,
         )
@@ -1235,7 +1265,8 @@ export class MailuoDb implements InsightGenerationDb, ExecuteStore {
            agenda,
            source_screenshot_id,
            status,
-           created_at
+           created_at,
+           kind
          FROM meetings
          ORDER BY time_iso IS NULL ASC, time_iso ASC, created_at DESC, id DESC`,
       )

@@ -68,7 +68,10 @@ export function ReviewCard({
   stage,
 }: Props) {
   const editable = stage === "current" && card.status === "pending";
-  const meta = CARD_META[card.type];
+  const meta =
+    card.type === "create_meeting" && card.payload.kind === "other"
+      ? { icon: "事", label: "新事项" }
+      : CARD_META[card.type];
   const stageText =
     stage === "current" ? "当前这张" : stage === "upcoming" ? "后面还有" : STATUS_LABEL[card.status];
   const confidenceColor = getConfidenceColor(card.confidence);

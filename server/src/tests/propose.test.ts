@@ -116,6 +116,7 @@ test('proposeCards creates contact and meeting cards from perception output', ()
   assert.deepEqual(cards[2], {
     type: 'create_meeting',
     payload: {
+      kind: 'meeting',
       title: '聊合作',
       time_iso: '2026-09-02T15:00:00+08:00',
       time_text: '下周三下午 3 点',
@@ -203,6 +204,7 @@ test('proposeCards creates update_contact, meeting contact ids, and one interact
   assert.deepEqual(cards[1], {
     type: 'create_meeting',
     payload: {
+      kind: 'meeting',
       title: '喝咖啡聊合作',
       time_iso: '2026-08-27T14:00:00+08:00',
       time_text: '明天下午两点',
@@ -313,6 +315,7 @@ test('proposeCards resolves an absolute month/day with the current year and igno
     {
       type: 'create_meeting',
       payload: {
+        kind: 'meeting',
         title: '复盘会',
         time_iso: '2026-08-26T09:30:00+08:00',
         time_text: '明天8月26日（周三）上午9:30',
@@ -423,6 +426,7 @@ test('proposeCards leaves relative-only time_iso null when a time signal exists'
     {
       type: 'create_meeting',
       payload: {
+        kind: 'meeting',
         title: '继续聊',
         time_iso: null,
         time_text: '下周三下午三点',
@@ -457,9 +461,10 @@ test('proposeCards preserves model time_iso when legacy time_text is blank', () 
     {
       type: 'create_meeting',
       payload: {
+        kind: 'meeting',
         title: '继续聊',
         time_iso: '2026-08-28T18:00:00+08:00',
-        time_text: '   ',
+        time_text: '',
         participants: [],
       },
       confidence: 'medium',
@@ -688,6 +693,7 @@ test('proposeCards filters self participants out of cards and keeps self in meet
     {
       type: 'create_meeting',
       payload: {
+        kind: 'meeting',
         title: '聊合作',
         time_iso: '2026-08-28T15:00:00+08:00',
         time_text: '周五下午三点',
@@ -888,7 +894,7 @@ test('proposeCards keeps deterministic freeform tail from unpunctuated mixed par
   assert.doesNotMatch(updateCard.payload.changes.notes?.new ?? '', /翎点科技/);
 });
 
-test('proposeCards folds no-time-signal meetings into interactions instead of create_meeting cards', () => {
+test('proposeCards creates no-time-signal meetings without folding event evidence into interactions', () => {
   const extraction = {
     participants: [
       {
@@ -939,16 +945,16 @@ test('proposeCards folds no-time-signal meetings into interactions instead of cr
   const meetingCard = cards.find((card) => card.type === 'create_meeting');
   const interactionCard = cards.find((card) => card.type === 'record_interaction');
 
-  assert.equal(meetingCard, undefined);
+  assert.ok(meetingCard);
+  assert.equal(meetingCard.payload.kind, 'meeting');
+  assert.equal(meetingCard.payload.time_iso, null);
   assert.ok(interactionCard);
-  assert.match(interactionCard.payload.summary, /再约个时间细聊/);
-  assert.equal(
-    interactionCard.source_quote,
-    '王磊说后面继续聊\n\n等你方便了我们再约个时间细聊',
-  );
+  assert.equal(interactionCard.payload.summary, '王磊说后面继续聊');
+  assert.equal(interactionCard.source_quote, '王磊说后面继续聊');
+  assert.doesNotMatch(interactionCard.source_quote, /等你方便了我们再约个时间细聊/u);
 });
 
-test('proposeCards treats blank time_iso without time signal as interaction only', () => {
+test('proposeCards normalizes blank time_iso and still creates a standalone meeting', () => {
   const extraction = {
     participants: [
       {
@@ -999,16 +1005,15 @@ test('proposeCards treats blank time_iso without time signal as interaction only
   const meetingCard = cards.find((card) => card.type === 'create_meeting');
   const interactionCard = cards.find((card) => card.type === 'record_interaction');
 
-  assert.equal(meetingCard, undefined);
+  assert.ok(meetingCard);
+  assert.equal(meetingCard.payload.kind, 'meeting');
+  assert.equal(meetingCard.payload.time_iso, null);
   assert.ok(interactionCard);
-  assert.match(interactionCard.payload.summary, /改天再约个时间细聊合作/);
-  assert.equal(
-    interactionCard.source_quote,
-    '王磊说我们改天再细聊\n\n改天再约个时间细聊合作',
-  );
+  assert.equal(interactionCard.payload.summary, '王磊说我们改天再细聊');
+  assert.equal(interactionCard.source_quote, '王磊说我们改天再细聊');
 });
 
-test('proposeCards folds eligible other events with time signals into the existing interaction card', () => {
+test('proposeCards creates other events without duplicating them in the interaction card', () => {
   const extraction: PerceptionResult = {
     participants: [
       {
@@ -1056,41 +1061,77 @@ test('proposeCards folds eligible other events with time signals into the existi
   ];
 
   const cards = proposeCards(extraction, resolutions, contacts);
+  const itemCard = cards.find((card) => card.type === 'create_meeting');
+  const interactionCard = cards.find((card) => card.type === 'record_interaction');
 
-  assert.deepEqual(cards, [
-    {
-      type: 'record_interaction',
-      payload: {
-        contact_id: 8,
-        contact_name: '王磊',
-        summary: '今天继续推进方案；明天下午三点把方案发你',
-      },
-      confidence: 'high',
-      source_quote: '今天继续推进方案\n\n明天下午三点把方案发你',
-    },
-  ]);
+  assert.ok(itemCard);
+  assert.equal(itemCard.payload.kind, 'other');
+  assert.equal(itemCard.payload.time_iso, '2026-08-27T15:00:00+08:00');
+  assert.ok(interactionCard);
+  assert.equal(interactionCard.payload.summary, '今天继续推进方案');
+  assert.equal(interactionCard.source_quote, '今天继续推进方案');
+  assert.doesNotMatch(interactionCard.source_quote, /明天下午三点把方案发你/u);
 });
 
-test('proposeCards ignores unmatched other events instead of creating standalone interaction cards', () => {
+test('proposeCards creates a standalone no-time item with no participants and no interaction', () => {
   const extraction: PerceptionResult = {
     participants: [],
     events: [
       {
         kind: 'other',
-        title: '发方案给你',
-        time_text: '明天下午三点',
-        time_iso: '2026-08-27T15:00:00+08:00',
-        has_time_signal: true,
-        participant_names: ['王磊'],
+        title: '准备报名材料',
+        time_text: '',
+        time_iso: null,
+        has_time_signal: false,
+        participant_names: [],
         confidence: 'medium',
-        source_quote: '明天下午三点把方案发你',
+        source_quote: '报名要带身份证复印件和两张照片',
       },
     ],
     facts: [],
     quotes: [],
   };
 
-  assert.deepEqual(proposeCards(extraction, [], []), []);
+  assert.deepEqual(proposeCards(extraction, [], []), [
+    {
+      type: 'create_meeting',
+      payload: {
+        kind: 'other',
+        title: '准备报名材料',
+        time_iso: null,
+        time_text: '',
+        participants: [],
+      },
+      confidence: 'medium',
+      source_quote: '报名要带身份证复印件和两张照片',
+    },
+  ]);
+});
+
+test('proposeCards preserves appointment kind and its existing scheduled-card behavior', () => {
+  const extraction: PerceptionResult = {
+    participants: [],
+    events: [
+      {
+        kind: 'appointment',
+        title: '去医院复诊',
+        time_text: '9月8日上午九点',
+        time_iso: '2026-09-08T09:00:00+08:00',
+        has_time_signal: true,
+        participant_names: [],
+        confidence: 'high',
+        source_quote: '9月8日上午九点去医院复诊',
+      },
+    ],
+    facts: [],
+    quotes: [],
+  };
+
+  const cards = proposeCards(extraction, [], []);
+
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0]?.type, 'create_meeting');
+  assert.equal(cards[0]?.type === 'create_meeting' ? cards[0].payload.kind : null, 'appointment');
 });
 
 test('proposeCards skips no-op updates and dedupes interactions by resolved contact', () => {

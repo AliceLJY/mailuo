@@ -673,10 +673,99 @@ test("executeCard creates meetings and retains unresolved participant names", ()
     assert.equal(result.meetingId != null, true);
     assert.deepEqual(result.affectedContactIds, [1]);
     assert.equal(countRows(db, "contacts"), 2);
+    assert.equal(meetings[0]?.kind, "meeting");
     assert.deepEqual(meetings[0]?.participants, [
       { contact_id: 1, name: "陈老师" },
       { name: "魏总" },
     ]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("executeCard persists a standalone item with empty time and participants", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const card = createPendingCard({
+      db,
+      rawExtraction: {
+        participants: [],
+        events: [
+          {
+            kind: "other",
+            title: "准备报名材料",
+            time_text: "",
+            time_iso: null,
+            has_time_signal: false,
+            participant_names: [],
+            confidence: "high",
+            source_quote: "报名要带身份证复印件和两张照片",
+          },
+        ],
+        facts: [],
+        quotes: [],
+      },
+      card: {
+        type: "create_meeting",
+        payload: {
+          kind: "other",
+          title: "准备报名材料",
+          time_iso: null,
+          time_text: "",
+          participants: [],
+        },
+        confidence: "high",
+        source_quote: "报名要带身份证复印件和两张照片",
+      },
+    });
+
+    const result = executeCard({ db, cardId: card.id });
+    const meetings = db.listMeetings();
+
+    assert.equal(result.meetingId, meetings[0]?.id);
+    assert.deepEqual(result.affectedContactIds, []);
+    assert.equal(meetings.length, 1);
+    assert.equal(meetings[0]?.kind, "other");
+    assert.equal(meetings[0]?.time_iso, null);
+    assert.equal(meetings[0]?.time_text, "");
+    assert.deepEqual(meetings[0]?.participants, []);
+  } finally {
+    cleanup();
+  }
+});
+
+test("executeCard rejects an invalid meeting kind in code before insert", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const card = createPendingCard({
+      db,
+      rawExtraction: { participants: [], events: [], facts: [], quotes: [] },
+      card: {
+        type: "create_meeting",
+        payload: {
+          kind: "todo",
+          title: "无效事项",
+          time_iso: null,
+          time_text: "",
+          participants: [],
+        },
+        confidence: "high",
+        source_quote: "无效事项",
+      } as unknown as StoredActionCard,
+    });
+
+    assert.throws(
+      () => executeCard({ db, cardId: card.id }),
+      (error: unknown) => {
+        assert.ok(error instanceof ExecuteValidationError);
+        assert.equal(error.statusCode, 422);
+        return true;
+      },
+    );
+    assert.equal(db.listMeetings().length, 0);
+    assert.equal(db.getStoredActionCardById(card.id)?.status, "pending");
   } finally {
     cleanup();
   }

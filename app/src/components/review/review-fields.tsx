@@ -115,6 +115,8 @@ export function MeetingFields({
   payload: CreateMeetingPayload;
   setPayload: (payload: ReviewCardDraft["payload"]) => void;
 }) {
+  const isOther = payload.kind === "other";
+
   return (
     <View style={styles.section}>
       <FieldInput editable={editable} label="标题" value={payload.title} onChangeText={(title) => setPayload({ ...payload, title })} />
@@ -136,14 +138,14 @@ export function MeetingFields({
       <FieldInput editable={editable} label="地点" value={payload.location ?? ""} onChangeText={(location) => setPayload({ ...payload, location })} />
       <FieldInput
         editable={editable}
-        label="议程"
+        label={isOther ? "事项详情" : "议程"}
         multiline
         value={payload.agenda ?? ""}
         onChangeText={(agenda) => setPayload({ ...payload, agenda })}
       />
       {payload.participants.map((participant, index) => (
         <View key={`${participant.contact_id ?? "name"}-${index}`} style={styles.block}>
-          <Text style={styles.fieldLabel}>参与人 {index + 1}</Text>
+          <Text style={styles.fieldLabel}>{isOther ? "相关人" : "参与人"} {index + 1}</Text>
           <Text style={styles.metaText}>
             {participant.contact_id ? "已关联到已有联系人" : "先按名字保存"}
           </Text>

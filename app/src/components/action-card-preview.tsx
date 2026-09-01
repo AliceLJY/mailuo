@@ -41,7 +41,7 @@ export function ActionCardPreview({ card, compact = false, onPressSource }: Prop
     <View style={styles.card}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.type}>{cardTypeLabel[card.type]}</Text>
+          <Text style={styles.type}>{getCardTypeLabel(card)}</Text>
           <Text style={styles.status}>状态：{statusLabel[card.status]}</Text>
         </View>
         <View
@@ -78,6 +78,14 @@ export function ActionCardPreview({ card, compact = false, onPressSource }: Prop
   );
 }
 
+function getCardTypeLabel(card: ActionCardRecord) {
+  if (card.type === "create_meeting" && card.payload.kind === "other") {
+    return "新事项";
+  }
+
+  return cardTypeLabel[card.type];
+}
+
 function summarizeCard(card: ActionCardRecord) {
   if (card.type === "create_contact") {
     const company = card.payload.company ? ` · ${card.payload.company}` : "";
@@ -92,7 +100,8 @@ function summarizeCard(card: ActionCardRecord) {
   }
 
   if (card.type === "create_meeting") {
-    return `${card.payload.title} · ${card.payload.time_text}`;
+    const timeText = card.payload.time_text.trim();
+    return timeText ? `${card.payload.title} · ${timeText}` : card.payload.title;
   }
 
   return `${card.payload.contact_name}：${card.payload.summary}`;

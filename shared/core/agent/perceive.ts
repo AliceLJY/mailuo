@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { MEETING_KINDS } from '../../types.ts';
 import { buildPerceptionSystemPrompt, buildPerceptionUserPrompt } from '../llm/prompts.ts';
 import type { StructuredOutputProvider } from '../llm/provider.ts';
 
@@ -37,9 +38,9 @@ export const PerceptionParticipantSchema = z.object({
 }).strict();
 
 export const PerceptionEventSchema = z.object({
-  kind: z.enum(['meeting', 'appointment', 'other']),
+  kind: z.enum(MEETING_KINDS),
   title: z.string().min(1),
-  time_text: z.string().min(1),
+  time_text: z.string(),
   time_iso: IsoDateTimeWithOffsetSchema.nullable(),
   has_time_signal: z.boolean(),
   location: z.string().min(1).optional(),

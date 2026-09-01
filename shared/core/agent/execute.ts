@@ -3,6 +3,7 @@ import type {
   ActionCardRecord,
   CreateContactPayload,
   CreateMeetingPayload,
+  MeetingKind,
   RecordInteractionPayload,
   UpdateContactPayload,
 } from "../../types.ts";
@@ -94,6 +95,7 @@ export interface ExecuteStore {
   }): { id: number } | null;
   insertObservationIfAbsent(input: ObservationInsertInput): { id: number };
   insertMeeting(input: {
+    kind: MeetingKind;
     title: string;
     timeIso: string | null;
     timeText: string;
@@ -336,10 +338,9 @@ function sanitizeUpdateContactPayload(payload: UpdateContactPayload): UpdateCont
 
 function sanitizeCreateMeetingPayload(payload: CreateMeetingPayload): CreateMeetingPayload {
   const title = normalizeOptionalString(payload.title);
-  const timeText = normalizeOptionalString(payload.time_text);
 
-  if (!title || !timeText) {
-    throw new ExecuteValidationError("create_meeting requires non-empty title and time_text");
+  if (!title) {
+    throw new ExecuteValidationError("create_meeting requires a non-empty title");
   }
 
   const participants = payload.participants.map((participant) => {
@@ -361,9 +362,10 @@ function sanitizeCreateMeetingPayload(payload: CreateMeetingPayload): CreateMeet
   });
 
   return {
+    kind: payload.kind,
     title,
     time_iso: normalizeOptionalString(payload.time_iso),
-    time_text: timeText,
+    time_text: payload.time_text.trim(),
     ...(normalizeOptionalString(payload.location) ? { location: normalizeOptionalString(payload.location)! } : {}),
     participants,
     ...(normalizeOptionalString(payload.agenda) ? { agenda: normalizeOptionalString(payload.agenda)! } : {}),
@@ -970,6 +972,7 @@ export function executeCard({ db, cardId, payload, resolvedContactId }: ExecuteC
           participants: typedPayload.participants,
         });
         const meeting = db.insertMeeting({
+          kind: typedPayload.kind ?? "meeting",
           title: typedPayload.title,
           timeIso: typedPayload.time_iso,
           timeText: typedPayload.time_text,

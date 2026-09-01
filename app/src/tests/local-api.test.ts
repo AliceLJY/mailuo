@@ -381,6 +381,7 @@ class FakeLocalStore implements LocalStore {
   insertMeeting(input: Parameters<LocalStore["insertMeeting"]>[0]): MeetingRecord {
     const meeting: MeetingRecord = {
       id: ++this.meetingId,
+      kind: input.kind,
       title: input.title,
       time_iso: input.timeIso,
       time_text: input.timeText,
@@ -1099,6 +1100,7 @@ test("local orchestration reaches terminal contacts, observations, meetings, and
 
   const meetings = await api.getMeetings();
   assert.equal(meetings.length, 1);
+  assert.equal(meetings[0].kind, "meeting");
   assert.deepEqual(meetings[0].participants, [
     { name: "我" },
     { contact_id: contacts[0].id, name: "小林" },

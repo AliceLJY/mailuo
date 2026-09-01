@@ -442,21 +442,14 @@ function buildMeetingCard(
   event: ProposeEvent,
   sameAsParticipantsByName: Map<string, number | null>,
   selfParticipantNames: Set<string>,
-): ProposedCard | null {
-  if (event.kind !== 'meeting' && event.kind !== 'appointment') {
-    return null;
-  }
-
+): ProposedCard {
   const normalizedTimeIso = normalizeOptionalText(event.time_iso);
 
-  if (!normalizedTimeIso && event.has_time_signal !== true) {
-    return null;
-  }
-
   const payload: CreateMeetingPayload = {
+    kind: event.kind,
     title: event.title,
     time_iso: normalizedTimeIso ?? null,
-    time_text: event.time_text,
+    time_text: event.time_text.trim(),
     participants: event.participant_names.map((name) => {
       const normalizedName = normalizeComparableText(name);
 
@@ -484,19 +477,6 @@ function buildMeetingCard(
     confidence: event.confidence,
     source_quote: event.source_quote,
   };
-}
-
-function shouldFoldEventIntoInteraction(event: ProposeEvent): boolean {
-  if (event.kind === 'other') {
-    return true;
-  }
-
-  if (event.kind !== 'meeting' && event.kind !== 'appointment') {
-    return false;
-  }
-
-  const normalizedTimeIso = normalizeOptionalText(event.time_iso);
-  return !normalizedTimeIso && event.has_time_signal !== true;
 }
 
 function buildSameAsParticipantsByName(
@@ -731,11 +711,7 @@ export function proposeCards(
     }
 
     for (const event of events) {
-      const meetingCard = buildMeetingCard(event, new Map(), selfParticipantNames);
-
-      if (meetingCard) {
-        cards.push(meetingCard);
-      }
+      cards.push(buildMeetingCard(event, new Map(), selfParticipantNames));
     }
 
     // simplified: keep the legacy M1 flow stable until execute/schema catches up with M2 cards.
@@ -857,45 +833,7 @@ export function proposeCards(
   }
 
   for (const event of events) {
-    const meetingCard = buildMeetingCard(event, sameAsParticipantsByName, selfParticipantNames);
-
-    if (meetingCard) {
-      cards.push(meetingCard);
-      continue;
-    }
-
-    if (!shouldFoldEventIntoInteraction(event)) {
-      continue;
-    }
-
-    const touchedInteractionKeys = new Set<string>();
-
-    for (const participantName of event.participant_names) {
-      const normalizedName = normalizeComparableText(participantName);
-
-      if (selfParticipantNames.has(normalizedName)) {
-        continue;
-      }
-
-      const resolvedContactId = sameAsParticipantsByName.get(normalizedName);
-      const interactionKey = resolvedContactId
-        ? `contact:${resolvedContactId}`
-        : `pending:${normalizedName}`;
-
-      if (touchedInteractionKeys.has(interactionKey)) {
-        continue;
-      }
-
-      const candidate = interactionCandidates.get(interactionKey);
-
-      if (!candidate) {
-        continue;
-      }
-
-      candidate.confidence.push(event.confidence);
-      candidate.participantSourceQuotes.push(event.source_quote);
-      touchedInteractionKeys.add(interactionKey);
-    }
+    cards.push(buildMeetingCard(event, sameAsParticipantsByName, selfParticipantNames));
   }
 
   for (const [interactionKey, candidate] of interactionCandidates) {

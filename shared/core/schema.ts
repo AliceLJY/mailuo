@@ -1,4 +1,5 @@
-// simplified: one schema string is consumed by both SQLite adapters so table drift is impossible.
+// simplified: keep this shared v0 bootstrap immutable and replay migrations on fresh installs;
+// compact it only if migration count becomes a measurable startup cost.
 export const MAILUO_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS contacts (
   id INTEGER PRIMARY KEY,

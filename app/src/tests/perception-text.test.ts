@@ -57,9 +57,9 @@ function extractTimeRules(prompt: string) {
   return match[0];
 }
 
-test("M3 visual and text system prompts match the fixed after snapshot", () => {
+test("M4 Goal 1 visual and text system prompts match the fixed after snapshot", () => {
   const snapshot = JSON.parse(readFileSync(
-    new URL("../../../docs/perception-baseline/time-prompts.after-m3.json", import.meta.url),
+    new URL("../../../docs/perception-baseline/time-prompts.after-m4-goal1.json", import.meta.url),
     "utf8",
   )) as {
     baselineNow: string;

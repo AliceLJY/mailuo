@@ -12,8 +12,12 @@ import type {
   InsightGenerationEntry,
   InsightGenerationRecord,
 } from "../../../shared/core/agent/insight.ts";
-import { MAILUO_SCHEMA_SQL } from "../../../shared/core/schema.ts";
-import type { ActionCard } from "../../../shared/types.ts";
+import { initializeMailuoSchema } from "../../../shared/core/migrations.ts";
+import {
+  isMeetingKind,
+  type ActionCard,
+  type MeetingKind,
+} from "../../../shared/types.ts";
 import type {
   ActionCardConfidence,
   ActionCardRecord,
@@ -58,7 +62,8 @@ type ActionCardRow = {
 
 type ObservationRow = ObservationRecord;
 
-type MeetingRow = Omit<MeetingRecord, "participants"> & {
+type MeetingRow = Omit<MeetingRecord, "kind" | "participants"> & {
+  kind: string;
   participants: string;
 };
 
@@ -148,9 +153,14 @@ function hydrateActionCard(row: ActionCardRow | null): StoredActionCardRecord | 
 }
 
 function hydrateMeeting(row: MeetingRow): MeetingRecord {
+  if (!isMeetingKind(row.kind)) {
+    throw new TypeError(`Invalid meetings.kind: ${row.kind}`);
+  }
+
   return {
     ...row,
     id: assertSafeInteger(row.id, "meetings.id"),
+    kind: row.kind,
     participants: parseJsonArray<MeetingParticipant>(row.participants).map((participant) => ({
       ...(participant.contact_id != null ? { contact_id: participant.contact_id } : {}),
       name: participant.name,
@@ -171,7 +181,18 @@ function hydrateInsight(row: InsightRow): InsightRecord {
 export class ExpoSqliteLocalStore implements LocalStore {
   constructor(private readonly db: SQLiteDatabase) {
     this.db.execSync("PRAGMA foreign_keys = ON");
-    this.db.execSync(MAILUO_SCHEMA_SQL);
+    initializeMailuoSchema({
+      exec: (sql) => this.db.execSync(sql),
+      getUserVersion: () => {
+        const row = this.db.getFirstSync<{ user_version: number }>("PRAGMA user_version");
+
+        if (!row) {
+          throw new Error("SQLite did not return PRAGMA user_version");
+        }
+
+        return assertSafeInteger(row.user_version, "user_version");
+      },
+    });
   }
 
   withTransaction<T>(callback: () => T): T {
@@ -700,6 +721,7 @@ export class ExpoSqliteLocalStore implements LocalStore {
   }
 
   insertMeeting(input: {
+    kind: MeetingKind;
     title: string;
     timeIso: string | null;
     timeText: string;
@@ -710,10 +732,14 @@ export class ExpoSqliteLocalStore implements LocalStore {
     createdAt?: string;
   }): MeetingRecord {
     const title = normalizeOptionalString(input.title);
-    const timeText = normalizeOptionalString(input.timeText);
+    const timeText = input.timeText.trim();
 
-    if (!title || !timeText) {
-      throw new TypeError("Meeting title and timeText must be non-empty strings");
+    if (!title) {
+      throw new TypeError("Meeting title must be a non-empty string");
+    }
+
+    if (!isMeetingKind(input.kind)) {
+      throw new TypeError(`Invalid meeting kind: ${String(input.kind)}`);
     }
 
     const participants = input.participants.map((participant) => {
@@ -732,8 +758,8 @@ export class ExpoSqliteLocalStore implements LocalStore {
     const result = this.db.runSync(
       `INSERT INTO meetings (
          title, time_iso, time_text, location, participants, agenda,
-         source_screenshot_id, status, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         source_screenshot_id, status, created_at, kind
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       title,
       normalizeOptionalString(input.timeIso),
       timeText,
@@ -743,10 +769,11 @@ export class ExpoSqliteLocalStore implements LocalStore {
       input.sourceScreenshotId ?? null,
       "upcoming",
       createdAt,
+      input.kind,
     );
     const row = this.db.getFirstSync<MeetingRow>(
       `SELECT id, title, time_iso, time_text, location, participants, agenda,
-              source_screenshot_id, status, created_at
+              source_screenshot_id, status, created_at, kind
        FROM meetings WHERE id = ?`,
       result.lastInsertRowId,
     );
@@ -762,7 +789,7 @@ export class ExpoSqliteLocalStore implements LocalStore {
     return this.db
       .getAllSync<MeetingRow>(
         `SELECT id, title, time_iso, time_text, location, participants, agenda,
-                source_screenshot_id, status, created_at
+                source_screenshot_id, status, created_at, kind
          FROM meetings
          ORDER BY time_iso IS NULL ASC, time_iso ASC, created_at DESC, id DESC`,
       )
