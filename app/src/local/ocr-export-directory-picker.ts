@@ -1,3 +1,4 @@
+// Keep this file stem distinct from ocr-export.ts to avoid Metro self-resolution.
 import { Directory, File } from "expo-file-system";
 
 import {

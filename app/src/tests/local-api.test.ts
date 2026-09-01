@@ -1299,7 +1299,7 @@ test("ML Kit recognize failure keeps its call-site tag and first four stack line
   const error = new TypeError("[mlkit-recognize] undefined is not a function");
   error.stack = [
     "TypeError: undefined is not a function",
-    "at recognizeWithMlKit (perceive-ocr.native.ts:18:46)",
+    "at recognizeWithMlKit (mlkit-ocr.ts:18:46)",
     "at perceiveScreenshotWithOcr (perceive-ocr.ts:120:28)",
     "at uploadScreenshot (api.ts:173:25)",
     "at omittedFrame (api.ts:174:1)",
@@ -1310,7 +1310,7 @@ test("ML Kit recognize failure keeps its call-site tag and first four stack line
 
   assert.equal(
     upload.processing_notice,
-    "本地 OCR 运行失败，已用云端模型重新处理。 本地 OCR 未能运行：message=[mlkit-recognize] undefined is not a function；name=TypeError；stack=TypeError: undefined is not a function; at recognizeWithMlKit (perceive-ocr.native.ts:18:46); at perceiveScreenshotWithOcr (perceive-ocr.ts:120:28); at uploadScreenshot (api.ts:173:25)",
+    "本地 OCR 运行失败，已用云端模型重新处理。 本地 OCR 未能运行：message=[mlkit-recognize] undefined is not a function；name=TypeError；stack=TypeError: undefined is not a function; at recognizeWithMlKit (mlkit-ocr.ts:18:46); at perceiveScreenshotWithOcr (perceive-ocr.ts:120:28); at uploadScreenshot (api.ts:173:25)",
   );
   assert.doesNotMatch(upload.processing_notice, /omittedFrame/u);
 });
@@ -1319,7 +1319,7 @@ test("region sampler failure keeps its call-site tag in the notice", async () =>
   const error = new TypeError("[region-sampler] undefined is not a function");
   error.stack = [
     "TypeError: undefined is not a function",
-    "at sampleWithNativeModule (perceive-ocr.native.ts:54:25)",
+    "at sampleWithNativeModule (mlkit-ocr.ts:54:25)",
   ].join("\n");
   const upload = await runOcrFallbackCase(async () => {
     throw error;

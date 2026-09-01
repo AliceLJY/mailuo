@@ -12,8 +12,8 @@ import { buildOcrExportBundle } from "./ocr-export";
 import {
   exportOcrBundleWithDirectoryPicker,
   readSourceMd5,
-} from "./ocr-export.native";
-import { perceiveScreenshotWithNativeOcr } from "./perceive-ocr.native";
+} from "./ocr-export-directory-picker";
+import { perceiveScreenshotWithNativeOcr } from "./mlkit-ocr";
 import { perceiveOcrText } from "./perceive-text";
 import { createExpoSqliteLocalStore } from "./store";
 

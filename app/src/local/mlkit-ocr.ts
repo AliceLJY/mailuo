@@ -1,3 +1,4 @@
+// Keep this file stem distinct from perceive-ocr.ts to avoid Metro self-resolution.
 import TextRecognition, {
   TextRecognitionScript,
   type TextLine,
