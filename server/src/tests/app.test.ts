@@ -800,6 +800,13 @@ test('POST /api/screenshots cleans partial uploads when screenshot analysis pers
 test('POST /api/screenshots runs perceive, resolve, and propose with current DB contacts before persistence', async () => {
   const { db, screenshotDir, cleanup } = withTempAppDirectory();
   seedDb(db);
+  const existingMeeting = db.insertMeeting({
+    kind: 'other',
+    title: '准备报名材料',
+    timeIso: null,
+    timeText: '',
+    participants: [],
+  });
   const calls: string[] = [];
   const extraction = {
     participants: [
@@ -838,11 +845,12 @@ test('POST /api/screenshots runs perceive, resolve, and propose with current DB 
       assert.equal(input.contacts[1]?.canonical_name, '陈昕');
       return resolutions;
     },
-    proposeCards(receivedExtraction, receivedResolutions, contacts) {
+    proposeCards(receivedExtraction, receivedResolutions, contacts, _now, existingMeetings) {
       calls.push('propose');
       assert.deepEqual(receivedExtraction, extraction);
       assert.deepEqual(receivedResolutions, resolutions);
       assert.equal(contacts?.length, 2);
+      assert.deepEqual(existingMeetings, [existingMeeting]);
       return [
         {
           type: 'update_contact',

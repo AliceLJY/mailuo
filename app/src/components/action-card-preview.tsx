@@ -36,6 +36,15 @@ const fieldLabel: Record<string, string> = {
   notes: "备注",
 };
 
+const meetingFieldLabel: Record<string, string> = {
+  title: "标题",
+  time_iso: "确认时间",
+  time_text: "聊天里的时间",
+  location: "地点",
+  participants: "相关人",
+  agenda: "详情",
+};
+
 export function ActionCardPreview({ card, compact = false, onPressSource }: Props) {
   return (
     <View style={styles.card}>
@@ -79,6 +88,10 @@ export function ActionCardPreview({ card, compact = false, onPressSource }: Prop
 }
 
 function getCardTypeLabel(card: ActionCardRecord) {
+  if (card.type === "create_meeting" && card.payload.duplicate_of_meeting_id != null) {
+    return "已有相似事项 · 是否更新";
+  }
+
   if (card.type === "create_meeting" && card.payload.kind === "other") {
     return "新事项";
   }
@@ -100,6 +113,16 @@ function summarizeCard(card: ActionCardRecord) {
   }
 
   if (card.type === "create_meeting") {
+    if (card.payload.duplicate_of_meeting_id != null) {
+      const differences = Object.entries(card.payload.changes ?? {})
+        .map(([field, value]) =>
+          `${meetingFieldLabel[field] ?? field}：${value?.old ?? "未填写"} → ${value?.new ?? "未填写"}`)
+        .join("；");
+      return differences
+        ? `${card.payload.title}：${differences}`
+        : `${card.payload.title}：与现有记录一致`;
+    }
+
     const timeText = card.payload.time_text.trim();
     return timeText ? `${card.payload.title} · ${timeText}` : card.payload.title;
   }

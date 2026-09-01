@@ -44,7 +44,10 @@ import {
   perceiveScreenshot as defaultPerceiveScreenshot,
   type PerceptionResult,
 } from "./agent/perceive.ts";
-import { proposeCards as defaultProposeCards } from "../../shared/core/agent/propose.ts";
+import {
+  proposeCards as defaultProposeCards,
+  type ExistingMeeting,
+} from "../../shared/core/agent/propose.ts";
 import {
   resolveParticipants as defaultResolveParticipants,
   type ParticipantResolution,
@@ -80,6 +83,8 @@ type ProposeCardsFn = (
   extraction: PerceptionResult,
   resolutions?: ParticipantResolution[],
   contacts?: ResolvableContact[],
+  now?: Date,
+  existingMeetings?: ExistingMeeting[],
 ) => ActionCard[] | Promise<ActionCard[]>;
 type ResolveParticipantsFn = typeof defaultResolveParticipants;
 type ExecuteCardFn = typeof defaultExecuteCard;
@@ -447,7 +452,18 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const db = options.db ?? options.createDb?.() ?? new MailuoDb();
   const perceiveScreenshot = options.perceiveScreenshot ?? defaultPerceiveScreenshot;
   const resolveParticipants = options.resolveParticipants ?? defaultResolveParticipants;
-  const proposeCards = options.proposeCards ?? defaultProposeCards;
+  const configuredProposeCards = options.proposeCards ?? defaultProposeCards;
+  const proposeCards = (
+    extraction: PerceptionResult,
+    resolutions?: ParticipantResolution[],
+    contacts?: ResolvableContact[],
+  ) => configuredProposeCards(
+    extraction,
+    resolutions,
+    contacts,
+    undefined,
+    db.listMeetings(),
+  );
   const executeCard = options.executeCard ?? defaultExecuteCard;
   const rejectCard = options.rejectCard ?? defaultRejectCard;
   const generateInsights = options.generateInsights ?? defaultGenerateInsights;

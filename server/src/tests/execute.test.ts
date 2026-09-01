@@ -735,6 +735,213 @@ test("executeCard persists a standalone item with empty time and participants", 
   }
 });
 
+test("executeCard updates a duplicate meeting without inserting a new row", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const existing = db.insertMeeting({
+      kind: "other",
+      title: "准备报名材料",
+      timeIso: null,
+      timeText: "",
+      location: "一楼服务大厅",
+      participants: [{ name: "王老师" }],
+      agenda: "携带身份证复印件",
+      status: "upcoming",
+      createdAt: "2026-08-20T01:00:00.000Z",
+    });
+    const card = createPendingCard({
+      db,
+      rawExtraction: {
+        participants: [],
+        events: [],
+        facts: [],
+        quotes: [],
+      },
+      card: {
+        type: "create_meeting",
+        payload: {
+          kind: "other",
+          title: "准备报名材料",
+          time_iso: "2026-09-03T09:00:00+08:00",
+          time_text: "9月3日上午9点",
+          location: "二楼窗口",
+          participants: [{ name: "王老师" }],
+          agenda: "携带身份证复印件和两张照片",
+          duplicate_of_meeting_id: existing.id,
+          changes: {
+            time_iso: { old: null, new: "2026-09-03T09:00:00+08:00" },
+            time_text: { old: null, new: "9月3日上午9点" },
+            location: { old: "一楼服务大厅", new: "二楼窗口" },
+            agenda: {
+              old: "携带身份证复印件",
+              new: "携带身份证复印件和两张照片",
+            },
+          },
+        },
+        confidence: "high",
+        source_quote: "9月3日上午9点到二楼窗口，还要带两张照片",
+      },
+    });
+    const beforeCount = countRows(db, "meetings");
+
+    if (card.type !== "create_meeting") {
+      throw new Error("expected a create_meeting card");
+    }
+    const result = executeCard({
+      db,
+      cardId: card.id,
+      payload: {
+        ...card.payload,
+        agenda: "用户改后的最终材料清单",
+        changes: {
+          agenda: { old: "伪造旧值", new: "伪造新值" },
+        },
+      },
+    });
+    const updated = db.listMeetings().find((meeting) => meeting.id === existing.id);
+
+    assert.equal(beforeCount, 1);
+    assert.equal(countRows(db, "meetings"), beforeCount);
+    assert.equal(result.meetingId, existing.id);
+    assert.ok(updated);
+    assert.equal(updated.kind, "other");
+    assert.equal(updated.time_iso, "2026-09-03T09:00:00+08:00");
+    assert.equal(updated.time_text, "9月3日上午9点");
+    assert.equal(updated.location, "二楼窗口");
+    assert.deepEqual(updated.participants, [{ name: "王老师" }]);
+    assert.equal(updated.agenda, "用户改后的最终材料清单");
+    assert.equal(updated.source_screenshot_id, card.screenshot_id);
+    assert.equal(updated.status, "upcoming");
+    assert.equal(updated.created_at, "2026-08-20T01:00:00.000Z");
+    const confirmedCard = db.getStoredActionCardById(card.id);
+    assert.equal(confirmedCard?.type, "create_meeting");
+    assert.equal(
+      confirmedCard?.type === "create_meeting"
+        ? confirmedCard.payload.duplicate_of_meeting_id
+        : undefined,
+      existing.id,
+    );
+    assert.deepEqual(
+      confirmedCard?.type === "create_meeting" ? confirmedCard.payload.changes : undefined,
+      {
+        time_iso: { old: null, new: "2026-09-03T09:00:00+08:00" },
+        time_text: { old: null, new: "9月3日上午9点" },
+        location: { old: "一楼服务大厅", new: "二楼窗口" },
+        agenda: { old: "携带身份证复印件", new: "用户改后的最终材料清单" },
+      },
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("executeCard rejects a changed duplicate target and leaves both meetings untouched", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const first = db.insertMeeting({
+      kind: "other",
+      title: "准备报名材料",
+      timeIso: null,
+      timeText: "",
+      participants: [],
+    });
+    const second = db.insertMeeting({
+      kind: "other",
+      title: "提交活动预算",
+      timeIso: null,
+      timeText: "",
+      participants: [],
+    });
+    const card = createPendingCard({
+      db,
+      rawExtraction: { participants: [], events: [], facts: [], quotes: [] },
+      card: {
+        type: "create_meeting",
+        payload: {
+          kind: "other",
+          title: "准备报名材料",
+          time_iso: null,
+          time_text: "",
+          participants: [],
+          duplicate_of_meeting_id: first.id,
+          changes: {},
+        },
+        confidence: "high",
+        source_quote: "准备报名材料",
+      },
+    });
+
+    if (card.type !== "create_meeting") {
+      throw new Error("expected a create_meeting card");
+    }
+    assert.throws(
+      () => executeCard({
+        db,
+        cardId: card.id,
+        payload: {
+          ...card.payload,
+          duplicate_of_meeting_id: second.id,
+          changes: {},
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ExecuteValidationError);
+        assert.match(error.message, /cannot change duplicate_of_meeting_id/u);
+        return true;
+      },
+    );
+    assert.deepEqual(db.listMeetings()
+      .map(({ id, title }) => ({ id, title }))
+      .sort((left, right) => left.id - right.id), [
+      { id: first.id, title: "准备报名材料" },
+      { id: second.id, title: "提交活动预算" },
+    ]);
+    assert.equal(db.getStoredActionCardById(card.id)?.status, "pending");
+  } finally {
+    cleanup();
+  }
+});
+
+test("executeCard rolls back when a duplicate meeting target no longer exists", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const card = createPendingCard({
+      db,
+      rawExtraction: { participants: [], events: [], facts: [], quotes: [] },
+      card: {
+        type: "create_meeting",
+        payload: {
+          kind: "other",
+          title: "准备报名材料",
+          time_iso: null,
+          time_text: "",
+          participants: [],
+          duplicate_of_meeting_id: 999,
+          changes: {},
+        },
+        confidence: "high",
+        source_quote: "准备报名材料",
+      },
+    });
+
+    assert.throws(
+      () => executeCard({ db, cardId: card.id }),
+      (error: unknown) => {
+        assert.ok(error instanceof ExecuteDependencyError);
+        assert.match(error.message, /Meeting 999 does not exist/u);
+        return true;
+      },
+    );
+    assert.equal(countRows(db, "meetings"), 0);
+    assert.equal(db.getStoredActionCardById(card.id)?.status, "pending");
+  } finally {
+    cleanup();
+  }
+});
+
 test("executeCard rejects an invalid meeting kind in code before insert", () => {
   const { db, cleanup } = withTempDb();
 

@@ -68,8 +68,11 @@ export function ReviewCard({
   stage,
 }: Props) {
   const editable = stage === "current" && card.status === "pending";
-  const meta =
-    card.type === "create_meeting" && card.payload.kind === "other"
+  const isDuplicateMeeting =
+    card.type === "create_meeting" && card.payload.duplicate_of_meeting_id != null;
+  const meta = isDuplicateMeeting
+    ? { icon: "更", label: "已有相似事项 · 是否更新" }
+    : card.type === "create_meeting" && card.payload.kind === "other"
       ? { icon: "事", label: "新事项" }
       : CARD_META[card.type];
   const stageText =
@@ -165,7 +168,7 @@ export function ReviewCard({
           <View style={styles.actionRow}>
             <AppButton
               disabled={busy}
-              label={busy ? "处理中..." : "确认这张"}
+              label={busy ? "处理中..." : isDuplicateMeeting ? "确认更新" : "确认这张"}
               onPress={onConfirm}
               style={styles.actionButton}
             />

@@ -19,6 +19,7 @@ import {
   parseStoredPerceptionResult,
   type PerceptionResult,
 } from "./perceive.ts";
+import { buildMeetingChanges, type ExistingMeeting } from "./propose.ts";
 
 export const CONTACT_EDITABLE_FIELDS = [
   "company",
@@ -48,6 +49,18 @@ export type ContactRecord = {
 export type MeetingParticipant = {
   contact_id?: number;
   name: string;
+};
+
+export type MeetingWriteInput = {
+  kind: MeetingKind;
+  title: string;
+  timeIso: string | null;
+  timeText: string;
+  location?: string | null;
+  participants: MeetingParticipant[];
+  agenda?: string | null;
+  sourceScreenshotId?: number | null;
+  createdAt?: string;
 };
 
 export type ObservationInsertInput = {
@@ -94,17 +107,9 @@ export interface ExecuteStore {
     kind: ObservationKind;
   }): { id: number } | null;
   insertObservationIfAbsent(input: ObservationInsertInput): { id: number };
-  insertMeeting(input: {
-    kind: MeetingKind;
-    title: string;
-    timeIso: string | null;
-    timeText: string;
-    location?: string | null;
-    participants: MeetingParticipant[];
-    agenda?: string | null;
-    sourceScreenshotId?: number | null;
-    createdAt?: string;
-  }): { id: number };
+  insertMeeting(input: MeetingWriteInput): { id: number };
+  updateMeeting(meetingId: number, input: MeetingWriteInput): { id: number } | null;
+  listMeetings(): ExistingMeeting[];
   findResolvedContactIdsForConfirmedSiblingCreateCards(args: {
     screenshotId: number;
     displayedNames: string[];
@@ -360,7 +365,10 @@ function sanitizeCreateMeetingPayload(payload: CreateMeetingPayload): CreateMeet
       name,
     };
   });
-
+  const duplicateMeetingId = ensurePositiveSafeInteger(
+    payload.duplicate_of_meeting_id,
+    "duplicate_of_meeting_id",
+  );
   return {
     kind: payload.kind,
     title,
@@ -369,6 +377,13 @@ function sanitizeCreateMeetingPayload(payload: CreateMeetingPayload): CreateMeet
     ...(normalizeOptionalString(payload.location) ? { location: normalizeOptionalString(payload.location)! } : {}),
     participants,
     ...(normalizeOptionalString(payload.agenda) ? { agenda: normalizeOptionalString(payload.agenda)! } : {}),
+    ...(duplicateMeetingId != null
+      ? {
+          duplicate_of_meeting_id: duplicateMeetingId,
+          // Diff metadata is never trusted from the client; executeCard derives it from the target row and final payload.
+          changes: {},
+        }
+      : {}),
   };
 }
 
@@ -965,13 +980,41 @@ export function executeCard({ db, cardId, payload, resolvedContactId }: ExecuteC
 
       case "create_meeting": {
         const typedPayload = confirmedPayload as CreateMeetingPayload;
+        const storedMeetingPayload = card.payload as CreateMeetingPayload;
+        const storedDuplicateMeetingId = ensurePositiveSafeInteger(
+          storedMeetingPayload.duplicate_of_meeting_id,
+          "stored duplicate_of_meeting_id",
+        );
+
+        if (typedPayload.duplicate_of_meeting_id !== storedDuplicateMeetingId) {
+          throw new ExecuteValidationError(
+            "create_meeting cannot change duplicate_of_meeting_id during confirmation",
+          );
+        }
+
+        const existingMeeting = storedDuplicateMeetingId == null
+          ? undefined
+          : db.listMeetings().find((meeting) => meeting.id === storedDuplicateMeetingId);
+
+        if (storedDuplicateMeetingId != null && !existingMeeting) {
+          throw new ExecuteDependencyError(
+            `Meeting ${storedDuplicateMeetingId} does not exist`,
+          );
+        }
+
+        if (existingMeeting && (typedPayload.kind ?? "meeting") !== existingMeeting.kind) {
+          throw new ExecuteValidationError(
+            "create_meeting cannot change the kind of a duplicate target",
+          );
+        }
+
         const hydratedParticipants = hydrateMeetingParticipants({
           db,
           screenshotId: screenshot.id,
           extraction,
           participants: typedPayload.participants,
         });
-        const meeting = db.insertMeeting({
+        const meetingInput: MeetingWriteInput = {
           kind: typedPayload.kind ?? "meeting",
           title: typedPayload.title,
           timeIso: typedPayload.time_iso,
@@ -980,8 +1023,16 @@ export function executeCard({ db, cardId, payload, resolvedContactId }: ExecuteC
           participants: hydratedParticipants,
           agenda: typedPayload.agenda ?? null,
           sourceScreenshotId: screenshot.id,
-          createdAt: executedAt,
-        });
+        };
+        const meeting = existingMeeting == null
+          ? db.insertMeeting({ ...meetingInput, createdAt: executedAt })
+          : db.updateMeeting(existingMeeting.id, meetingInput);
+
+        if (!meeting) {
+          throw new ExecuteDependencyError(
+            `Meeting ${storedDuplicateMeetingId} does not exist`,
+          );
+        }
 
         const meetingContacts = resolveMeetingContacts(db, hydratedParticipants);
         meetingId = meeting.id;
@@ -1002,10 +1053,17 @@ export function executeCard({ db, cardId, payload, resolvedContactId }: ExecuteC
           );
         }
 
-        storedPayload = {
+        const finalMeetingPayload: CreateMeetingPayload = {
           ...typedPayload,
+          kind: meetingInput.kind,
           participants: hydratedParticipants,
         };
+        storedPayload = existingMeeting
+          ? {
+              ...finalMeetingPayload,
+              changes: buildMeetingChanges(existingMeeting, finalMeetingPayload),
+            }
+          : finalMeetingPayload;
         break;
       }
 

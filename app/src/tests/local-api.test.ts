@@ -8,6 +8,7 @@ import type {
   ObservationKind,
   StoredActionCardRecord,
 } from "../../../shared/core/agent/execute.ts";
+import type { PerceptionResult } from "../../../shared/core/agent/perceive.ts";
 import type {
   ChatCompletionRequest,
   StructuredOutputProvider,
@@ -393,6 +394,32 @@ class FakeLocalStore implements LocalStore {
       created_at: input.createdAt ?? FIXED_NOW.toISOString(),
     };
     this.meetings.push(meeting);
+    return meeting;
+  }
+
+  updateMeeting(
+    meetingId: number,
+    input: Parameters<LocalStore["updateMeeting"]>[1],
+  ): MeetingRecord | null {
+    const index = this.meetings.findIndex((meeting) => meeting.id === meetingId);
+    const existing = this.meetings[index];
+
+    if (!existing) {
+      return null;
+    }
+
+    const meeting: MeetingRecord = {
+      ...existing,
+      kind: input.kind,
+      title: input.title,
+      time_iso: input.timeIso,
+      time_text: input.timeText,
+      location: input.location ?? null,
+      participants: input.participants,
+      agenda: input.agenda ?? null,
+      source_screenshot_id: input.sourceScreenshotId ?? null,
+    };
+    this.meetings[index] = meeting;
     return meeting;
   }
 
@@ -1119,6 +1146,108 @@ const emptyExtraction = {
   facts: [],
   quotes: [],
 };
+
+test("local text flow proposes and confirms a duplicate item as UPDATE, then creates a different title", async () => {
+  const store = new FakeLocalStore();
+  const existing = store.insertMeeting({
+    kind: "other",
+    title: "准备报名材料",
+    timeIso: null,
+    timeText: "",
+    location: "一楼服务大厅",
+    participants: [],
+    agenda: "携带身份证复印件",
+    createdAt: "2026-08-20T01:00:00.000Z",
+  });
+  const extractions: PerceptionResult[] = [
+    {
+      participants: [],
+      events: [
+        {
+          kind: "other",
+          title: "准备报名材料",
+          time_text: "",
+          time_iso: null,
+          has_time_signal: false,
+          participant_names: [],
+          agenda: "携带身份证复印件和两张照片",
+          confidence: "high",
+          source_quote: "报名还要带两张照片",
+        },
+      ],
+      facts: [],
+      quotes: [],
+    },
+    {
+      participants: [],
+      events: [
+        {
+          kind: "other",
+          title: "提交活动预算",
+          time_text: "",
+          time_iso: null,
+          has_time_signal: false,
+          participant_names: [],
+          confidence: "high",
+          source_quote: "活动预算周五前提交",
+        },
+      ],
+      facts: [],
+      quotes: [],
+    },
+  ];
+  const textProvider = new FakeStructuredOutputProvider(() => ({ insights: [] }));
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    async loadImage() {
+      throw new Error("text upload must not load an image");
+    },
+    providers: {
+      async createQwenProvider() {
+        throw new Error("text upload must not create a vision provider");
+      },
+      async createTextProvider() {
+        return textProvider;
+      },
+    },
+    async perceiveOcrText() {
+      const extraction = extractions.shift();
+      if (!extraction) {
+        throw new Error("unexpected text perception call");
+      }
+      return extraction;
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  const duplicateUpload = await api.uploadText({ text: "报名还要带两张照片" });
+  const duplicateCard = duplicateUpload.cards.find((card) => card.type === "create_meeting");
+  assert.ok(duplicateCard);
+  assert.equal(duplicateCard.payload.duplicate_of_meeting_id, existing.id);
+  assert.equal(duplicateCard.payload.location, "一楼服务大厅");
+  assert.deepEqual(duplicateCard.payload.changes, {
+    agenda: {
+      old: "携带身份证复印件",
+      new: "携带身份证复印件和两张照片",
+    },
+  });
+
+  const updateResult = await api.confirmCard(duplicateCard.id);
+  const afterUpdate = await api.getMeetings();
+  assert.equal(updateResult.meeting_id, existing.id);
+  assert.equal(afterUpdate.length, 1);
+  assert.equal(afterUpdate[0]?.id, existing.id);
+  assert.equal(afterUpdate[0]?.agenda, "携带身份证复印件和两张照片");
+
+  const newUpload = await api.uploadText({ text: "活动预算周五前提交" });
+  const newCard = newUpload.cards.find((card) => card.type === "create_meeting");
+  assert.ok(newCard);
+  assert.equal(newCard.payload.duplicate_of_meeting_id, undefined);
+
+  await api.confirmCard(newCard.id);
+  assert.equal((await api.getMeetings()).length, 2);
+});
 
 test("pasted text uses the shared text perception path without loading or perceiving an image", async () => {
   const store = new FakeLocalStore();

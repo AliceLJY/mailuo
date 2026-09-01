@@ -134,7 +134,13 @@ export async function runE2eFlow(args: RunE2eFlowArgs) {
     const savedCards = args.db.saveScreenshotAnalysis({
       screenshotId: screenshot.id,
       rawExtraction: extraction,
-      cards: proposeCardsImpl(extraction, resolutions, contacts),
+      cards: proposeCardsImpl(
+        extraction,
+        resolutions,
+        contacts,
+        undefined,
+        args.db.listMeetings(),
+      ),
     });
     analysisPersisted = true;
     const executionResults = sortCardsForExecution(savedCards).map((card) =>
@@ -196,7 +202,13 @@ async function runExtractCommand(args: CommonCommandArgs): Promise<void> {
       imagePath: args.imagePath,
       note: args.note,
     });
-    const cards = proposeCards(extraction, resolutions, contacts);
+    const cards = proposeCards(
+      extraction,
+      resolutions,
+      contacts,
+      undefined,
+      db.listMeetings(),
+    );
     stdout.write(`${JSON.stringify(cards, null, 2)}\n`);
   } finally {
     db.close();

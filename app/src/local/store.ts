@@ -4,6 +4,7 @@ import {
   CONTACT_EDITABLE_FIELDS,
   type ContactFieldUpdates,
   type MeetingParticipant,
+  type MeetingWriteInput,
   type ObservationInsertInput,
   type ObservationKind,
   type StoredActionCardRecord,
@@ -16,7 +17,6 @@ import { initializeMailuoSchema } from "../../../shared/core/migrations.ts";
 import {
   isMeetingKind,
   type ActionCard,
-  type MeetingKind,
 } from "../../../shared/types.ts";
 import type {
   ActionCardConfidence,
@@ -720,17 +720,7 @@ export class ExpoSqliteLocalStore implements LocalStore {
     );
   }
 
-  insertMeeting(input: {
-    kind: MeetingKind;
-    title: string;
-    timeIso: string | null;
-    timeText: string;
-    location?: string | null;
-    participants: MeetingParticipant[];
-    agenda?: string | null;
-    sourceScreenshotId?: number | null;
-    createdAt?: string;
-  }): MeetingRecord {
+  insertMeeting(input: MeetingWriteInput): MeetingRecord {
     const title = normalizeOptionalString(input.title);
     const timeText = input.timeText.trim();
 
@@ -783,6 +773,65 @@ export class ExpoSqliteLocalStore implements LocalStore {
     }
 
     return hydrateMeeting(row);
+  }
+
+  updateMeeting(meetingId: number, input: MeetingWriteInput): MeetingRecord | null {
+    const normalizedMeetingId = assertSafeInteger(meetingId, "meetings.id");
+    const title = normalizeOptionalString(input.title);
+    const timeText = input.timeText.trim();
+
+    if (normalizedMeetingId <= 0) {
+      throw new RangeError("Meeting id must be positive");
+    }
+
+    if (!title) {
+      throw new TypeError("Meeting title must be a non-empty string");
+    }
+
+    if (!isMeetingKind(input.kind)) {
+      throw new TypeError(`Invalid meeting kind: ${String(input.kind)}`);
+    }
+
+    const participants = input.participants.map((participant) => {
+      const name = normalizeOptionalString(participant.name);
+
+      if (!name) {
+        throw new TypeError("Meeting participants must have non-empty names");
+      }
+
+      return {
+        ...(participant.contact_id != null ? { contact_id: participant.contact_id } : {}),
+        name,
+      };
+    });
+    const result = this.db.runSync(
+      `UPDATE meetings
+       SET kind = ?, title = ?, time_iso = ?, time_text = ?, location = ?,
+           participants = ?, agenda = ?, source_screenshot_id = ?
+       WHERE id = ?`,
+      input.kind,
+      title,
+      normalizeOptionalString(input.timeIso),
+      timeText,
+      normalizeOptionalString(input.location),
+      JSON.stringify(participants),
+      normalizeOptionalString(input.agenda),
+      input.sourceScreenshotId ?? null,
+      normalizedMeetingId,
+    );
+
+    if (result.changes === 0) {
+      return null;
+    }
+
+    const row = this.db.getFirstSync<MeetingRow>(
+      `SELECT id, title, time_iso, time_text, location, participants, agenda,
+              source_screenshot_id, status, created_at, kind
+       FROM meetings WHERE id = ?`,
+      normalizedMeetingId,
+    );
+
+    return row ? hydrateMeeting(row) : null;
   }
 
   listMeetings(): MeetingRecord[] {

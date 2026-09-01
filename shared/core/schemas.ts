@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { MEETING_KINDS } from '../types.ts';
+import { MEETING_CHANGE_FIELDS, MEETING_KINDS } from '../types.ts';
 
 export { ZodError } from 'zod';
 
@@ -48,8 +48,37 @@ export const CreateMeetingPayloadSchema = z
     location: z.string().optional(),
     participants: z.array(MeetingParticipantSchema),
     agenda: z.string().optional(),
+    duplicate_of_meeting_id: z.number().int().positive().optional(),
+    changes: z
+      .partialRecord(
+        z.enum(MEETING_CHANGE_FIELDS),
+        z
+          .object({
+            old: z.string().nullable(),
+            new: z.string().nullable(),
+          })
+          .strict(),
+      )
+      .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((payload, context) => {
+    if (payload.duplicate_of_meeting_id != null && payload.changes == null) {
+      context.addIssue({
+        code: 'custom',
+        message: 'duplicate meeting cards require a changes map',
+        path: ['changes'],
+      });
+    }
+
+    if (payload.duplicate_of_meeting_id == null && payload.changes != null) {
+      context.addIssue({
+        code: 'custom',
+        message: 'meeting changes require duplicate_of_meeting_id',
+        path: ['duplicate_of_meeting_id'],
+      });
+    }
+  });
 
 export const RecordInteractionPayloadSchema = z
   .object({

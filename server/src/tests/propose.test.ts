@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 
 import type { PerceptionResult } from '../../../shared/core/agent/perceive.ts';
 import type { ParticipantResolution, ResolvableContact } from '../../../shared/core/agent/resolve.ts';
-import { proposeCards as baseProposeCards } from '../../../shared/core/agent/propose.ts';
+import {
+  proposeCards as baseProposeCards,
+  type ExistingMeeting,
+} from '../../../shared/core/agent/propose.ts';
 
 const proposalNow = new Date('2026-08-27T02:00:00.000Z');
 
@@ -12,8 +15,9 @@ function proposeCards(
   resolutions?: ParticipantResolution[],
   contacts: ResolvableContact[] = [],
   now = proposalNow,
+  existingMeetings: ExistingMeeting[] = [],
 ) {
-  return baseProposeCards(extraction, resolutions, contacts, now);
+  return baseProposeCards(extraction, resolutions, contacts, now, existingMeetings);
 }
 
 test('proposeCards creates contact and meeting cards from perception output', () => {
@@ -1369,4 +1373,255 @@ test('proposeCards creates create_contact cards for new and unsure participants 
       source_quote: '李姐，下周找时间见面',
     },
   ]);
+});
+
+const existingItem: ExistingMeeting = {
+  id: 41,
+  kind: 'other',
+  title: '准备报名材料',
+  time_iso: null,
+  time_text: '',
+  location: '一楼服务大厅',
+  participants: [{ contact_id: 7, name: '王老师' }],
+  agenda: '携带身份证复印件',
+};
+
+function itemExtraction(overrides: Partial<PerceptionResult['events'][number]> = {}): PerceptionResult {
+  return {
+    participants: [],
+    events: [
+      {
+        kind: 'other',
+        title: '准备报名材料',
+        time_text: '',
+        time_iso: null,
+        has_time_signal: false,
+        participant_names: [],
+        confidence: 'high',
+        source_quote: '报名还要带两张照片',
+        ...overrides,
+      },
+    ],
+    facts: [],
+    quotes: [],
+  };
+}
+
+test('proposeCards marks a unique same-kind normalized-title item as a duplicate and preserves unmentioned fields', () => {
+  const [card] = proposeCards(
+    itemExtraction({
+      title: ' 准备报名材料！ ',
+      agenda: '携带身份证复印件和两张照片',
+    }),
+    [],
+    [],
+    proposalNow,
+    [existingItem],
+  );
+
+  assert.equal(card?.type, 'create_meeting');
+  if (card?.type !== 'create_meeting') {
+    throw new Error('expected a create_meeting card');
+  }
+  assert.equal(card.payload.duplicate_of_meeting_id, existingItem.id);
+  assert.equal(card.payload.location, existingItem.location);
+  assert.deepEqual(card.payload.participants, existingItem.participants);
+  assert.deepEqual(card.payload.changes, {
+    title: { old: '准备报名材料', new: '准备报名材料！' },
+    agenda: { old: '携带身份证复印件', new: '携带身份证复印件和两张照片' },
+  });
+});
+
+test('proposeCards keeps an identical retransmission as a duplicate prompt with an empty changes map', () => {
+  const [card] = proposeCards(
+    itemExtraction({
+      location: existingItem.location ?? undefined,
+      participant_names: ['王老师'],
+      agenda: existingItem.agenda ?? undefined,
+    }),
+    [],
+    [],
+    proposalNow,
+    [existingItem],
+  );
+
+  assert.equal(card?.type, 'create_meeting');
+  if (card?.type !== 'create_meeting') {
+    throw new Error('expected a create_meeting card');
+  }
+  assert.equal(card.payload.duplicate_of_meeting_id, existingItem.id);
+  assert.deepEqual(card.payload.changes, {});
+});
+
+test('proposeCards leaves a different title as a normal new item', () => {
+  const [card] = proposeCards(
+    itemExtraction({ title: '提交活动预算' }),
+    [],
+    [],
+    proposalNow,
+    [existingItem],
+  );
+
+  assert.equal(card?.type, 'create_meeting');
+  if (card?.type !== 'create_meeting') {
+    throw new Error('expected a create_meeting card');
+  }
+  assert.equal(card.payload.duplicate_of_meeting_id, undefined);
+  assert.equal(card.payload.changes, undefined);
+});
+
+test('proposeCards refuses a different kind or an ambiguous exact-title target', () => {
+  const appointmentWithSameTitle: ExistingMeeting = {
+    ...existingItem,
+    id: 42,
+    kind: 'appointment',
+  };
+  const duplicateExistingItem: ExistingMeeting = {
+    ...existingItem,
+    id: 43,
+  };
+  const [differentKindCard] = proposeCards(
+    itemExtraction(),
+    [],
+    [],
+    proposalNow,
+    [appointmentWithSameTitle],
+  );
+  const [ambiguousCard] = proposeCards(
+    itemExtraction(),
+    [],
+    [],
+    proposalNow,
+    [existingItem, duplicateExistingItem],
+  );
+
+  assert.equal(
+    differentKindCard?.type === 'create_meeting'
+      ? differentKindCard.payload.duplicate_of_meeting_id
+      : undefined,
+    undefined,
+  );
+  assert.equal(
+    ambiguousCard?.type === 'create_meeting'
+      ? ambiguousCard.payload.duplicate_of_meeting_id
+      : undefined,
+    undefined,
+  );
+});
+
+test('proposeCards does not merge same-name participants that have different contact ids', () => {
+  const extraction = itemExtraction({ participant_names: ['王老师'] });
+  extraction.participants = [
+    {
+      name: '王老师',
+      is_self: false,
+      confidence: 'high',
+      source_quote: '王老师也参加',
+    },
+  ];
+  const [card] = proposeCards(
+    extraction,
+    [
+      {
+        participant_name: '王老师',
+        normalized_name: '王老师',
+        status: 'same_as',
+        contact_id: 8,
+        source: 'exact',
+      },
+    ],
+    [
+      {
+        id: 8,
+        canonical_name: '王老师',
+        aliases: [],
+        company: null,
+        title: null,
+        phone: null,
+        wechat_id: null,
+        notes: null,
+      },
+    ],
+    proposalNow,
+    [existingItem],
+  );
+
+  assert.equal(card?.type, 'create_meeting');
+  if (card?.type !== 'create_meeting') {
+    throw new Error('expected a create_meeting card');
+  }
+  assert.deepEqual(card.payload.participants, [
+    { contact_id: 7, name: '王老师' },
+    { contact_id: 8, name: '王老师' },
+  ]);
+});
+
+test('proposeCards uses the adjustable high-similarity rule only for a unique same-day item', () => {
+  const existingMeeting: ExistingMeeting = {
+    id: 52,
+    kind: 'meeting',
+    title: '第三季度项目推进协调会',
+    time_iso: '2026-09-08T09:30:00+08:00',
+    time_text: '9月8日上午9:30',
+    location: null,
+    participants: [],
+    agenda: null,
+  };
+  const extraction = itemExtraction({
+    kind: 'meeting',
+    title: '第三季度项目推进协同会',
+    time_iso: '2026-09-08T10:00:00+08:00',
+    time_text: '9月8日上午10点',
+  });
+  const [sameDayCard] = proposeCards(
+    extraction,
+    [],
+    [],
+    proposalNow,
+    [existingMeeting],
+  );
+  const [differentDayCard] = proposeCards(
+    itemExtraction({
+      ...extraction.events[0],
+      time_iso: '2026-09-09T10:00:00+08:00',
+      time_text: '9月9日上午10点',
+    }),
+    [],
+    [],
+    proposalNow,
+    [existingMeeting],
+  );
+  const [ambiguousSameDayCard] = proposeCards(
+    extraction,
+    [],
+    [],
+    proposalNow,
+    [
+      existingMeeting,
+      {
+        ...existingMeeting,
+        id: 53,
+        title: '第三季度项目推进协商会',
+      },
+    ],
+  );
+
+  assert.equal(
+    sameDayCard?.type === 'create_meeting'
+      ? sameDayCard.payload.duplicate_of_meeting_id
+      : undefined,
+    existingMeeting.id,
+  );
+  assert.equal(
+    differentDayCard?.type === 'create_meeting'
+      ? differentDayCard.payload.duplicate_of_meeting_id
+      : undefined,
+    undefined,
+  );
+  assert.equal(
+    ambiguousSameDayCard?.type === 'create_meeting'
+      ? ambiguousSameDayCard.payload.duplicate_of_meeting_id
+      : undefined,
+    undefined,
+  );
 });

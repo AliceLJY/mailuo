@@ -34,6 +34,15 @@ const CHANGE_LABELS = {
   notes: "备注",
 } as const;
 
+const MEETING_CHANGE_LABELS = {
+  title: "标题",
+  time_iso: "确认时间",
+  time_text: "聊天里的时间",
+  location: "地点",
+  participants: "相关人",
+  agenda: "详情",
+} as const;
+
 export function ContactFields({
   editable,
   payload,
@@ -116,9 +125,32 @@ export function MeetingFields({
   setPayload: (payload: ReviewCardDraft["payload"]) => void;
 }) {
   const isOther = payload.kind === "other";
+  const duplicateChanges = Object.entries(payload.changes ?? {});
 
   return (
     <View style={styles.section}>
+      {payload.duplicate_of_meeting_id != null ? (
+        <View style={styles.block}>
+          <Text style={styles.fieldLabel}>已有相似事项 → 是否更新</Text>
+          <Text style={styles.metaText}>
+            确认后将更新现有记录 #{payload.duplicate_of_meeting_id}，不会新增一条。
+          </Text>
+          <Text style={styles.metaText}>
+            差异仅作提示；实际更新以下方表单为准，确认记录会按最终内容重新核算。
+          </Text>
+          {duplicateChanges.length === 0 ? (
+            <Text style={styles.metaText}>当前差异为空。</Text>
+          ) : duplicateChanges.map(([field, change]) => (
+            <View key={field} style={styles.block}>
+              <Text style={styles.fieldLabel}>
+                {MEETING_CHANGE_LABELS[field as keyof typeof MEETING_CHANGE_LABELS] ?? field}
+              </Text>
+              <Text style={styles.metaText}>对照值：{change?.old || "未填写"}</Text>
+              <Text style={styles.metaText}>变更值：{change?.new || "未填写"}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
       <FieldInput editable={editable} label="标题" value={payload.title} onChangeText={(title) => setPayload({ ...payload, title })} />
       <View style={styles.dualRow}>
         <View style={styles.dualColumn}>

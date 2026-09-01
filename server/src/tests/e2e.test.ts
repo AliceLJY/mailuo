@@ -306,3 +306,46 @@ test('runE2eFlow deletes the orphan screenshot row when perception fails before 
     cleanup();
   }
 });
+
+test('runE2eFlow passes existing meetings into its proposal step', async () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const existingMeeting = db.insertMeeting({
+      kind: 'other',
+      title: '准备报名材料',
+      timeIso: null,
+      timeText: '',
+      participants: [],
+    });
+    let receivedMeetings: unknown;
+    const result = await runE2eFlow({
+      db,
+      imagePath: screenshotPath,
+      async perceiveScreenshotImpl() {
+        return { participants: [], events: [], facts: [], quotes: [] };
+      },
+      async resolveParticipantsImpl() {
+        return [];
+      },
+      proposeCardsImpl(_extraction, _resolutions, _contacts, _now, existingMeetings) {
+        receivedMeetings = existingMeetings;
+        return [];
+      },
+      async generateInsightsImpl() {
+        return {
+          requested_contact_ids: [],
+          processed_contact_ids: [],
+          skipped_contact_ids: [],
+          generated: [],
+        };
+      },
+    });
+
+    assert.deepEqual(receivedMeetings, [existingMeeting]);
+    assert.deepEqual(result.cards, []);
+    assert.deepEqual(result.meeting_ids, []);
+  } finally {
+    cleanup();
+  }
+});

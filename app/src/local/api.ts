@@ -121,7 +121,13 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
         const cards = options.store.saveScreenshotAnalysis({
           screenshotId: screenshot.id,
           rawExtraction: extraction,
-          cards: proposeCards(extraction, resolutions, contacts, timestamp),
+          cards: proposeCards(
+            extraction,
+            resolutions,
+            contacts,
+            timestamp,
+            options.store.listMeetings(),
+          ),
           createdAt: timestamp.toISOString(),
         });
 
@@ -244,7 +250,13 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           contacts,
           provider: textProvider,
         });
-        const proposedCards = proposeCards(extraction, resolutions, contacts, timestamp);
+        const proposedCards = proposeCards(
+          extraction,
+          resolutions,
+          contacts,
+          timestamp,
+          options.store.listMeetings(),
+        );
         let cards: ActionCardRecord[];
         let localBatchContactMerges: LocalBatchContactMerge[] | undefined;
 

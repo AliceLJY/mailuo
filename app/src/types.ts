@@ -1,4 +1,4 @@
-import type { MeetingKind } from "../../shared/types.ts";
+import type { MeetingChanges, MeetingKind } from "../../shared/types.ts";
 
 export type ActionCardConfidence = "high" | "medium" | "low";
 export type ActionCardStatus = "pending" | "confirmed" | "rejected";
@@ -32,6 +32,8 @@ export type CreateMeetingPayload = {
   location?: string;
   participants: Array<{ contact_id?: number; name: string }>;
   agenda?: string;
+  duplicate_of_meeting_id?: number;
+  changes?: MeetingChanges;
 };
 
 export type RecordInteractionPayload = {

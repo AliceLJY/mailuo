@@ -17,6 +17,19 @@ export type UpdateContactPayload = {
 export const MEETING_KINDS = ["meeting", "appointment", "other"] as const;
 export type MeetingKind = (typeof MEETING_KINDS)[number];
 
+export const MEETING_CHANGE_FIELDS = [
+  "title",
+  "time_iso",
+  "time_text",
+  "location",
+  "participants",
+  "agenda",
+] as const;
+export type MeetingChangeField = (typeof MEETING_CHANGE_FIELDS)[number];
+export type MeetingChanges = Partial<
+  Record<MeetingChangeField, { old: string | null; new: string | null }>
+>;
+
 export function isMeetingKind(value: unknown): value is MeetingKind {
   return MEETING_KINDS.includes(value as MeetingKind);
 }
@@ -30,6 +43,8 @@ export type CreateMeetingPayload = {
   location?: string;
   participants: Array<{ contact_id?: number; name: string }>;
   agenda?: string;
+  duplicate_of_meeting_id?: number;
+  changes?: MeetingChanges;
 };
 
 export type RecordInteractionPayload = {

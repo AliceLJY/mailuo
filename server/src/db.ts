@@ -1252,6 +1252,80 @@ export class MailuoDb implements InsightGenerationDb, ExecuteStore {
     return meeting;
   }
 
+  updateMeeting(meetingId: number, input: MeetingInsertInput): MeetingRecord | null {
+    const normalizedMeetingId = this.toSafeInteger(meetingId, "meetings.id");
+    const title = normalizeOptionalString(input.title);
+    const timeText = input.timeText.trim();
+
+    if (normalizedMeetingId <= 0) {
+      throw new RangeError("Meeting id must be positive");
+    }
+
+    if (!title) {
+      throw new TypeError("Meeting title must be a non-empty string");
+    }
+
+    if (!isMeetingKind(input.kind)) {
+      throw new TypeError(`Invalid meeting kind: ${String(input.kind)}`);
+    }
+
+    const participants = input.participants.map((participant) => {
+      const name = normalizeOptionalString(participant.name);
+
+      if (!name) {
+        throw new TypeError("Meeting participants must have non-empty names");
+      }
+
+      return {
+        ...(participant.contact_id != null ? { contact_id: participant.contact_id } : {}),
+        name,
+      };
+    });
+    const result = this.db
+      .prepare(
+        `UPDATE meetings
+         SET kind = ?, title = ?, time_iso = ?, time_text = ?, location = ?,
+             participants = ?, agenda = ?, source_screenshot_id = ?
+         WHERE id = ?`,
+      )
+      .run(
+        input.kind,
+        title,
+        normalizeOptionalString(input.timeIso),
+        timeText,
+        normalizeOptionalString(input.location),
+        JSON.stringify(participants),
+        normalizeOptionalString(input.agenda),
+        input.sourceScreenshotId ?? null,
+        normalizedMeetingId,
+      );
+
+    if (result.changes === 0) {
+      return null;
+    }
+
+    return this.hydrateMeeting(
+      this.db
+        .prepare(
+          `SELECT
+             id,
+             title,
+             time_iso,
+             time_text,
+             location,
+             participants,
+             agenda,
+             source_screenshot_id,
+             status,
+             created_at,
+             kind
+           FROM meetings
+           WHERE id = ?`,
+        )
+        .get(normalizedMeetingId) as MeetingRow | undefined,
+    );
+  }
+
   listMeetings(): MeetingRecord[] {
     const rows = this.db
       .prepare(

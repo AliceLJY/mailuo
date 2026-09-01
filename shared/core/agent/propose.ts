@@ -1,9 +1,13 @@
-import type {
-  ActionCard,
-  CreateContactPayload,
-  CreateMeetingPayload,
-  RecordInteractionPayload,
-  UpdateContactPayload,
+import {
+  MEETING_CHANGE_FIELDS,
+  type ActionCard,
+  type CreateContactPayload,
+  type CreateMeetingPayload,
+  type MeetingChangeField,
+  type MeetingChanges,
+  type MeetingKind,
+  type RecordInteractionPayload,
+  type UpdateContactPayload,
 } from '../../types.ts';
 
 import type { PerceptionResult } from './perceive.ts';
@@ -19,6 +23,22 @@ type PerceptionQuote = PerceptionResult['quotes'][number];
 type ProposeParticipant = PerceptionResult['participants'][number] & { is_self?: boolean };
 type ProposeEvent = PerceptionResult['events'][number] & { has_time_signal?: boolean };
 type ContactField = 'company' | 'title' | 'phone' | 'wechat_id' | 'notes';
+
+export type ExistingMeeting = {
+  id: number;
+  kind: MeetingKind;
+  title: string;
+  time_iso: string | null;
+  time_text: string;
+  location: string | null;
+  participants: Array<{ contact_id?: number; name: string }>;
+  agenda: string | null;
+};
+
+export const MEETING_DUPLICATE_RULES = {
+  similarTitleThreshold: 0.9,
+  minimumSimilarTitleLength: 8,
+} as const;
 
 const selfParticipantName = '我';
 const trackedContactFields: ContactField[] = ['company', 'title', 'phone', 'wechat_id', 'notes'];
@@ -55,6 +75,203 @@ function dedupeStrings(values: Array<string | undefined>): string[] {
 
 function normalizeComparableText(value: string): string {
   return value.trim().toLocaleLowerCase();
+}
+
+function normalizeMeetingTitle(value: string): string {
+  return value
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/[\p{P}\s]+/gu, '');
+}
+
+function normalizedEditSimilarity(left: string, right: string): number {
+  const leftCharacters = Array.from(left);
+  const rightCharacters = Array.from(right);
+
+  if (leftCharacters.length === 0 || rightCharacters.length === 0) {
+    return 0;
+  }
+
+  let previous = Array.from({ length: rightCharacters.length + 1 }, (_, index) => index);
+
+  for (const [leftIndex, leftCharacter] of leftCharacters.entries()) {
+    const current = [leftIndex + 1];
+
+    for (const [rightIndex, rightCharacter] of rightCharacters.entries()) {
+      current.push(Math.min(
+        current[rightIndex] + 1,
+        previous[rightIndex + 1] + 1,
+        previous[rightIndex] + (leftCharacter === rightCharacter ? 0 : 1),
+      ));
+    }
+
+    previous = current;
+  }
+
+  return 1 - previous[rightCharacters.length] / Math.max(leftCharacters.length, rightCharacters.length);
+}
+
+function calendarDay(value: string | null): string | null {
+  return value?.trim().match(/^\d{4}-\d{2}-\d{2}(?=T|\s|$)/u)?.[0] ?? null;
+}
+
+function findDuplicateMeeting(
+  payload: CreateMeetingPayload,
+  existingMeetings: ExistingMeeting[],
+): ExistingMeeting | undefined {
+  const kind = payload.kind ?? 'meeting';
+  const normalizedTitle = normalizeMeetingTitle(payload.title);
+
+  if (!normalizedTitle) {
+    return undefined;
+  }
+
+  const sameKind = existingMeetings.filter((meeting) => meeting.kind === kind);
+  const exactMatches = sameKind.filter(
+    (meeting) => normalizeMeetingTitle(meeting.title) === normalizedTitle,
+  );
+
+  // Multiple existing rows with the same normalized title are ambiguous; leaking a duplicate is safer than updating the wrong row.
+  if (exactMatches.length !== 0) {
+    return exactMatches.length === 1 ? exactMatches[0] : undefined;
+  }
+
+  const proposedDay = calendarDay(payload.time_iso);
+  if (
+    !proposedDay ||
+    Array.from(normalizedTitle).length < MEETING_DUPLICATE_RULES.minimumSimilarTitleLength
+  ) {
+    return undefined;
+  }
+
+  // A high threshold, a minimum title length, and a same-day gate intentionally favor missed duplicates over false merges.
+  const similarMatches = sameKind.filter((meeting) => {
+    const existingTitle = normalizeMeetingTitle(meeting.title);
+    return (
+      calendarDay(meeting.time_iso) === proposedDay &&
+      Array.from(existingTitle).length >= MEETING_DUPLICATE_RULES.minimumSimilarTitleLength &&
+      normalizedEditSimilarity(normalizedTitle, existingTitle) >=
+        MEETING_DUPLICATE_RULES.similarTitleThreshold
+    );
+  });
+
+  return similarMatches.length === 1 ? similarMatches[0] : undefined;
+}
+
+function normalizeMeetingChangeValue(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+}
+
+function formatMeetingParticipants(
+  participants: Array<{ contact_id?: number; name: string }>,
+): string | null {
+  if (participants.length === 0) {
+    return null;
+  }
+
+  return participants
+    .map((participant) => {
+      const name = participant.name.trim();
+      return participant.contact_id == null ? name : `${name}（联系人 ${participant.contact_id}）`;
+    })
+    .join('、');
+}
+
+function serializeMeetingParticipants(
+  participants: Array<{ contact_id?: number; name: string }>,
+): string {
+  return JSON.stringify(
+    participants.map((participant) => [participant.contact_id ?? null, participant.name.trim()]),
+  );
+}
+
+function mergeMeetingParticipants(
+  existing: ExistingMeeting['participants'],
+  proposed: CreateMeetingPayload['participants'],
+): CreateMeetingPayload['participants'] {
+  const merged = existing.map((participant) => ({ ...participant }));
+
+  for (const participant of proposed) {
+    const normalizedName = normalizeComparableText(participant.name);
+    const existingIndex = merged.findIndex((candidate) => {
+      if (participant.contact_id != null && candidate.contact_id != null) {
+        return candidate.contact_id === participant.contact_id;
+      }
+
+      return normalizeComparableText(candidate.name) === normalizedName;
+    });
+
+    if (existingIndex === -1) {
+      merged.push({ ...participant });
+      continue;
+    }
+
+    merged[existingIndex] = {
+      ...merged[existingIndex],
+      ...participant,
+    };
+  }
+
+  return merged;
+}
+
+function mergeDuplicateMeetingPayload(
+  existing: ExistingMeeting,
+  proposed: CreateMeetingPayload,
+): CreateMeetingPayload {
+  const proposedTimeText = normalizeMeetingChangeValue(proposed.time_text);
+  const proposedLocation = normalizeMeetingChangeValue(proposed.location);
+  const proposedAgenda = normalizeMeetingChangeValue(proposed.agenda);
+
+  return {
+    ...proposed,
+    time_iso: normalizeMeetingChangeValue(proposed.time_iso) ?? existing.time_iso,
+    time_text: proposedTimeText ?? existing.time_text,
+    ...(proposedLocation ?? existing.location
+      ? { location: proposedLocation ?? existing.location! }
+      : {}),
+    participants: mergeMeetingParticipants(existing.participants, proposed.participants),
+    ...(proposedAgenda ?? existing.agenda
+      ? { agenda: proposedAgenda ?? existing.agenda! }
+      : {}),
+  };
+}
+
+export function buildMeetingChanges(
+  existing: ExistingMeeting,
+  proposed: CreateMeetingPayload,
+): MeetingChanges {
+  const oldValues: Record<MeetingChangeField, string | null> = {
+    title: normalizeMeetingChangeValue(existing.title),
+    time_iso: normalizeMeetingChangeValue(existing.time_iso),
+    time_text: normalizeMeetingChangeValue(existing.time_text),
+    location: normalizeMeetingChangeValue(existing.location),
+    participants: formatMeetingParticipants(existing.participants),
+    agenda: normalizeMeetingChangeValue(existing.agenda),
+  };
+  const newValues: Record<MeetingChangeField, string | null> = {
+    title: normalizeMeetingChangeValue(proposed.title),
+    time_iso: normalizeMeetingChangeValue(proposed.time_iso),
+    time_text: normalizeMeetingChangeValue(proposed.time_text),
+    location: normalizeMeetingChangeValue(proposed.location),
+    participants: formatMeetingParticipants(proposed.participants),
+    agenda: normalizeMeetingChangeValue(proposed.agenda),
+  };
+  const changes: MeetingChanges = {};
+
+  for (const field of MEETING_CHANGE_FIELDS) {
+    const unchanged = field === 'participants'
+      ? serializeMeetingParticipants(existing.participants) ===
+        serializeMeetingParticipants(proposed.participants)
+      : oldValues[field] === newValues[field];
+
+    if (!unchanged) {
+      changes[field] = { old: oldValues[field], new: newValues[field] };
+    }
+  }
+
+  return changes;
 }
 
 function isSelfParticipant(participant: ProposeParticipant): boolean {
@@ -442,10 +659,11 @@ function buildMeetingCard(
   event: ProposeEvent,
   sameAsParticipantsByName: Map<string, number | null>,
   selfParticipantNames: Set<string>,
+  existingMeetings: ExistingMeeting[],
 ): ProposedCard {
   const normalizedTimeIso = normalizeOptionalText(event.time_iso);
 
-  const payload: CreateMeetingPayload = {
+  let payload: CreateMeetingPayload = {
     kind: event.kind,
     title: event.title,
     time_iso: normalizedTimeIso ?? null,
@@ -469,6 +687,13 @@ function buildMeetingCard(
 
   if (event.agenda) {
     payload.agenda = event.agenda;
+  }
+
+  const duplicate = findDuplicateMeeting(payload, existingMeetings);
+  if (duplicate) {
+    payload = mergeDuplicateMeetingPayload(duplicate, payload);
+    payload.duplicate_of_meeting_id = duplicate.id;
+    payload.changes = buildMeetingChanges(duplicate, payload);
   }
 
   return {
@@ -622,6 +847,7 @@ export function proposeCards(
   resolutions?: ParticipantResolution[],
   contacts: ResolvableContact[] = [],
   now = new Date(),
+  existingMeetings: ExistingMeeting[] = [],
 ): ProposedCard[] {
   const cards: ProposedCard[] = [];
   const participants = extraction.participants as ProposeParticipant[];
@@ -711,7 +937,7 @@ export function proposeCards(
     }
 
     for (const event of events) {
-      cards.push(buildMeetingCard(event, new Map(), selfParticipantNames));
+      cards.push(buildMeetingCard(event, new Map(), selfParticipantNames, existingMeetings));
     }
 
     // simplified: keep the legacy M1 flow stable until execute/schema catches up with M2 cards.
@@ -833,7 +1059,9 @@ export function proposeCards(
   }
 
   for (const event of events) {
-    cards.push(buildMeetingCard(event, sameAsParticipantsByName, selfParticipantNames));
+    cards.push(
+      buildMeetingCard(event, sameAsParticipantsByName, selfParticipantNames, existingMeetings),
+    );
   }
 
   for (const [interactionKey, candidate] of interactionCandidates) {
