@@ -21,7 +21,7 @@
 - 增加根目录脚本 `scripts/build-web.sh`：`cd app && npx expo export --platform web` 并把产物同步到 `server/public/`（owner 部署时跑）。
 
 ### 5. 部署资产（`deploy/` 目录，owner 在 mini 上执行）
-- `deploy/com.alice.mailuo-server.plist`：launchd 常驻（KeepAlive），`WorkingDirectory` 指向仓库 server 目录，`EnvironmentVariables` 里 PATH 含 `/opt/homebrew/bin`（launchd 默认 PATH 没有 homebrew，已知坑），PORT=3300，**日志一律写 `~/ops-logs/mailuo/`（绝不写 ~/Library/Logs，机器上有清理工具会误删该目录下子目录）**。
+- `deploy/com.alice.mailuo-server.plist`：launchd 常驻（KeepAlive），`WorkingDirectory` 指向仓库 server 目录，`EnvironmentVariables` 里 PATH 含 `/opt/homebrew/bin`（launchd 默认 PATH 没有 homebrew，已知坑），PORT=3300，**日志一律写 `~/ops-logs/mailuo/`（不写 ~/Library/Logs——macOS 清理类工具常按模板清扫该目录下不认识的子目录，自托管日志放那里有被误删风险）**。
 - `deploy/install.sh`：幂等安装脚本——检查 node ≥26、`npm ci`、提示 `.env` 需要的键名（**不含任何真值**）、`mkdir -p ~/ops-logs/mailuo`、launchd 用 `bootout + sleep 2 + bootstrap` 顺序装载（不用 kickstart -k）、末尾 curl 本机 health 验证并打印结果。
 - `deploy/README.md`：部署步骤 + tailscale serve 一行命令示例（`tailscale serve --bg --https=<port> http://127.0.0.1:3300`）。
 
