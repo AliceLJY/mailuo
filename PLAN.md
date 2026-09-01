@@ -20,6 +20,13 @@
 - 全部数据存 mini 本地 SQLite。截图文件存本地磁盘 `server/data/screenshots/`。隐私边界如实写进 README：截图会发往 qwen/deepseek API 做推理，此外不出本机。
 - 禁止引入重依赖（ORM / 消息队列 / Redis 都不要）。Simplicity First：能一个文件解决的不建目录。
 
+**产品原则：宁可留空，不要猜错。**
+
+- 气泡底色判不出 → 告警，不猜。
+- 联系人不确定 → 询问，不自动合并。
+- 时间证据只有相对词（没有绝对日期锚点）→ `time_iso` 留 `null`。
+- 事项关联不上 → 独立存在，不强行挂靠。
+
 **Done when（总验收）**：三张测试截图各自跑通全链路（上传→卡片→确认→档案→洞察），app 在两台手机 Expo Go 可用，后端 mini 常驻 + tailnet 可达，repo 推 GitHub，README 含架构说明。
 
 ---

@@ -83,7 +83,7 @@ export default function SettingsScreen() {
         <>
           <SectionCard title="截图处理路径">
             <Text style={styles.description}>
-              默认先在手机上识字，再把带发言方标记的文字交给模型整理；只有没认出文字或多数文字置信度明显偏低时才改用云端视觉，发言人不确定仍会继续整理文字。
+              默认先在手机上识字，再把带发言方标记的文字交给模型整理；仅当本地识字或文字整理无法可靠完成时，才回退到云端视觉模型。发言人不确定时仍会继续整理文字。
             </Text>
             <View style={styles.switchRow}>
               <Text style={styles.switchLabel}>始终使用云端视觉识别</Text>

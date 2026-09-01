@@ -14,7 +14,7 @@ export default function ConnectionGuideScreen() {
     >
       {!isWeb ? (
         <ModeCard
-          description="填入 Key 后，一切在本机运行，数据只存在这台手机上。"
+          description="填入 Key 后，档案只保存在这台手机上；整理时会直接连接模型服务商。"
           onPress={() => router.push("/connection/local")}
           title="我有模型 API Key"
         />

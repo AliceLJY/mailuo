@@ -183,7 +183,7 @@ export default function LocalConnectionScreen() {
 
       <SectionCard kicker="选填" title="DeepSeek 与模型名称">
         <Text style={{ color: theme.colors.textSecondary, fontSize: 13, lineHeight: 19 }}>
-          不填也能用：文本整理将同样由通义千问完成。填入后归并与洞察改用 DeepSeek（更省钱）。
+          不填也能用：文字整理将由通义千问完成。填入后，文字整理、归并与洞察改用 DeepSeek（更省钱）；视觉回退仍使用 Qwen。
         </Text>
         <SecretField
           editing={deepseek.editing}

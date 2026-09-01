@@ -4,13 +4,17 @@ Chinese Version: [README_CN.md](README_CN.md)
 
 Mailuo turns chat screenshots into structured action cards, contact memory, and grounded relationship insights.
 
-| Upload | Contacts | Meetings |
+v3 separates reading from understanding: Android native BYOK mode uses on-device OCR to read screenshots, then sends annotated text to the configured text model for structured understanding; the vision model is a fallback unless cloud vision is explicitly forced.
+
+Current item workflows support independent items without contacts or a meeting time, conservative duplicate prompts before user-confirmed updates, progress fragments attached to existing items, and relative dates anchored only by explicit absolute timestamps visible in the screenshot.
+
+| Upload | Contacts | Schedule |
 |---|---|---|
 | ![Upload](docs/screenshots/web-upload.png) | ![Contacts](docs/screenshots/web-contacts.png) | ![Meetings](docs/screenshots/web-meetings.png) |
 
 > Screenshots show the web build (Expo web output); the Android native UI is identical. All people and companies shown are synthetic test data.
 
-**v2 dual-mode UI on a real device** (Android, BYOK standalone):
+**Native dual-mode UI on a real device** (Android, BYOK standalone):
 
 | First-launch chooser | Model key management | Settings |
 |---|---|---|
@@ -19,42 +23,31 @@ Mailuo turns chat screenshots into structured action cards, contact memory, and 
 ## Architecture
 
 ```text
-+--------------------------------+
-| App                            |
-| - iOS PWA                      |
-| - Android native               |
-| - upload / review / contacts   |
-| - meetings                     |
-+----------------+---------------+
-                 |
-                 | HTTPS / /api
-                 v
-+----------------+---------------+
-| Server                         |
-| - Fastify                      |
-| - node:sqlite (DatabaseSync)   |
-| - local screenshot storage     |
-+--------+---------------+-------+
-         |               |
-         | screenshot    | minimal contact context
-         v               v
-+--------+-------+   +---+-----------------------+
-| Qwen-VL        |   | DeepSeek                  |
-| perception     |   | resolution & insights     |
-| qwen-vl-max    |   | deepseek-v4-flash         |
-+----------------+   +---------------------------+
+Android BYOK local mode (default)
+
+screenshot
+  -> on-device ML Kit OCR
+  -> annotated text (speaker side + timestamp anchors)
+  -> configured text model
+  -> structured people / items / facts / quotes
+  -> resolution + editable proposals
+  -> human confirmation
+  -> local SQLite + grounded insights
 ```
 
-Only Qwen receives raw screenshot binaries. DeepSeek never receives raw image files, but it does receive the extracted text needed for each task: screenshot-derived `source_quote`, `facts`, `quotes`, and `events`, plus the minimum contact summary needed for resolution or the profile and observation context needed for grounded insights.
+If local OCR cannot produce reliable text, if text interpretation fails, or if cloud vision is explicitly forced, the screenshot takes the Qwen-VL visual fallback and then rejoins the same resolution and proposal loop. Screenshot uploads in web and self-hosted server modes still use server-side Qwen-VL perception.
+
+In the healthy Android local path, the raw screenshot stays on the phone: the configured text model receives annotated OCR text, not the image. DeepSeek is optional; when it is not configured, text tasks use Qwen through DashScope.
 
 ## Agent Loop
 
-1. Perception: send the screenshot and optional note to Qwen-VL and get structured extraction JSON.
-2. Resolution: match people against existing contacts by canonical name or aliases first, then ask DeepSeek to decide `same_as`, `new`, or `unsure` when exact matching fails.
-3. Proposal: turn the extraction into editable action cards such as `create_contact`, `update_contact`, `create_meeting`, and `record_interaction`, each with `confidence` and `source_quote`.
-4. Human confirmation: let the user edit fields, resolve ambiguities, confirm, or reject each card.
-5. Execution: write confirmed contacts, meetings, aliases, and observations back to SQLite.
-6. Grounded insights: generate relationship reads, suggested actions, and conversation hooks that must cite `based_on` observation evidence.
+1. Recognition: Android local mode reads screenshots with ML Kit OCR and falls back to Qwen-VL only when the text path is unusable or cloud vision is forced. Pasted text skips image recognition; web and server screenshot uploads use Qwen-VL perception.
+2. Understanding: the configured text model turns annotated OCR or pasted text into structured people, items, facts, and quotes.
+3. Resolution: match people against canonical names and aliases first, then ask the text model to decide `same_as`, `new`, or `unsure` only when exact matching fails. Confirmed name variants are written back as aliases for later local matches.
+4. Proposal: create editable cards for contact changes, meetings, appointments, independent items, item updates, and interactions. Similar existing items prompt a user-confirmed update instead of automatic deduplication.
+5. Human confirmation: let the user edit fields, resolve ambiguities, confirm, or reject each card.
+6. Execution: write confirmed contacts, meetings and items, aliases, and observations back to SQLite.
+7. Grounded insights: generate relationship reads, suggested actions, and conversation hooks that must cite `based_on` observation evidence.
 
 Three signals that this is not a thin wrapper:
 
@@ -70,7 +63,7 @@ Mailuo maps its memory stack to the Atkinson-Shiffrin model: sensory memory, wor
 | --- | --- | --- | --- |
 | Sensory layer | `screenshots.raw_extraction` | Kept mainly for traceability after perception | Sensory memory |
 | Working layer | `action_cards` rows in `pending` state | Waits for user confirmation or rejection | Working memory |
-| Long-term layer | `contacts`, `observations`, `meetings`, and `insights` rows | Persists and accumulates by person | Long-term memory |
+| Long-term layer | `contacts`, `observations`, `meetings` (meetings, appointments, and independent items), and `insights` rows | Persists and accumulates | Long-term memory |
 
 Long-term memory has two update semantics:
 
@@ -81,12 +74,11 @@ That split lets the model use profile fields for "who this person is" and observ
 
 ## Engineering Story
 
-The project was hardened through a three-layer test funnel.
+The project is hardened through automated suites, live-provider checks, and device testing.
 
-- Mock funnel: by the M4 handoff checkpoint, the suite had grown from 53 to 74 green cases across schema, proposal, resolution, execution, route behavior, and grounded insights.
-- Current baseline: the test suites are now 182/182 green (server 109 + app 73), with the added coverage focused on provider defaults, self-contact guards, partial upload cleanup, no-time-signal meeting folding, and same-origin static serving.
-- Live model pass: owner testing with real keys exposed four prompt-layer failures that mocks had not covered yet. The system used to create a contact for the user's own self-side messages, push a company change into `notes` instead of `company`, turn "let's talk later" into a meeting without a time signal, and truncate insight JSON when the token ceiling was too small.
-- Real devices: iPhone and Android surfaced two platform issues. Expo SDK 57 native uploads rejected legacy React Native `{ uri, name, type }` parts, so the app switched to standard `Blob` and `File`. The web client also needed CORS because the Metro dev server and the API server ran on different ports.
+- Automated coverage spans schema migrations, OCR and visual fallback, ordered batches, proposal and resolution, independent items, duplicate updates, timestamp anchors, route behavior, and grounded insights.
+- Live-provider checks exposed prompt-layer failures that mocks had not covered, including self-side messages becoming contacts, company changes falling into notes, vague time phrases becoming meetings, and truncated insight JSON.
+- iOS and Android testing exposed platform issues in native file uploads and OCR runtime loading; web testing also caught cross-origin and same-origin deployment differences.
 
 ## Quickstart
 
@@ -154,26 +146,26 @@ That exports the web app with a forced same-origin API base and syncs it into `s
 
 ## Build And Deploy Docs
 
-M4 build and deployment assets live in [deploy/README.md](deploy/README.md) and [scripts/build-web.sh](scripts/build-web.sh). The repo already includes a `launchd` plist, an install script, Tailscale serve instructions, and an Expo EAS preview APK profile, but the actual Mac mini deployment is still a manual owner step.
+Build and deployment assets live in [deploy/README.md](deploy/README.md) and [scripts/build-web.sh](scripts/build-web.sh). The repo includes a `launchd` plist, an install script, Tailscale Serve instructions, and an Expo EAS preview APK profile. Running a self-hosted deployment remains a manual step on the target machine.
 
 ## Privacy Boundary
 
 - **BYOK local mode**: profiles and imported screenshot files are stored only on the user's phone. During inference, the app connects directly to the model providers, with no Mailuo server in between. Model keys are kept only in the system credential store (iOS Keychain / Android Keystore), and the UI never reveals their full values.
-- App data is stored locally in SQLite on the server host.
-- Screenshot files are stored locally under `server/data/screenshots/`.
-- Raw screenshot binaries are sent only to Qwen during perception.
+- In the default Android OCR path, the raw screenshot stays on the phone. Annotated recognized text is sent to the configured text model for extraction and resolution.
+- If OCR cannot produce reliable text, if text interpretation fails, or if cloud vision is explicitly forced, the raw screenshot is sent to Qwen-VL for visual fallback. It is never sent to DeepSeek.
+- In self-hosted server mode, app data is stored in SQLite on the server host and screenshot files are stored under `server/data/screenshots/`; screenshot perception uses Qwen-VL.
 - **Text submitted through the paste-text entry is sent verbatim to the configured text model** (DeepSeek, or the DashScope Qwen text model when DeepSeek is not configured) for extraction; no vision model is involved. Whatever you paste is what gets sent — judge the sensitivity of the content yourself.
-- DeepSeek never receives raw images. For entity resolution it receives only the screenshot-derived text needed to decide identity, such as `source_quote`, `facts`, `quotes`, `events`, and the minimum contact summary. For insight generation it receives only the screenshot-derived text already stored as evidence plus the minimum profile and observation context needed for grounded output. When DeepSeek is not configured, these text tasks use the Qwen text model through DashScope instead, and no data is sent to DeepSeek.
-- **Plainly put**: storage is fully local, but during inference the screenshots and derived text do reach the model providers (Alibaba Cloud / DeepSeek) and are subject to their data policies. Users who mind this layer can take the next route.
+- DeepSeek receives only the text needed for extraction, entity resolution, or grounded insights, such as `source_quote`, `facts`, `quotes`, `events`, and minimum profile or observation context. When DeepSeek is not configured, these text tasks use the Qwen text model through DashScope instead, and no data is sent to DeepSeek.
+- **Plainly put**: storage is local, but during inference OCR-derived or pasted text reaches the configured text provider. Raw screenshots reach Alibaba Cloud only on visual fallback, forced cloud vision, or server-mode visual perception. Provider data policies apply.
 - **Fully-local route (already supported by the architecture, env vars only)**: both providers speak the OpenAI-compatible API, so they can point at a local inference service (e.g. Ollama / vLLM) — set `DASHSCOPE_BASE_URL` / `DEEPSEEK_BASE_URL` to a local endpoint and switch `QWEN_MODEL` / `DEEPSEEK_MODEL` to local models (open-weight Qwen-VL works for vision). Data then never leaves the machine. Expect lower extraction/insight quality from small local models; evaluate for your own use.
 - The current deployment is single-user and has no app-layer authentication yet.
-- The practical access boundary today is the local network or Tailscale exposure chosen by the owner.
+- The practical access boundary today is the local network or Tailscale exposure chosen by the deployer.
 - Future multi-user support and authentication are still pending work.
 
 ## Known Limitations
 
-- Vision extraction can occasionally misread text. In owner testing, the same screenshot produced the company name once as `Chengyao Lab` and once as the OCR variant `Qianyao Lab`, so confirmation cards should still be used to manually verify important fields.
-- Re-uploading the same screenshot currently accumulates duplicate observations and meetings. In owner testing, uploading the same image three times produced 22 observations for one contact and two identical meetings on the schedule. The system does not deduplicate those repeats yet.
+- On-device OCR can still misread characters, so important fields should be checked on the confirmation cards.
+- Item duplicate detection is deliberately conservative and may miss matches. Whole-screenshot deduplication is not implemented, so repeated uploads may still duplicate observations.
 
 ## Distribution Modes
 
@@ -182,7 +174,7 @@ One package offers (1) **BYOK local mode**, where users enter their own model ke
 ## Future Work
 
 - iOS native distribution: when the target region's App Store does not offer Expo Go, native iOS distribution needs an Apple Developer account plus EAS and TestFlight.
-- Duplicate screenshot detection and merge.
+- Whole-screenshot duplicate detection and merge.
 - Insight retry endpoint.
 - Scheduled proactive insight delivery.
 - System calendar integration.

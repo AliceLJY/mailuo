@@ -200,7 +200,7 @@ export default function UploadScreen() {
 
     if (progress.status === "processing") {
       markBatchItemProcessing(progress.index);
-      setLoadingText(`正在处理第 ${progress.position}/${progress.totalCount} 张…`);
+      setLoadingText(`正在读取并整理第 ${progress.position}/${progress.totalCount} 张…`);
       loadingTimerRef.current = setTimeout(() => {
         if (
           !canCommitSubmitResult(mountedRef, submitTokenRef, submitToken) ||
@@ -208,7 +208,7 @@ export default function UploadScreen() {
         ) {
           return;
         }
-        setLoadingText(`AI 正在整理第 ${progress.position}/${progress.totalCount} 张…`);
+        setLoadingText(`第 ${progress.position}/${progress.totalCount} 张仍在读取和整理，请稍候…`);
       }, 2000);
       return;
     }
@@ -505,7 +505,7 @@ export default function UploadScreen() {
     <View style={styles.footerContent}>
       {assets.length > 0 || displayResult ? (
         <Text style={styles.costText}>
-          共 {displayResult?.totalCount ?? assets.length} 张；每张需要一次模型调用，将按选择顺序逐张处理。
+          共 {displayResult?.totalCount ?? assets.length} 张；将按选择顺序逐张读取并整理。
         </Text>
       ) : completedTextItem ? (
         <Text style={styles.costText}>粘贴文本已整理完成，可以继续确认生成的卡片。</Text>
