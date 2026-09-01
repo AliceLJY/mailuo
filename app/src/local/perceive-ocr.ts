@@ -7,7 +7,17 @@ export const OCR_MESSAGE_MERGE_DX = 60;
 export const OCR_LOW_CONFIDENCE_LINE_THRESHOLD = 0.5;
 export const OCR_LOW_CONFIDENCE_RATIO_THRESHOLD = 0.6;
 
-const WECHAT_TIME = /^(昨天\s*)?\d{1,2}[:：]\d{2}$/;
+const WECHAT_ABSOLUTE_TIME = /^(?:\d{4}\s*年\s*)?(?:1[0-2]|0?[1-9])\s*月\s*(?:3[01]|[12]\d|0?[1-9])\s*(?:日|号)(?:\s*[（(]?(?:周|星期)[一二三四五六日天][）)]?)?\s*(?:凌晨|早上|上午|中午|下午|傍晚|晚上)?\s*(?:[01]?\d|2[0-3])[:：][0-5]\d$/;
+const WECHAT_TIME = /^(?:(?:昨天\s*|(?:(?:今天|前天)|(?:(?:上|本|这|下)?(?:周|星期)[一二三四五六日天]))\s+))?\d{1,2}[:：]\d{2}$/;
+
+function isWechatTimeLine(text: string): boolean {
+  const normalized = text.trim();
+  return WECHAT_ABSOLUTE_TIME.test(normalized) || WECHAT_TIME.test(normalized);
+}
+
+function absoluteTimeAnchor(text: string): "absolute-date" | undefined {
+  return WECHAT_ABSOLUTE_TIME.test(text.trim()) ? "absolute-date" : undefined;
+}
 
 export type OcrSide = "me" | "them" | null;
 
@@ -62,6 +72,7 @@ export type RegionSampler = (
 export type PerceivedOcrLine = {
   text: string;
   side: OcrSide;
+  timeAnchor?: "absolute-date";
   x: number;
   y: number;
   width: number;
@@ -148,9 +159,11 @@ function collectRecognizedLinesWithWarnings(result: OcrRecognitionResult): {
       if (!frame) {
         hasMissingGeometry = true;
         warnings.push(`第 ${recognizedLineNumber} 个 OCR 文本行缺少有效坐标，已保留文字但无法判断发言人`);
+        const timeAnchor = absoluteTimeAnchor(line.text);
         lines.push({
           text: line.text,
           side: null,
+          ...(timeAnchor ? { timeAnchor } : {}),
           x: 0,
           y: 0,
           width: 0,
@@ -160,9 +173,11 @@ function collectRecognizedLinesWithWarnings(result: OcrRecognitionResult): {
         continue;
       }
 
+      const timeAnchor = absoluteTimeAnchor(line.text);
       lines.push({
         text: line.text,
         side: null,
+        ...(timeAnchor ? { timeAnchor } : {}),
         x: frame.left,
         y: frame.top,
         width: frame.width,
@@ -272,7 +287,7 @@ function groupAlignedLines(
       const line = lines[lineIndex];
       return (
         hasUsableGeometry(line) &&
-        !WECHAT_TIME.test(line.text.trim()) &&
+        !isWechatTimeLine(line.text) &&
         (isLeftAligned(line, peaks) || isRightAligned(line, peaks))
       );
     })

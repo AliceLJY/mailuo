@@ -29,6 +29,7 @@ const confidenceLabel: Record<ActionCardRecord["confidence"], string> = {
 };
 
 const fieldLabel: Record<string, string> = {
+  aliases: "追加别名",
   company: "公司",
   title: "职位",
   phone: "电话",
@@ -111,7 +112,9 @@ function summarizeCard(card: ActionCardRecord) {
 
   if (card.type === "update_contact") {
     const fields = Object.entries(card.payload.changes)
-      .map(([field, value]) => `${fieldLabel[field] ?? field}：${value.old ?? "未填写"} → ${value.new}`)
+      .map(([field, value]) => field === "aliases"
+        ? `${fieldLabel[field]}：已有 ${value.old ?? "无"}；追加 ${value.new}`
+        : `${fieldLabel[field] ?? field}：${value.old ?? "未填写"} → ${value.new}`)
       .join("；");
     return `${card.payload.contact_name}：${fields}`;
   }

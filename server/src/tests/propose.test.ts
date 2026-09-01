@@ -241,6 +241,55 @@ test('proposeCards creates update_contact, meeting contact ids, and one interact
   });
 });
 
+test('proposeCards proposes an alias-only confirmed update after an LLM same_as resolution', () => {
+  const extraction: PerceptionResult = {
+    participants: [{
+      name: '王总',
+      aliases: ['王磊'],
+      is_self: false,
+      confidence: 'high',
+      source_quote: '@王磊 王总，方案已经发你',
+    }],
+    events: [],
+    facts: [],
+    quotes: [],
+  };
+  const contacts: ResolvableContact[] = [{
+    id: 1,
+    canonical_name: '王磊',
+    aliases: [],
+  }];
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '王总',
+    normalized_name: '王总',
+    status: 'same_as',
+    contact_id: 1,
+    source: 'llm',
+  }];
+
+  assert.deepEqual(proposeCards(extraction, resolutions, contacts), [{
+    type: 'update_contact',
+    payload: {
+      contact_id: 1,
+      contact_name: '王磊',
+      changes: {
+        aliases: { old: null, new: '王总' },
+      },
+    },
+    confidence: 'high',
+    source_quote: '@王磊 王总，方案已经发你',
+  }, {
+    type: 'record_interaction',
+    payload: {
+      contact_id: 1,
+      contact_name: '王磊',
+      summary: '@王磊 王总，方案已经发你；别名 王磊',
+    },
+    confidence: 'high',
+    source_quote: '@王磊 王总，方案已经发你',
+  }]);
+});
+
 test('proposeCards prefers participant interaction_summary for interaction payloads and keeps source_quote grounded in raw evidence', () => {
   const extraction: PerceptionResult = {
     participants: [
@@ -487,6 +536,39 @@ test('proposeCards preserves model time_iso when legacy time_text is blank', () 
       source_quote: '明晚继续聊',
     },
   ]);
+});
+
+test('proposeCards preserves a model time_iso resolved from an absolute timestamp anchor', () => {
+  const extraction: PerceptionResult = {
+    participants: [],
+    events: [{
+      kind: 'meeting',
+      title: '方案评审',
+      time_text: '今天下午14:30',
+      time_iso: '2026-08-12T14:30:00+08:00',
+      has_time_signal: true,
+      participant_names: [],
+      confidence: 'high',
+      source_quote: '今天下午14:30开方案评审',
+    }],
+    facts: [],
+    quotes: [],
+  };
+
+  const cards = proposeCards(
+    extraction,
+    [],
+    [],
+    new Date('2026-09-01T08:00:00+08:00'),
+  );
+
+  assert.equal(cards.length, 1);
+  const card = cards[0];
+  assert.equal(card?.type, 'create_meeting');
+  if (card?.type !== 'create_meeting') {
+    throw new Error('expected create_meeting card');
+  }
+  assert.equal(card.payload.time_iso, '2026-08-12T14:30:00+08:00');
 });
 
 test('proposeCards preserves model time_iso when no absolute month/day is present', () => {

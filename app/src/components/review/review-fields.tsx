@@ -27,6 +27,7 @@ function splitList(value: string) {
 }
 
 const CHANGE_LABELS = {
+  aliases: "追加别名",
   company: "公司",
   title: "职位",
   phone: "电话",
@@ -91,10 +92,12 @@ export function UpdateFields({
       {Object.entries(payload.changes).map(([field, change]) => (
         <View key={field} style={styles.block}>
           <Text style={styles.fieldLabel}>{CHANGE_LABELS[field as keyof typeof CHANGE_LABELS] ?? field}</Text>
-          <Text style={styles.metaText}>当前记录：{change.old || "未填写"}</Text>
+          <Text style={styles.metaText}>
+            {field === "aliases" ? "已有别名" : "当前记录"}：{change.old || "未填写"}
+          </Text>
           <FieldInput
             editable={editable}
-            label="确认后的内容"
+            label={field === "aliases" ? "确认追加的别名" : "确认后的内容"}
             value={change.new}
             onChangeText={(value) =>
               setPayload({

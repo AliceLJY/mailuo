@@ -854,8 +854,22 @@ function normalizeOptionalText(value: string | null | undefined): string | undef
 function buildContactChanges(
   contact: ResolvableContact,
   payload: CreateContactPayload,
+  aliasCandidates: string[],
 ): UpdateContactPayload['changes'] {
   const changes: UpdateContactPayload['changes'] = {};
+  const knownNames = new Set(
+    [contact.canonical_name, ...contact.aliases].map(normalizeComparableText),
+  );
+  const aliasAdditions = dedupeStrings(aliasCandidates).filter(
+    (alias) => !knownNames.has(normalizeComparableText(alias)),
+  );
+
+  if (aliasAdditions.length > 0) {
+    changes.aliases = {
+      old: contact.aliases.length > 0 ? contact.aliases.join('，') : null,
+      new: aliasAdditions.join('，'),
+    };
+  }
 
   for (const field of trackedContactFields) {
     const nextValue = normalizeOptionalText(payload[field]);
@@ -1105,7 +1119,11 @@ export function proposeCards(
         throw new Error(`Missing contact ${resolution.contact_id} for same_as resolution`);
       }
 
-      const changes = buildContactChanges(contact, draft.payload);
+      const changes = buildContactChanges(
+        contact,
+        draft.payload,
+        [participant.name, ...(participant.aliases ?? [])],
+      );
 
       if (Object.keys(changes).length === 0) {
         continue;

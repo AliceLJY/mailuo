@@ -1883,3 +1883,65 @@ test("medium meeting progress keeps the interaction card and confirmation persis
   assert.equal(text.calls, 1);
   assert.equal(store.listMeetingCalls, 1);
 });
+
+test("confirmed same_as alias makes the next batch exact without calling the LLM provider", async () => {
+  const store = new FakeLocalStore();
+  const contact = store.createContact({ canonicalName: "王磊" });
+  const extraction = {
+    participants: [{
+      name: "王总",
+      is_self: false,
+      confidence: "high" as const,
+      source_quote: "王总，方案已经发你",
+    }],
+    events: [],
+    facts: [],
+    quotes: [],
+  } satisfies PerceptionResult;
+  const text = new FakeStructuredOutputProvider(() => ({
+    decision: "same_as",
+    contact_id: contact.id,
+  }));
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async () => {
+      throw new Error("image loading is not used for text uploads");
+    },
+    providers: {
+      async createQwenProvider() {
+        throw new Error("Qwen is not used for text uploads");
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    async perceiveOcrText() {
+      return extraction;
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  const firstUpload = await api.uploadText({ text: "王总，方案已经发你" });
+  assert.equal(text.calls, 1);
+  assert.equal(text.completeCalls, 0);
+  assert.deepEqual(firstUpload.cards.map((card) => card.type), [
+    "update_contact",
+    "record_interaction",
+  ]);
+  const aliasCard = firstUpload.cards.find((card) => card.type === "update_contact");
+  if (!aliasCard || aliasCard.type !== "update_contact") {
+    throw new Error("expected update_contact card");
+  }
+  assert.deepEqual(aliasCard.payload.changes.aliases, { old: null, new: "王总" });
+
+  await api.confirmCard(aliasCard.id);
+  assert.deepEqual(store.getContactById(contact.id)?.aliases, ["王总"]);
+
+  text.calls = 0;
+  const secondUpload = await api.uploadText({ text: "王总，方案已经发你" });
+
+  assert.equal(text.calls, 0);
+  assert.equal(text.completeCalls, 0);
+  assert.deepEqual(secondUpload.cards.map((card) => card.type), ["record_interaction"]);
+});

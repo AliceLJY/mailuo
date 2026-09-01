@@ -258,15 +258,21 @@ test("bubble grouping keeps Tenglu's strict dy and dx boundaries", async () => {
   assert.deepEqual(dx60.lines.slice(1, 3).map((line) => line.side), ["them", "me"]);
 });
 
-test("Wechat time rows stay in raw output without joining a message bubble", async () => {
+test("Wechat timestamp rows stay side-null, only absolute dates become anchors, and none are sampled", async () => {
   let samplerCalls = 0;
   const result = await perceiveScreenshotWithOcr({
     uri: "file:///screenshot.png",
     async recognize() {
       return recognizedResult([
         { text: "左侧消息", left: 134, top: 100, width: 100 },
-        { text: "昨天 09：31", left: 134, top: 145, width: 451 },
-        { text: "右侧消息", left: 485, top: 300, width: 100 },
+        { text: "8月12日 09:30", left: 134, top: 145, width: 451 },
+        { text: "2026年8月12日 09:30", left: 134, top: 190, width: 451 },
+        { text: "昨天 09:30", left: 134, top: 235, width: 451 },
+        { text: "昨天09:31", left: 134, top: 280, width: 451 },
+        { text: "星期二 09:30", left: 134, top: 325, width: 451 },
+        { text: "24:00", left: 134, top: 370, width: 451 },
+        { text: "09:60", left: 134, top: 415, width: 451 },
+        { text: "右侧消息", left: 485, top: 535, width: 100 },
       ]);
     },
     async sampleRegions() {
@@ -275,8 +281,57 @@ test("Wechat time rows stay in raw output without joining a message bubble", asy
     },
   });
 
-  assert.deepEqual(result.lines.map((line) => line.side), ["them", null, "me"]);
+  assert.deepEqual(
+    result.lines.map((line) => [line.text, line.side, line.timeAnchor ?? null]),
+    [
+      ["左侧消息", "them", null],
+      ["8月12日 09:30", null, "absolute-date"],
+      ["2026年8月12日 09:30", null, "absolute-date"],
+      ["昨天 09:30", null, null],
+      ["昨天09:31", null, null],
+      ["星期二 09:30", null, null],
+      ["24:00", null, null],
+      ["09:60", null, null],
+      ["右侧消息", "me", null],
+    ],
+  );
+  assert.equal(Object.hasOwn(result.lines[3], "timeAnchor"), false);
+  assert.equal(Object.hasOwn(result.lines[4], "timeAnchor"), false);
+  assert.equal(Object.hasOwn(result.lines[5], "timeAnchor"), false);
+  assert.equal(Object.hasOwn(result.lines[6], "timeAnchor"), false);
+  assert.equal(Object.hasOwn(result.lines[7], "timeAnchor"), false);
   assert.equal(samplerCalls, 0);
+});
+
+test("relative date wording attached to a clock stays in a message bubble and is sampled", async () => {
+  const requestsSeen: RegionSampleRequest[][] = [];
+  const result = await perceiveScreenshotWithOcr({
+    uri: "file:///screenshot.png",
+    async recognize() {
+      return recognizedResult([
+        { text: "左侧消息", left: 134, top: 100, width: 100 },
+        { text: "今天下午14:30", left: 134, top: 200, width: 451 },
+        { text: "右侧消息", left: 485, top: 300, width: 100 },
+      ]);
+    },
+    async sampleRegions(requests) {
+      requestsSeen.push(requests);
+      return { samples: [{ id: requests[0].id, side: "me" }] };
+    },
+  });
+
+  assert.deepEqual(requestsSeen, [[{
+    id: "bubble-1",
+    frameIndex: 0,
+    uri: "file:///screenshot.png",
+    x: 134,
+    y: 200,
+    width: 451,
+    height: 30,
+  }]]);
+  assert.equal(result.lines[1].text, "今天下午14:30");
+  assert.equal(result.lines[1].side, "me");
+  assert.equal(Object.hasOwn(result.lines[1], "timeAnchor"), false);
 });
 
 test("an unresolved pixel sample leaves side null and marks the result degraded", async () => {

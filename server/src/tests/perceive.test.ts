@@ -20,6 +20,15 @@ function extractTimeRules(prompt: string): string {
   return match[0];
 }
 
+function extractAliasRules(prompt: string): string {
+  const match = prompt.match(
+    /Participant alias rules:[\s\S]+?(?=\n(?:In a chat screenshot|Each input line is marked))/u,
+  );
+
+  assert.ok(match);
+  return match[0];
+}
+
 test('PerceptionParticipantSchema requires explicit is_self', () => {
   const result = PerceptionParticipantSchema.safeParse({
     name: '我',
@@ -114,7 +123,7 @@ test('PerceptionEventSchema requires explicit has_time_signal', () => {
   assert.equal(result.error.issues[0]?.path.join('.'), 'has_time_signal');
 });
 
-test('visual and text perception prompts share the no-inference time rules', () => {
+test('visual and text perception prompts share the timestamp-anchor time rules', () => {
   const now = new Date('2026-12-27T10:15:30+08:00');
   const prompt = buildPerceptionSystemPrompt(now);
   const textPrompt = buildPerceptionTextSystemPrompt(now);
@@ -127,7 +136,18 @@ test('visual and text perception prompts share the no-inference time rules', () 
   assert.match(prompt, /An absolute date takes priority over relative words/u);
   assert.match(prompt, /absolute date has no explicit clock time.+time_iso=null/u);
   assert.match(prompt, /omit the year, use 2026/u);
-  assert.match(prompt, /contains only a relative date.+set time_iso=null/u);
+  assert.match(
+    prompt,
+    /Timestamp-anchor exception:.+nearest preceding WeChat timestamp separator explicitly contains an absolute month and day/u,
+  );
+  assert.match(
+    prompt,
+    /timestamp "8月12日 09:30" followed by "今天下午14:30" becomes 2026-08-12T14:30:00\+08:00/u,
+  );
+  assert.match(
+    prompt,
+    /If no timestamp separator is present, or the separator itself is relative such as "昨天 09:30" or "星期二 09:30", set relative-only time_iso=null/u,
+  );
   assert.match(prompt, /Preserve time_text and set has_time_signal=true/u);
   assert.doesNotMatch(prompt, /Resolve every relative date in time_iso/u);
   assert.match(prompt, /A one-sided delivery promise or task commitment such as "明天把方案发你" is not a meeting/);
@@ -164,6 +184,22 @@ test('visual and text perception prompts share the no-inference time rules', () 
   assert.match(
     prompt,
     /Keep source_quote verbatim from the screenshot\. The summarization rule applies only to those freeform descriptive fields, not to source_quote\./,
+  );
+});
+
+test('visual and text perception prompts share the evidence-gated participant alias rules', () => {
+  const now = new Date('2026-12-27T10:15:30+08:00');
+  const visualRules = extractAliasRules(buildPerceptionSystemPrompt(now));
+  const textRules = extractAliasRules(buildPerceptionTextSystemPrompt(now));
+
+  assert.equal(visualRules, textRules);
+  assert.match(
+    visualRules,
+    /only when the supplied screenshot evidence explicitly links those names to the same person within that same input/u,
+  );
+  assert.match(
+    visualRules,
+    /A shared surname, title, @mention, or similar-looking name is not enough by itself/u,
   );
 });
 

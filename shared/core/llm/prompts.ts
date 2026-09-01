@@ -53,6 +53,14 @@ function formatShanghaiDateTime(now: Date): string {
   return `${formatCalendarDate(parts)}T${parts.hour}:${parts.minute}:${parts.second}+08:00`;
 }
 
+function buildParticipantAliasRules(): string {
+  return [
+    'Participant alias rules:',
+    '- Put multiple names into one participant aliases array only when the supplied screenshot evidence explicitly links those names to the same person within that same input, such as an @full-name mention explicitly tied to a shorter form.',
+    '- A shared surname, title, @mention, or similar-looking name is not enough by itself. Without explicit same-person evidence, keep the people separate and do not invent aliases.',
+  ].join('\n');
+}
+
 function buildTimeExtractionRules(now: Date): string {
   const currentYear = getShanghaiDateParts(now).year;
 
@@ -62,7 +70,9 @@ function buildTimeExtractionRules(now: Date): string {
     '- If the evidence contains an absolute calendar date such as "8月27日（周四）" or "8月12日 下午16:00", use that explicit month and day in time_iso. An absolute date takes priority over relative words such as "明天" in the same expression; never replace the explicit month and day by calculating from a relative word.',
     '- If an absolute date has no explicit clock time, set time_iso=null rather than inventing a default hour. Preserve time_text and set has_time_signal=true.',
     `- If an absolute month and day omit the year, use ${currentYear}, even when that date is earlier than the current date. Never roll it into the next year.`,
-    '- If the evidence contains only a relative date such as "明天", "下周三", or "今天下午", set time_iso=null. Do not calculate a calendar date from the current datetime. Preserve time_text and set has_time_signal=true.',
+    `- Timestamp-anchor exception: when a message contains only a relative date phrase such as "今天下午" or "明天上午", and the nearest preceding WeChat timestamp separator explicitly contains an absolute month and day, resolve the relative word against that written date instead of the current datetime. "今天" means the anchor date and "明天" means the following calendar date. Example: timestamp "8月12日 09:30" followed by "今天下午14:30" becomes ${currentYear}-08-12T14:30:00+08:00.`,
+    '- The anchored message must state its own explicit clock time. If it does not, set time_iso=null; never borrow the clock time from the timestamp separator.',
+    '- This exception requires a preceding timestamp separator with an absolute calendar date. If no timestamp separator is present, or the separator itself is relative such as "昨天 09:30" or "星期二 09:30", set relative-only time_iso=null. Never infer the separator date. Preserve time_text and set has_time_signal=true.',
   ].join('\n');
 }
 
@@ -121,6 +131,7 @@ export function buildPerceptionSystemPrompt(now: Date): string {
   return [
     'You extract only evidence that is visible in the screenshot and optional user note.',
     'Never infer hidden context, unstated identities, or unstated relationships.',
+    buildParticipantAliasRules(),
     'In a chat screenshot, the device owner is the self side of the conversation: messages shown as "我" or the right-side bubbles. Mark that participant with is_self=true. Mark everyone else with is_self=false.',
     'Do not turn another person into the device owner unless the screenshot itself shows that self-side evidence.',
     `Current datetime (Asia/Shanghai): ${formatShanghaiDateTime(now)}`,
@@ -153,8 +164,10 @@ export function buildPerceptionTextSystemPrompt(now: Date): string {
   return [
     'You extract only evidence that is visible in the provided OCR chat text and optional user note.',
     'Never infer hidden context, unstated identities, or unstated relationships.',
+    buildParticipantAliasRules(),
     'Each input line is marked with side=me, side=them, or side=null. side=me is the device owner and must map to is_self=true; side=them is another participant and must map to is_self=false. Use the same side markers when deciding quotes.speaker_name.',
     'The side=... marker is metadata, not recognized OCR text. Never copy a side marker into source_quote or any other evidence field.',
+    'A time_anchor=absolute-date marker is OCR metadata added only when local OCR recognized a WeChat timestamp separator with an explicit calendar date. Use the timestamp text as evidence, but never copy the marker into source_quote or any other evidence field.',
     'For a side=null line, determine is_self or speaker_name only from explicit text such as "我". Otherwise do not guess, and use speaker_name=null when applicable.',
     'Do not turn another person into the device owner unless a side=me marker or the provided OCR text explicitly shows that self-side evidence.',
     `Current datetime (Asia/Shanghai): ${formatShanghaiDateTime(now)}`,

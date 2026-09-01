@@ -32,6 +32,7 @@ export const CONTACT_EDITABLE_FIELDS = [
   "wechat_id",
   "notes",
 ] as const;
+const CONTACT_UPDATE_CHANGE_FIELDS = ["aliases", ...CONTACT_EDITABLE_FIELDS] as const;
 
 export type ContactEditableField = (typeof CONTACT_EDITABLE_FIELDS)[number];
 export type ContactFieldUpdates = Partial<Record<ContactEditableField, string | null>>;
@@ -255,6 +256,10 @@ function dedupeStrings(values: Array<string | null | undefined>): string[] {
   return deduped;
 }
 
+function parseAliasChange(value: string): string[] {
+  return dedupeStrings(value.split(/[,\n，、]/u));
+}
+
 function normalizeLookupValue(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
@@ -328,8 +333,20 @@ function sanitizeUpdateContactPayload(payload: UpdateContactPayload): UpdateCont
   const changes: UpdateContactPayload["changes"] = {};
 
   for (const [field, change] of Object.entries(payload.changes)) {
-    if (!CONTACT_EDITABLE_FIELDS.includes(field as ContactEditableField)) {
+    if (!CONTACT_UPDATE_CHANGE_FIELDS.includes(field as (typeof CONTACT_UPDATE_CHANGE_FIELDS)[number])) {
       throw new ExecuteValidationError(`update_contact does not allow field "${field}"`);
+    }
+
+    if (field === "aliases") {
+      const aliasAdditions = parseAliasChange(change.new);
+      assertNoSelfContactNames(aliasAdditions);
+      if (aliasAdditions.length > 0) {
+        changes.aliases = {
+          old: normalizeOptionalString(change.old),
+          new: aliasAdditions.join("，"),
+        };
+      }
+      continue;
     }
 
     changes[field] = {
@@ -957,22 +974,36 @@ export function executeCard({ db, cardId, payload, resolvedContactId }: ExecuteC
           throw new ExecuteValidationError('update_contact cannot target the self contact "我"');
         }
 
+        const aliasAdditions = typedPayload.changes.aliases
+          ? parseAliasChange(typedPayload.changes.aliases.new)
+          : [];
         const relatedParticipants = collectRelatedParticipants(extraction, [
           typedPayload.contact_name,
           existingContact.canonical_name,
           ...existingContact.aliases,
+          ...aliasAdditions,
         ]);
+        const contactWithAliases = aliasAdditions.length > 0
+          ? db.appendContactAliases(existingContact.id, aliasAdditions, executedAt)
+          : existingContact;
+
+        if (!contactWithAliases) {
+          throw new ExecuteDependencyError(`Contact ${typedPayload.contact_id} does not exist`);
+        }
+
         const updatePlan = buildFieldUpdatePlan(
-          existingContact,
+          contactWithAliases,
           Object.fromEntries(
-            Object.entries(typedPayload.changes).map(([field, change]) => [field, change.new]),
+            Object.entries(typedPayload.changes)
+              .filter(([field]) => field !== "aliases")
+              .map(([field, change]) => [field, change.new]),
           ),
           card.source_quote,
         );
         const updatedContact =
           Object.keys(updatePlan.updates).length > 0
-            ? db.updateContactFields(existingContact.id, updatePlan.updates, executedAt)
-            : existingContact;
+            ? db.updateContactFields(contactWithAliases.id, updatePlan.updates, executedAt)
+            : contactWithAliases;
 
         if (!updatedContact) {
           throw new ExecuteDependencyError(`Contact ${typedPayload.contact_id} does not exist`);
@@ -991,10 +1022,22 @@ export function executeCard({ db, cardId, payload, resolvedContactId }: ExecuteC
           );
         }
 
+        const aliasesChanged = existingContact.aliases.length !== contactWithAliases.aliases.length ||
+          existingContact.aliases.some((alias, index) => alias !== contactWithAliases.aliases[index]);
+        const storedAliasChange: UpdateContactPayload["changes"] = {};
+        if (aliasesChanged) {
+          storedAliasChange.aliases = {
+            old: existingContact.aliases.length > 0 ? existingContact.aliases.join("，") : null,
+            new: aliasAdditions.join("，"),
+          };
+        }
         storedPayload = {
           contact_id: updatedContact.id,
           contact_name: typedPayload.contact_name,
-          changes: updatePlan.storedChanges,
+          changes: {
+            ...storedAliasChange,
+            ...updatePlan.storedChanges,
+          },
         };
         cardResolvedContactId = updatedContact.id;
         affectedContactIds = [updatedContact.id];
