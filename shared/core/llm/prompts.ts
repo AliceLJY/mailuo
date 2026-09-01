@@ -61,6 +61,15 @@ function buildParticipantAliasRules(): string {
   ].join('\n');
 }
 
+function buildGeneratedContentRules(): string {
+  return [
+    'Generated natural-language and item-detail rules:',
+    '- For every model-generated natural-language field—event.title, event.agenda, participant.interaction_summary, participant.notes, and facts.value when it summarizes source evidence—use the language of the source message text visible in the screenshot or present in the provided OCR chat text, not the language of these instructions, OCR metadata, or the optional user note. Chinese source message text must produce Chinese, English source message text must produce English, and mixed-language source message text must use its dominant language. Keep source_quote verbatim.',
+    '- For each kind="other" event, put into its agenda every explicit requirement, checklist item, operating instruction, deadline, and submission method that pertains to that event and is explicitly stated in its relevant source message; agenda may list them on separate lines. Use title for a concise summary and agenda for the full details. Never output only the summary title when any of those details are present.',
+    '- Include only details explicitly stated in the relevant source message. Do not add guesses; leave agenda unset when no explicit details belong to the event.',
+  ].join('\n');
+}
+
 function buildTimeExtractionRules(now: Date): string {
   const currentYear = getShanghaiDateParts(now).year;
 
@@ -139,6 +148,7 @@ export function buildPerceptionSystemPrompt(now: Date): string {
     'A meeting or appointment must be a mutually agreed time when both sides will meet, attend together, or talk on a call together.',
     'A one-sided delivery promise or task commitment such as "明天把方案发你" is not a meeting, even when it has a clear date or time. Extract it as kind="other".',
     'Explicit tasks, requirements, material checklists, and file-format instructions are kind="other" events, even when they have no time or participants. Use a concise evidence-only title and participant_names=[] when no person is explicitly tied to the item.',
+    buildGeneratedContentRules(),
     'If an event contains no time wording, use time_text="", time_iso=null, and has_time_signal=false. Do not omit the event.',
     'For event titles, stay as close as possible to the original wording and meaning. Do not invent an agenda like "讨论合作" unless the screenshot explicitly says it.',
     'Set has_time_signal=true only when the screenshot contains a concrete scheduling signal such as a date, weekday, clock time, or time period like "周二", "下周三下午", or "明晚". Set has_time_signal=false for vague phrases like "改天", "回头", or "等你方便".',
@@ -175,6 +185,7 @@ export function buildPerceptionTextSystemPrompt(now: Date): string {
     'A meeting or appointment must be a mutually agreed time when both sides will meet, attend together, or talk on a call together.',
     'A one-sided delivery promise or task commitment such as "明天把方案发你" is not a meeting, even when it has a clear date or time. Extract it as kind="other".',
     'Explicit tasks, requirements, material checklists, and file-format instructions are kind="other" events, even when they have no time or participants. Use a concise evidence-only title and participant_names=[] when no person is explicitly tied to the item.',
+    buildGeneratedContentRules(),
     'If an event contains no time wording, use time_text="", time_iso=null, and has_time_signal=false. Do not omit the event.',
     'For event titles, stay as close as possible to the original wording and meaning. Do not invent an agenda like "讨论合作" unless the provided OCR text explicitly says it.',
     'Set has_time_signal=true only when the provided OCR text contains a concrete scheduling signal such as a date, weekday, clock time, or time period like "周二", "下周三下午", or "明晚". Set has_time_signal=false for vague phrases like "改天", "回头", or "等你方便".',

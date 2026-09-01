@@ -77,15 +77,39 @@ function extractAliasRules(prompt: string) {
   return match[0];
 }
 
-test("M4 Goals 4-5 visual and text system prompts match the fixed after snapshot", () => {
-  const snapshot = JSON.parse(readFileSync(
-    new URL("../../../docs/perception-baseline/perception-prompts.after-m4-goals4-5.json", import.meta.url),
+function extractGeneratedContentRules(prompt: string) {
+  const match = prompt.match(
+    /Generated natural-language and item-detail rules:[\s\S]+?(?=\nIf an event contains no time wording)/u,
+  );
+
+  assert.ok(match);
+  return match[0];
+}
+
+const EXPECTED_GENERATED_CONTENT_RULES = [
+  "Generated natural-language and item-detail rules:",
+  "- For every model-generated natural-language field—event.title, event.agenda, participant.interaction_summary, participant.notes, and facts.value when it summarizes source evidence—use the language of the source message text visible in the screenshot or present in the provided OCR chat text, not the language of these instructions, OCR metadata, or the optional user note. Chinese source message text must produce Chinese, English source message text must produce English, and mixed-language source message text must use its dominant language. Keep source_quote verbatim.",
+  "- For each kind=\"other\" event, put into its agenda every explicit requirement, checklist item, operating instruction, deadline, and submission method that pertains to that event and is explicitly stated in its relevant source message; agenda may list them on separate lines. Use title for a concise summary and agenda for the full details. Never output only the summary title when any of those details are present.",
+  "- Include only details explicitly stated in the relevant source message. Do not add guesses; leave agenda unset when no explicit details belong to the event.",
+].join("\n");
+
+type PerceptionPromptSnapshot = {
+  sourceRevision: string;
+  snapshotPhase: string;
+  baselineNow: string;
+  buildPerceptionSystemPrompt: string;
+  buildPerceptionTextSystemPrompt: string;
+};
+
+function readPerceptionPromptSnapshot(fileName: string): PerceptionPromptSnapshot {
+  return JSON.parse(readFileSync(
+    new URL(`../../../docs/perception-baseline/${fileName}`, import.meta.url),
     "utf8",
-  )) as {
-    baselineNow: string;
-    buildPerceptionSystemPrompt: string;
-    buildPerceptionTextSystemPrompt: string;
-  };
+  )) as PerceptionPromptSnapshot;
+}
+
+test("v3-M4-fix visual and text system prompts match the fixed after snapshot", () => {
+  const snapshot = readPerceptionPromptSnapshot("perception-prompts.after-v3-m4-fix.json");
   const now = new Date(snapshot.baselineNow);
 
   assert.equal(
@@ -96,6 +120,36 @@ test("M4 Goals 4-5 visual and text system prompts match the fixed after snapshot
     buildPerceptionTextSystemPrompt(now),
     snapshot.buildPerceptionTextSystemPrompt,
   );
+});
+
+test("v3-M4-fix prompt snapshots differ only by the intended shared rules", () => {
+  const before = readPerceptionPromptSnapshot("perception-prompts.before-v3-m4-fix.json");
+  const after = readPerceptionPromptSnapshot("perception-prompts.after-v3-m4-fix.json");
+  const ruleBlockWithTrailingNewline = `${EXPECTED_GENERATED_CONTENT_RULES}\n`;
+  const promptKeys = [
+    "buildPerceptionSystemPrompt",
+    "buildPerceptionTextSystemPrompt",
+  ] as const;
+
+  assert.equal(before.sourceRevision, after.sourceRevision);
+  assert.equal(before.baselineNow, after.baselineNow);
+  for (const promptKey of promptKeys) {
+    assert.doesNotMatch(before[promptKey], /Generated natural-language and item-detail rules:/u);
+    assert.equal(after[promptKey].split(ruleBlockWithTrailingNewline).length, 2);
+    assert.equal(
+      after[promptKey].replace(ruleBlockWithTrailingNewline, ""),
+      before[promptKey],
+    );
+  }
+});
+
+test("visual and text prompts share the exact output-language and other-event agenda rules", () => {
+  const now = new Date("2026-08-29T08:00:00+08:00");
+  const visualRules = extractGeneratedContentRules(buildPerceptionSystemPrompt(now));
+  const textRules = extractGeneratedContentRules(buildPerceptionTextSystemPrompt(now));
+
+  assert.equal(visualRules, textRules);
+  assert.equal(visualRules, EXPECTED_GENERATED_CONTENT_RULES);
 });
 
 test("visual and text prompts share the exact timestamp-anchor time rules", () => {
