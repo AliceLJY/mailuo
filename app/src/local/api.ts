@@ -77,8 +77,8 @@ function notFound(entity: string, id: number): Error {
 
 function formatOcrRuntimeFailureNotice(error: unknown): string {
   if (error instanceof Error) {
-    const stackFirstLine = error.stack?.split(/\r?\n/u, 1)[0] ?? "";
-    return `本地 OCR 未能运行：message=${error.message}；name=${error.name}；stack=${stackFirstLine}`;
+    const stackFirstFourLines = error.stack?.split(/\r?\n/u).slice(0, 4).join("; ") ?? "";
+    return `本地 OCR 未能运行：message=${error.message}；name=${error.name}；stack=${stackFirstFourLines}`;
   }
 
   return `本地 OCR 未能运行：message=${String(error)}；name=${typeof error}；stack=`;
