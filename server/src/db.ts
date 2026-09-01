@@ -15,7 +15,10 @@ import {
   type UpdateContactPayload,
 } from "../../shared/types.ts";
 import type { ExecuteStore } from "../../shared/core/agent/execute.ts";
-import type { InsightGenerationDb } from "../../shared/core/agent/insight.ts";
+import type {
+  InsightGenerationDb,
+  InsightGenerationEntry,
+} from "../../shared/core/agent/insight.ts";
 import { initializeMailuoSchema } from "../../shared/core/migrations.ts";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -1435,6 +1438,83 @@ export class MailuoDb implements InsightGenerationDb, ExecuteStore {
         return inserted;
       }),
     );
+  }
+
+  replaceInsightsForContacts(entries: InsightGenerationEntry[]): InsightRecord[] {
+    if (entries.length === 0) {
+      return [];
+    }
+
+    const contactIds = [...new Set(entries.map((entry, index) => {
+      if (!Number.isSafeInteger(entry.contact_id)) {
+        throw new RangeError(`Insight contact_id at index ${index} is not a safe integer`);
+      }
+
+      return entry.contact_id;
+    }))];
+    const deleteInsights = this.db.prepare("DELETE FROM insights WHERE contact_id = ?");
+    const insertInsight = this.db.prepare(
+      `INSERT INTO insights (
+         contact_id,
+         kind,
+         content,
+         based_on,
+         generated_at
+       ) VALUES (?, ?, ?, ?, ?)`,
+    );
+    const selectInsight = this.db.prepare(
+      `SELECT
+         id,
+         contact_id,
+         kind,
+         content,
+         based_on,
+         generated_at
+       FROM insights
+       WHERE id = ?`,
+    );
+
+    // insertInsights owns its own BEGIN/COMMIT; keep this direct insert path so the
+    // delete and replacement rows share one transaction without a nested BEGIN.
+    return this.withTransaction(() => {
+      for (const contactId of contactIds) {
+        deleteInsights.run(contactId);
+      }
+
+      return entries.map((entry) => {
+        const content = normalizeOptionalString(entry.content);
+
+        if (!content) {
+          throw new TypeError("Insight content must be a non-empty string");
+        }
+
+        const basedOn = entry.based_on.map((value, index) => {
+          if (!Number.isSafeInteger(value)) {
+            throw new RangeError(`Insight basedOn[${index}] is not a safe integer: ${value}`);
+          }
+
+          return value;
+        });
+        const result = insertInsight.run(
+          entry.contact_id,
+          entry.kind,
+          content,
+          JSON.stringify(basedOn),
+          entry.generated_at,
+        );
+        const inserted = this.hydrateInsight(
+          selectInsight.get(
+            this.toSafeInteger(result.lastInsertRowid, "lastInsertRowid"),
+          ) as InsightRow | undefined,
+        );
+
+        if (!inserted) {
+          throw new Error("Failed to load inserted insight");
+        }
+
+        return inserted;
+      });
+    });
   }
 
   private listInsightsByContactId(contactId: number, limit?: number): InsightRecord[] {

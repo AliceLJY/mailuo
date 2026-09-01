@@ -464,6 +464,20 @@ class FakeLocalStore implements LocalStore {
       return insight;
     });
   }
+
+  replaceInsightsForContacts(
+    entries: Parameters<LocalStore["replaceInsightsForContacts"]>[0],
+  ) {
+    const contactIds = new Set(entries.map((entry) => entry.contact_id));
+
+    for (let index = this.insights.length - 1; index >= 0; index -= 1) {
+      if (contactIds.has(this.insights[index]!.contact_id)) {
+        this.insights.splice(index, 1);
+      }
+    }
+
+    return this.insertInsights(entries);
+  }
 }
 
 const fakeKeys: LocalLlmSecretStore = {
@@ -1132,7 +1146,7 @@ test("local orchestration reaches terminal contacts, observations, meetings, and
     new Set(detail.observations.map((item) => item.kind)),
     new Set(["fact", "preference", "interaction"]),
   );
-  assert.equal(detail.insights.length, 3);
+  assert.equal(detail.insights.length, 1);
 
   const meetings = await api.getMeetings();
   assert.equal(meetings.length, 1);

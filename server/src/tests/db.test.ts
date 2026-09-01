@@ -342,3 +342,75 @@ test("deleteScreenshotUploadArtifacts removes only the targeted upload records",
     cleanup();
   }
 });
+
+test("replaceInsightsForContacts replaces selected contacts and rolls back delete plus insert together", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const contactOne = db.createContact({ canonicalName: "王磊" });
+    const contactTwo = db.createContact({ canonicalName: "张敏" });
+
+    db.insertInsights([
+      {
+        contactId: contactOne.id,
+        kind: "relationship_read",
+        content: "王磊的旧洞察",
+        basedOn: [],
+        generatedAt: "2026-08-26T01:00:00.000Z",
+      },
+      {
+        contactId: contactTwo.id,
+        kind: "conversation_hook",
+        content: "张敏的旧洞察",
+        basedOn: [],
+        generatedAt: "2026-08-26T01:00:00.000Z",
+      },
+    ]);
+
+    const replaced = db.replaceInsightsForContacts([
+      {
+        contact_id: contactOne.id,
+        kind: "suggested_action",
+        content: "王磊的新洞察",
+        based_on: [],
+        generated_at: "2026-08-26T02:00:00.000Z",
+      },
+    ]);
+
+    assert.deepEqual(replaced.map((insight) => insight.content), ["王磊的新洞察"]);
+    assert.deepEqual(
+      db.getContactDetail(contactOne.id)?.insights.map((insight) => insight.content),
+      ["王磊的新洞察"],
+    );
+    assert.deepEqual(
+      db.getContactDetail(contactTwo.id)?.insights.map((insight) => insight.content),
+      ["张敏的旧洞察"],
+    );
+
+    assert.throws(
+      () => db.replaceInsightsForContacts([
+        {
+          contact_id: contactOne.id,
+          kind: "relationship_read",
+          content: "不应提交的新洞察",
+          based_on: [],
+          generated_at: "2026-08-26T03:00:00.000Z",
+        },
+        {
+          contact_id: 999999,
+          kind: "relationship_read",
+          content: "不存在联系人的洞察",
+          based_on: [],
+          generated_at: "2026-08-26T03:00:00.000Z",
+        },
+      ]),
+      /FOREIGN KEY/u,
+    );
+    assert.deepEqual(
+      db.getContactDetail(contactOne.id)?.insights.map((insight) => insight.content),
+      ["王磊的新洞察"],
+    );
+  } finally {
+    cleanup();
+  }
+});

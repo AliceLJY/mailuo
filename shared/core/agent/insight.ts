@@ -62,6 +62,7 @@ export type InsightGenerationRecord = InsightGenerationEntry & {
 export type InsightGenerationDb = {
   getInsightContext(contactId: number): InsightContextRecord | null;
   insertInsights(entries: InsightGenerationEntry[]): InsightGenerationRecord[];
+  replaceInsightsForContacts(entries: InsightGenerationEntry[]): InsightGenerationRecord[];
 };
 
 export type GenerateInsightsOptions = {
@@ -261,7 +262,7 @@ export async function generateInsights({
 
   const dedupedDrafts = dedupeInsightEntries(drafts);
   const generated =
-    dedupedDrafts.length > 0 ? db.insertInsights(dedupedDrafts) : [];
+    dedupedDrafts.length > 0 ? db.replaceInsightsForContacts(dedupedDrafts) : [];
 
   return {
     requested_contact_ids: requestedContactIds,

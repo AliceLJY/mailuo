@@ -55,10 +55,17 @@ test('PerceptionParticipantSchema trims non-empty interaction_summary and reject
     confidence: 'high',
     source_quote: '王磊说下周给反馈',
   });
+  const missingResult = PerceptionParticipantSchema.safeParse({
+    name: '王磊',
+    is_self: false,
+    confidence: 'high',
+    source_quote: '王磊说下周给反馈',
+  });
 
   assert.equal(parsed.interaction_summary, '聊了合作推进情况，对方答应下周给反馈。');
   assert.equal(blankResult.success, false);
   assert.equal(blankResult.error.issues[0]?.path.join('.'), 'interaction_summary');
+  assert.equal(missingResult.success, true);
 });
 
 test('PerceptionEventSchema rejects relative text in time_iso', () => {
@@ -173,14 +180,24 @@ test('visual and text perception prompts share the timestamp-anchor time rules',
   );
   assert.doesNotMatch(prompt, /kind="other" event titles/u);
   assert.doesNotMatch(textPrompt, /kind="other" event titles/u);
-  assert.match(
-    prompt,
-    /Only include interaction_summary for participants with is_self=false\. Omit interaction_summary for the self participant\./,
-  );
-  assert.match(
-    prompt,
-    /For each non-self participant, interaction_summary should be a 1-2 sentence gist of what you discussed with that person, plus any explicit progress signal or emotion\. Do not list raw lines or invent details\./,
-  );
+  for (const perceptionPrompt of [prompt, textPrompt]) {
+    assert.match(
+      perceptionPrompt,
+      /For every participant with is_self=false, interaction_summary is required and must be exactly one non-empty natural-language sentence\. Omit interaction_summary for the self participant\./,
+    );
+    assert.match(
+      perceptionPrompt,
+      /If the evidence contains only structured contact information and no actual interaction content, summarize the context in which that information was stated or observed\. Do not list raw lines or invent details\./,
+    );
+    assert.match(
+      perceptionPrompt,
+      /required interaction_summary for every non-self participant/,
+    );
+    assert.doesNotMatch(
+      perceptionPrompt,
+      /optional interaction_summary for non-self participants only/,
+    );
+  }
   assert.match(
     prompt,
     /Keep source_quote verbatim from the screenshot\. The summarization rule applies only to those freeform descriptive fields, not to source_quote\./,

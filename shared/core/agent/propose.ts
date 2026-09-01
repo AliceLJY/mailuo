@@ -46,14 +46,6 @@ export const MEETING_DUPLICATE_RULES = {
 
 const selfParticipantName = '我';
 const trackedContactFields: ContactField[] = ['company', 'title', 'phone', 'wechat_id', 'notes'];
-const fieldLabels: Record<ContactField | 'alias', string> = {
-  alias: '别名',
-  company: '公司',
-  title: '职位',
-  phone: '电话',
-  wechat_id: '微信',
-  notes: '备注',
-};
 
 function dedupeStrings(values: Array<string | undefined>): string[] {
   const seen = new Set<string>();
@@ -896,7 +888,6 @@ function buildContactChanges(
 function buildInteractionPayload(
   participantName: string,
   contact: ResolvableContact | undefined,
-  createPayload: CreateContactPayload,
   participantSourceQuotes: string[],
   interactionSummaries: string[],
   relatedFacts: PerceptionFact[] | undefined,
@@ -908,12 +899,6 @@ function buildInteractionPayload(
     : dedupeStrings([
         participantSourceQuotes.join('；'),
         ...((relatedQuotes ?? []).map((quote) => quote.text)),
-        ...(createPayload.aliases?.length
-          ? [`${fieldLabels.alias} ${createPayload.aliases.join(' / ')}`]
-          : []),
-        ...trackedContactFields.flatMap((field) =>
-          createPayload[field] ? [`${fieldLabels[field]} ${createPayload[field]}`] : [],
-        ),
       ]);
 
   return {
@@ -1057,7 +1042,6 @@ export function proposeCards(
     {
       participantName: string;
       contact?: ResolvableContact;
-      createPayload: CreateContactPayload;
       confidence: CardConfidence[];
       relatedFacts: PerceptionFact[];
       relatedQuotes: PerceptionQuote[];
@@ -1095,7 +1079,6 @@ export function proposeCards(
           resolution.status === 'same_as'
             ? contactsById.get(resolution.contact_id)
             : undefined,
-        createPayload: draft.payload,
         confidence: [participant.confidence],
         relatedFacts: [...relatedFacts],
         relatedQuotes: [...relatedQuotes],
@@ -1191,7 +1174,6 @@ export function proposeCards(
     const interaction = buildInteractionPayload(
       candidate.participantName,
       candidate.contact,
-      candidate.createPayload,
       dedupeStrings(candidate.participantSourceQuotes),
       dedupeStrings(candidate.interactionSummaries),
       candidate.relatedFacts,

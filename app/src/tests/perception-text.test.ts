@@ -86,11 +86,31 @@ function extractGeneratedContentRules(prompt: string) {
   return match[0];
 }
 
+function extractInteractionSummaryRules(prompt: string) {
+  const match = prompt.match(
+    /Interaction summary rules:[\s\S]+?(?=\nAny freeform descriptive text)/u,
+  );
+
+  assert.ok(match);
+  return match[0];
+}
+
 const EXPECTED_GENERATED_CONTENT_RULES = [
   "Generated natural-language and item-detail rules:",
   "- For every model-generated natural-language field—event.title, event.agenda, participant.interaction_summary, participant.notes, and facts.value when it summarizes source evidence—use the language of the source message text visible in the screenshot or present in the provided OCR chat text, not the language of these instructions, OCR metadata, or the optional user note. Chinese source message text must produce Chinese, English source message text must produce English, and mixed-language source message text must use its dominant language. Keep source_quote verbatim.",
   "- For each kind=\"other\" event, put into its agenda every explicit requirement, checklist item, operating instruction, deadline, and submission method that pertains to that event and is explicitly stated in its relevant source message; agenda may list them on separate lines. Use title for a concise summary and agenda for the full details. Never output only the summary title when any of those details are present.",
   "- Include only details explicitly stated in the relevant source message. Do not add guesses; leave agenda unset when no explicit details belong to the event.",
+].join("\n");
+
+const BEFORE_FIX2_INTERACTION_SUMMARY_RULES = [
+  "Only include interaction_summary for participants with is_self=false. Omit interaction_summary for the self participant.",
+  "For each non-self participant, interaction_summary should be a 1-2 sentence gist of what you discussed with that person, plus any explicit progress signal or emotion. Do not list raw lines or invent details.",
+].join("\n");
+
+const AFTER_FIX2_INTERACTION_SUMMARY_RULES = [
+  "Interaction summary rules:",
+  "- For every participant with is_self=false, interaction_summary is required and must be exactly one non-empty natural-language sentence. Omit interaction_summary for the self participant.",
+  "- Summarize the interaction with that person, including any explicit progress signal or emotion. If the evidence contains only structured contact information and no actual interaction content, summarize the context in which that information was stated or observed. Do not list raw lines or invent details.",
 ].join("\n");
 
 type PerceptionPromptSnapshot = {
@@ -108,8 +128,8 @@ function readPerceptionPromptSnapshot(fileName: string): PerceptionPromptSnapsho
   )) as PerceptionPromptSnapshot;
 }
 
-test("v3-M4-fix visual and text system prompts match the fixed after snapshot", () => {
-  const snapshot = readPerceptionPromptSnapshot("perception-prompts.after-v3-m4-fix.json");
+test("v3-M4-fix2 visual and text system prompts match the fixed after snapshot", () => {
+  const snapshot = readPerceptionPromptSnapshot("perception-prompts.after-v3-m4-fix2.json");
   const now = new Date(snapshot.baselineNow);
 
   assert.equal(
@@ -120,6 +140,38 @@ test("v3-M4-fix visual and text system prompts match the fixed after snapshot", 
     buildPerceptionTextSystemPrompt(now),
     snapshot.buildPerceptionTextSystemPrompt,
   );
+});
+
+test("v3-M4-fix2 prompt snapshots differ only by the required interaction summary rules", () => {
+  const before = readPerceptionPromptSnapshot("perception-prompts.before-v3-m4-fix2.json");
+  const after = readPerceptionPromptSnapshot("perception-prompts.after-v3-m4-fix2.json");
+  const promptKeys = [
+    "buildPerceptionSystemPrompt",
+    "buildPerceptionTextSystemPrompt",
+  ] as const;
+  const requiredSchemaPhrase = "required interaction_summary for every non-self participant";
+  const optionalSchemaPhrase = "optional interaction_summary for non-self participants only";
+
+  assert.equal(before.sourceRevision, after.sourceRevision);
+  assert.equal(before.baselineNow, after.baselineNow);
+  for (const promptKey of promptKeys) {
+    assert.equal(
+      before[promptKey].split(BEFORE_FIX2_INTERACTION_SUMMARY_RULES).length,
+      2,
+    );
+    assert.equal(
+      after[promptKey].split(AFTER_FIX2_INTERACTION_SUMMARY_RULES).length,
+      2,
+    );
+    assert.equal(after[promptKey].split(requiredSchemaPhrase).length, 2);
+    assert.equal(before[promptKey].split(optionalSchemaPhrase).length, 2);
+    assert.equal(
+      after[promptKey]
+        .replace(AFTER_FIX2_INTERACTION_SUMMARY_RULES, BEFORE_FIX2_INTERACTION_SUMMARY_RULES)
+        .replace(requiredSchemaPhrase, optionalSchemaPhrase),
+      before[promptKey],
+    );
+  }
 });
 
 test("v3-M4-fix prompt snapshots differ only by the intended shared rules", () => {
@@ -150,6 +202,15 @@ test("visual and text prompts share the exact output-language and other-event ag
 
   assert.equal(visualRules, textRules);
   assert.equal(visualRules, EXPECTED_GENERATED_CONTENT_RULES);
+});
+
+test("visual and text prompts share the exact required interaction summary rules", () => {
+  const now = new Date("2026-08-29T08:00:00+08:00");
+  const visualRules = extractInteractionSummaryRules(buildPerceptionSystemPrompt(now));
+  const textRules = extractInteractionSummaryRules(buildPerceptionTextSystemPrompt(now));
+
+  assert.equal(visualRules, textRules);
+  assert.equal(visualRules, AFTER_FIX2_INTERACTION_SUMMARY_RULES);
 });
 
 test("visual and text prompts share the exact timestamp-anchor time rules", () => {

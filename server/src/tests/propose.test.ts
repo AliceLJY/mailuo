@@ -234,7 +234,7 @@ test('proposeCards creates update_contact, meeting contact ids, and one interact
     payload: {
       contact_id: 1,
       contact_name: '王磊',
-      summary: '我上个月跳槽去了新公司；公司 新公司；职位 市场总监',
+      summary: '我上个月跳槽去了新公司',
     },
     confidence: 'high',
     source_quote: '我上个月跳槽去了新公司\n\n跳槽去了新公司',
@@ -283,7 +283,7 @@ test('proposeCards proposes an alias-only confirmed update after an LLM same_as 
     payload: {
       contact_id: 1,
       contact_name: '王磊',
-      summary: '@王磊 王总，方案已经发你；别名 王磊',
+      summary: '@王磊 王总，方案已经发你',
     },
     confidence: 'high',
     source_quote: '@王磊 王总，方案已经发你',
@@ -655,13 +655,18 @@ test('proposeCards preserves model time_iso when no absolute month/day is presen
   assert.equal(cards.length, 6);
 });
 
-test('proposeCards falls back to legacy interaction summary assembly when interaction_summary is missing', () => {
+test('proposeCards falls back to raw quote content when interaction_summary is missing', () => {
   const extraction: PerceptionResult = {
     participants: [
       {
         name: '王磊',
         is_self: false,
+        aliases: ['王总'],
         company: '星火科技',
+        title: '市场总监',
+        phone: '13800001234',
+        wechat_id: 'wang-lei',
+        notes: '由本人在当前对话中提供',
         confidence: 'high',
         source_quote: '今天和王磊继续推进合作',
       },
@@ -705,7 +710,7 @@ test('proposeCards falls back to legacy interaction summary assembly when intera
   assert.deepEqual(interactionCard.payload, {
     contact_id: 5,
     contact_name: '王磊',
-    summary: '今天和王磊继续推进合作；周五前把方案发你；公司 星火科技',
+    summary: '今天和王磊继续推进合作；周五前把方案发你',
   });
   assert.equal(
     interactionCard.source_quote,
@@ -805,7 +810,7 @@ test('proposeCards filters self participants out of cards and keeps self in meet
       payload: {
         contact_id: 1,
         contact_name: '王磊',
-        summary: '王磊周五来找我聊合作；公司 星火科技',
+        summary: '王磊周五来找我聊合作',
       },
       confidence: 'high',
       source_quote: '王磊周五来找我聊合作',
@@ -1298,7 +1303,7 @@ test('proposeCards skips no-op updates and dedupes interactions by resolved cont
       payload: {
         contact_id: 2,
         contact_name: '李姐',
-        summary: '李姐，我们继续跟进那个合作；李姐说下周再对一下细节；公司 甲公司',
+        summary: '李姐，我们继续跟进那个合作；李姐说下周再对一下细节',
       },
       confidence: 'high',
       source_quote: '李姐，我们继续跟进那个合作\n\n李姐说下周再对一下细节',
@@ -1369,7 +1374,7 @@ test('proposeCards keeps interaction source_quote aligned with every summary anc
       payload: {
         contact_id: 5,
         contact_name: '王磊',
-        summary: '今天和王磊继续推进合作；周五前把方案发你；公司 星火科技',
+        summary: '今天和王磊继续推进合作；周五前把方案发你',
       },
       confidence: 'high',
       source_quote: '今天和王磊继续推进合作\n\n王磊说：周五前把方案发你',
@@ -1452,7 +1457,7 @@ test('proposeCards creates create_contact cards for new and unsure participants 
       type: 'record_interaction',
       payload: {
         contact_name: '王磊',
-        summary: '我是星火科技的市场总监王磊；公司 星火科技；职位 市场总监',
+        summary: '我是星火科技的市场总监王磊',
       },
       confidence: 'high',
       source_quote: '我是星火科技的市场总监王磊',
@@ -1461,7 +1466,7 @@ test('proposeCards creates create_contact cards for new and unsure participants 
       type: 'record_interaction',
       payload: {
         contact_name: '李姐',
-        summary: '李姐，下周找时间见面；别名 鲍总',
+        summary: '李姐，下周找时间见面',
       },
       confidence: 'medium',
       source_quote: '李姐，下周找时间见面',

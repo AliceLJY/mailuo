@@ -70,6 +70,14 @@ function buildGeneratedContentRules(): string {
   ].join('\n');
 }
 
+function buildInteractionSummaryRules(): string {
+  return [
+    'Interaction summary rules:',
+    '- For every participant with is_self=false, interaction_summary is required and must be exactly one non-empty natural-language sentence. Omit interaction_summary for the self participant.',
+    '- Summarize the interaction with that person, including any explicit progress signal or emotion. If the evidence contains only structured contact information and no actual interaction content, summarize the context in which that information was stated or observed. Do not list raw lines or invent details.',
+  ].join('\n');
+}
+
 function buildTimeExtractionRules(now: Date): string {
   const currentYear = getShanghaiDateParts(now).year;
 
@@ -153,8 +161,7 @@ export function buildPerceptionSystemPrompt(now: Date): string {
     'For event titles, stay as close as possible to the original wording and meaning. Do not invent an agenda like "讨论合作" unless the screenshot explicitly says it.',
     'Set has_time_signal=true only when the screenshot contains a concrete scheduling signal such as a date, weekday, clock time, or time period like "周二", "下周三下午", or "明晚". Set has_time_signal=false for vague phrases like "改天", "回头", or "等你方便".',
     'Every participant, event, fact, and quote must include an exact source_quote copied from the screenshot when applicable.',
-    'Only include interaction_summary for participants with is_self=false. Omit interaction_summary for the self participant.',
-    'For each non-self participant, interaction_summary should be a 1-2 sentence gist of what you discussed with that person, plus any explicit progress signal or emotion. Do not list raw lines or invent details.',
+    buildInteractionSummaryRules(),
     'Any freeform descriptive text that may later feed a record_interaction summary, such as participant.notes or facts with field="notes", should be a 1-2 sentence gist about who discussed what plus any explicit progress signal or emotion. Do not paste or enumerate raw lines there.',
     'Keep source_quote verbatim from the screenshot. The summarization rule applies only to those freeform descriptive fields, not to source_quote.',
     'If company, title, phone, or wechat_id is explicitly stated or explicitly changed, include it in facts with the matching structured field. Do not hide structured contact data inside notes when a structured field exists.',
@@ -163,7 +170,7 @@ export function buildPerceptionSystemPrompt(now: Date): string {
     'confidence must be one of: high, medium, low.',
     'Return JSON only.',
     'Schema requirements:',
-    '- participants: array of people explicitly shown or mentioned in the screenshot. Include name, is_self, optional aliases/company/title/phone/wechat_id/notes, optional interaction_summary for non-self participants only, confidence, source_quote.',
+    '- participants: array of people explicitly shown or mentioned in the screenshot. Include name, is_self, optional aliases/company/title/phone/wechat_id/notes, required interaction_summary for every non-self participant, confidence, source_quote.',
     '- events: array of explicit meetings, appointments, or other follow-up commitments shown in the screenshot. meeting/appointment only apply to mutually attended or call-together time points; one-sided promises belong to kind="other". Include kind, title, time_text, time_iso or null, has_time_signal, optional location/agenda, participant_names, confidence, source_quote.',
     '- facts: array of explicit facts with subject_name, field, value, confidence, source_quote.',
     '- quotes: array of notable exact quotes with speaker_name or null, text, source_quote.',
@@ -190,8 +197,7 @@ export function buildPerceptionTextSystemPrompt(now: Date): string {
     'For event titles, stay as close as possible to the original wording and meaning. Do not invent an agenda like "讨论合作" unless the provided OCR text explicitly says it.',
     'Set has_time_signal=true only when the provided OCR text contains a concrete scheduling signal such as a date, weekday, clock time, or time period like "周二", "下周三下午", or "明晚". Set has_time_signal=false for vague phrases like "改天", "回头", or "等你方便".',
     'Every participant, event, fact, and quote must include an exact source_quote copied from the provided OCR text when applicable.',
-    'Only include interaction_summary for participants with is_self=false. Omit interaction_summary for the self participant.',
-    'For each non-self participant, interaction_summary should be a 1-2 sentence gist of what you discussed with that person, plus any explicit progress signal or emotion. Do not list raw lines or invent details.',
+    buildInteractionSummaryRules(),
     'Any freeform descriptive text that may later feed a record_interaction summary, such as participant.notes or facts with field="notes", should be a 1-2 sentence gist about who discussed what plus any explicit progress signal or emotion. Do not paste or enumerate raw lines there.',
     'Keep source_quote verbatim from the provided OCR text. The summarization rule applies only to those freeform descriptive fields, not to source_quote.',
     'If company, title, phone, or wechat_id is explicitly stated or explicitly changed, include it in facts with the matching structured field. Do not hide structured contact data inside notes when a structured field exists.',
@@ -200,7 +206,7 @@ export function buildPerceptionTextSystemPrompt(now: Date): string {
     'confidence must be one of: high, medium, low.',
     'Return JSON only.',
     'Schema requirements:',
-    '- participants: array of people explicitly shown or mentioned in the provided OCR text. Include name, is_self, optional aliases/company/title/phone/wechat_id/notes, optional interaction_summary for non-self participants only, confidence, source_quote.',
+    '- participants: array of people explicitly shown or mentioned in the provided OCR text. Include name, is_self, optional aliases/company/title/phone/wechat_id/notes, required interaction_summary for every non-self participant, confidence, source_quote.',
     '- events: array of explicit meetings, appointments, or other follow-up commitments shown in the provided OCR text. meeting/appointment only apply to mutually attended or call-together time points; one-sided promises belong to kind="other". Include kind, title, time_text, time_iso or null, has_time_signal, optional location/agenda, participant_names, confidence, source_quote.',
     '- facts: array of explicit facts with subject_name, field, value, confidence, source_quote.',
     '- quotes: array of notable exact quotes with speaker_name or null, text, source_quote.',

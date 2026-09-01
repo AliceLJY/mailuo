@@ -895,6 +895,56 @@ export class ExpoSqliteLocalStore implements LocalStore {
     );
   }
 
+  replaceInsightsForContacts(entries: InsightGenerationEntry[]): InsightGenerationRecord[] {
+    if (entries.length === 0) {
+      return [];
+    }
+
+    const contactIds = [...new Set(entries.map((entry, index) =>
+      assertSafeInteger(entry.contact_id, `entries[${index}].contact_id`),
+    ))];
+
+    // insertInsights owns its own withTransactionSync; keep this direct insert path
+    // so the delete and replacement rows remain in one non-nested transaction.
+    return this.withTransaction(() => {
+      for (const contactId of contactIds) {
+        this.db.runSync("DELETE FROM insights WHERE contact_id = ?", contactId);
+      }
+
+      return entries.map((entry) => {
+        const content = normalizeOptionalString(entry.content);
+
+        if (!content) {
+          throw new TypeError("Insight content must be a non-empty string");
+        }
+
+        const basedOn = entry.based_on.map((value, index) =>
+          assertSafeInteger(value, `based_on[${index}]`),
+        );
+        const result = this.db.runSync(
+          `INSERT INTO insights (contact_id, kind, content, based_on, generated_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          entry.contact_id,
+          entry.kind,
+          content,
+          JSON.stringify(basedOn),
+          entry.generated_at,
+        );
+        const row = this.db.getFirstSync<InsightRow>(
+          `SELECT id, contact_id, kind, content, based_on, generated_at
+           FROM insights WHERE id = ?`,
+          result.lastInsertRowId,
+        );
+
+        if (!row) {
+          throw new Error("Failed to load inserted insight");
+        }
+
+        return hydrateInsight(row);
+      });
+    });
+  }
+
   private listInsightsByContactId(contactId: number, limit?: number): InsightRecord[] {
     const rows = this.db.getAllSync<InsightRow>(
       `SELECT id, contact_id, kind, content, based_on, generated_at

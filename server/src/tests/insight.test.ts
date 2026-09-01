@@ -319,6 +319,60 @@ class SqliteInsightDb implements InsightGenerationDb {
     }
   }
 
+  replaceInsightsForContacts(entries: InsightGenerationEntry[]): InsightGenerationRecord[] {
+    if (entries.length === 0) {
+      return [];
+    }
+
+    const contactIds = [...new Set(entries.map((entry) => entry.contact_id))];
+    const deleteInsights = this.nativeDb.prepare(
+      'DELETE FROM insights WHERE contact_id = ?',
+    );
+    const insertInsight = this.nativeDb.prepare(
+      `INSERT INTO insights (
+         contact_id,
+         kind,
+         content,
+         based_on,
+         generated_at
+       ) VALUES (?, ?, ?, ?, ?)`,
+    );
+
+    this.nativeDb.exec('BEGIN');
+
+    try {
+      for (const contactId of contactIds) {
+        deleteInsights.run(contactId);
+      }
+
+      const records = entries.map((entry) => {
+        const result = insertInsight.run(
+          entry.contact_id,
+          entry.kind,
+          entry.content,
+          JSON.stringify(entry.based_on),
+          entry.generated_at,
+        );
+
+        return {
+          id: Number(result.lastInsertRowid),
+          ...entry,
+        };
+      });
+
+      this.nativeDb.exec('COMMIT');
+      return records;
+    } catch (error) {
+      try {
+        this.nativeDb.exec('ROLLBACK');
+      } catch {
+        // Preserve the original replacement failure if rollback also fails.
+      }
+
+      throw error;
+    }
+  }
+
   listInsights(): InsightGenerationRecord[] {
     const rows = this.nativeDb
       .prepare(
@@ -371,7 +425,7 @@ async function runGenerateInsights(
   });
 }
 
-test('generateInsights drops ungrounded items, sanitizes based_on, and inserts valid insights', async () => {
+test('generateInsights drops ungrounded items, sanitizes based_on, and replaces prior insights', async () => {
   const { db, cleanup } = withTempInsightDb();
 
   try {
@@ -472,9 +526,9 @@ test('generateInsights drops ungrounded items, sanitizes based_on, and inserts v
     );
 
     const storedInsights = db.listInsights();
-    assert.equal(storedInsights.length, 3);
+    assert.equal(storedInsights.length, 2);
     assert.deepEqual(
-      storedInsights.slice(1).map((entry) => ({
+      storedInsights.map((entry) => ({
         kind: entry.kind,
         content: entry.content,
         based_on: entry.based_on,
@@ -491,6 +545,64 @@ test('generateInsights drops ungrounded items, sanitizes based_on, and inserts v
           based_on: [observationId2],
         },
       ],
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test('generateInsights keeps only the second round and preserves it when the next round is empty', async () => {
+  const { db, cleanup } = withTempInsightDb();
+
+  try {
+    const contactId = db.createContact({ canonical_name: '周宁' });
+    const observationId = db.createObservation({
+      contact_id: contactId,
+      kind: 'interaction',
+      content: '对方确认下周继续推进',
+    });
+
+    await runGenerateInsights({
+      db,
+      contactIds: [contactId],
+      provider: new MockStructuredOutputProvider([{
+        insights: [{
+          kind: 'relationship_read',
+          content: '第一轮洞察',
+          based_on: [observationId],
+        }],
+      }]),
+      now: '2026-08-26T05:00:00.000Z',
+    });
+    await runGenerateInsights({
+      db,
+      contactIds: [contactId],
+      provider: new MockStructuredOutputProvider([{
+        insights: [{
+          kind: 'suggested_action',
+          content: '第二轮洞察',
+          based_on: [observationId],
+        }],
+      }]),
+      now: '2026-08-26T06:00:00.000Z',
+    });
+
+    assert.deepEqual(
+      db.listInsights().map((entry) => entry.content),
+      ['第二轮洞察'],
+    );
+
+    const emptyResult = await runGenerateInsights({
+      db,
+      contactIds: [contactId],
+      provider: new MockStructuredOutputProvider([{ insights: [] }]),
+      now: '2026-08-26T07:00:00.000Z',
+    });
+
+    assert.deepEqual(emptyResult.generated, []);
+    assert.deepEqual(
+      db.listInsights().map((entry) => entry.content),
+      ['第二轮洞察'],
     );
   } finally {
     cleanup();
@@ -541,6 +653,18 @@ test('generateInsights does not insert partial results when a later provider cal
       kind: 'interaction',
       content: '对方约了下周电话沟通',
     });
+    db.createHistoricalInsight({
+      contact_id: contactId1,
+      kind: 'relationship_read',
+      content: '王磊的旧洞察',
+      based_on: [observationId1],
+    });
+    db.createHistoricalInsight({
+      contact_id: contactId2,
+      kind: 'conversation_hook',
+      content: '张敏的旧洞察',
+      based_on: [],
+    });
 
     const provider = new MockStructuredOutputProvider([
       {
@@ -566,7 +690,10 @@ test('generateInsights does not insert partial results when a later provider cal
     );
 
     assert.equal(provider.calls.length, 2);
-    assert.deepEqual(db.listInsights(), []);
+    assert.deepEqual(
+      db.listInsights().map((entry) => entry.content),
+      ['王磊的旧洞察', '张敏的旧洞察'],
+    );
   } finally {
     cleanup();
   }
