@@ -11,7 +11,11 @@ import {
 } from '../../types.ts';
 
 import type { PerceptionResult } from './perceive.ts';
-import type { ParticipantResolution, ResolvableContact } from './resolve.ts';
+import type {
+  MeetingProgressResolution,
+  ParticipantResolution,
+  ResolvableContact,
+} from './resolve.ts';
 import { resolveChineseTime } from './resolve-time.ts';
 
 export type CardConfidence = 'high' | 'medium' | 'low';
@@ -161,6 +165,33 @@ function findDuplicateMeeting(
 function normalizeMeetingChangeValue(value: string | null | undefined): string | null {
   const normalized = value?.trim();
   return normalized ? normalized : null;
+}
+
+export function appendMeetingAgenda(
+  existingAgenda: string | null | undefined,
+  additions: string[],
+): string | null {
+  const existing = normalizeMeetingChangeValue(existingAgenda);
+  const accepted: string[] = [];
+  const knownFragments = new Set(
+    (existing ?? '')
+      .split(/[；;\n]+/u)
+      .map(normalizeComparableText)
+      .filter(Boolean),
+  );
+
+  for (const addition of dedupeStrings(additions.flatMap((value) => value.split(/[；;\n]+/u)))) {
+    const comparableAddition = normalizeComparableText(addition);
+
+    if (!comparableAddition || knownFragments.has(comparableAddition)) {
+      continue;
+    }
+
+    accepted.push(addition);
+    knownFragments.add(comparableAddition);
+  }
+
+  return [existing, ...accepted].filter((value): value is string => Boolean(value)).join('；') || null;
 }
 
 function formatMeetingParticipants(
@@ -704,6 +735,61 @@ function buildMeetingCard(
   };
 }
 
+function buildMeetingProgressCards(
+  existingMeetings: ExistingMeeting[],
+  resolutions: MeetingProgressResolution[],
+): ProposedCard[] {
+  const meetingsById = new Map(existingMeetings.map((meeting) => [meeting.id, meeting]));
+  const fragmentsByMeeting = new Map<number, MeetingProgressResolution['fragments']>();
+
+  for (const resolution of resolutions) {
+    if (!meetingsById.has(resolution.meeting_id)) {
+      continue;
+    }
+
+    const fragments = fragmentsByMeeting.get(resolution.meeting_id) ?? [];
+    fragments.push(...resolution.fragments);
+    fragmentsByMeeting.set(resolution.meeting_id, fragments);
+  }
+
+  const cards: ProposedCard[] = [];
+
+  for (const [meetingId, fragments] of fragmentsByMeeting) {
+    const existing = meetingsById.get(meetingId)!;
+    const additions = dedupeStrings(fragments.map((fragment) => fragment.content)).filter(
+      (addition) => appendMeetingAgenda(existing.agenda, [addition]) !== normalizeMeetingChangeValue(existing.agenda),
+    );
+
+    if (additions.length === 0) {
+      continue;
+    }
+
+    const agendaAppend = additions.join('；');
+    const nextAgenda = appendMeetingAgenda(existing.agenda, additions);
+    const payload: CreateMeetingPayload = {
+      kind: existing.kind,
+      title: existing.title,
+      time_iso: existing.time_iso,
+      time_text: existing.time_text,
+      ...(existing.location ? { location: existing.location } : {}),
+      participants: existing.participants.map((participant) => ({ ...participant })),
+      ...(nextAgenda ? { agenda: nextAgenda } : {}),
+      agenda_append: agendaAppend,
+      duplicate_of_meeting_id: existing.id,
+      changes: {},
+    };
+    payload.changes = buildMeetingChanges(existing, payload);
+    cards.push({
+      type: 'create_meeting',
+      payload,
+      confidence: 'high',
+      source_quote: joinSourceQuotes(fragments.map((fragment) => fragment.source_quote)),
+    });
+  }
+
+  return cards;
+}
+
 function buildSameAsParticipantsByName(
   resolutions: ParticipantResolution[],
 ): Map<string, number | null> {
@@ -848,6 +934,7 @@ export function proposeCards(
   contacts: ResolvableContact[] = [],
   now = new Date(),
   existingMeetings: ExistingMeeting[] = [],
+  meetingProgressResolutions: MeetingProgressResolution[] = [],
 ): ProposedCard[] {
   const cards: ProposedCard[] = [];
   const participants = extraction.participants as ProposeParticipant[];
@@ -939,6 +1026,8 @@ export function proposeCards(
     for (const event of events) {
       cards.push(buildMeetingCard(event, new Map(), selfParticipantNames, existingMeetings));
     }
+
+    cards.push(...buildMeetingProgressCards(existingMeetings, meetingProgressResolutions));
 
     // simplified: keep the legacy M1 flow stable until execute/schema catches up with M2 cards.
     return cards;
@@ -1063,6 +1152,8 @@ export function proposeCards(
       buildMeetingCard(event, sameAsParticipantsByName, selfParticipantNames, existingMeetings),
     );
   }
+
+  cards.push(...buildMeetingProgressCards(existingMeetings, meetingProgressResolutions));
 
   for (const [interactionKey, candidate] of interactionCandidates) {
     if (candidate.requiresCreateCard && !interactionKey.startsWith('pending:')) {

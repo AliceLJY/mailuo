@@ -32,6 +32,7 @@ export type CreateMeetingPayload = {
   location?: string;
   participants: Array<{ contact_id?: number; name: string }>;
   agenda?: string;
+  agenda_append?: string;
   duplicate_of_meeting_id?: number;
   changes?: MeetingChanges;
 };

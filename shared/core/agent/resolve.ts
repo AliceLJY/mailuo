@@ -1,7 +1,11 @@
 import { z } from 'zod';
 
-import { buildEntityResolutionPrompt } from '../llm/prompts.ts';
+import {
+  buildEntityResolutionPrompt,
+  buildMeetingProgressResolutionPrompt,
+} from '../llm/prompts.ts';
 import type { ChatMessage, StructuredOutputProvider } from '../llm/provider.ts';
+import type { MeetingKind } from '../../types.ts';
 
 import { isSelfName, type PerceptionResult } from './perceive.ts';
 
@@ -57,9 +61,46 @@ export type ResolveParticipantsOptions = {
   providerFactory?: () => StructuredOutputProvider;
 };
 
+export type ResolvableMeeting = {
+  id: number;
+  kind: MeetingKind;
+  title: string;
+  time_iso: string | null;
+  time_text: string;
+  status: string;
+  created_at: string;
+};
+
+export type MeetingProgressFragment = {
+  content: string;
+  source_quote: string;
+};
+
+export type MeetingProgressResolution = {
+  meeting_id: number;
+  fragments: MeetingProgressFragment[];
+};
+
+export type ResolveMeetingProgressOptions = {
+  extraction: PerceptionResult;
+  meetings: ResolvableMeeting[];
+  provider?: StructuredOutputProvider;
+  providerFactory?: () => StructuredOutputProvider;
+};
+
+// `upcoming` is the only unfinished status produced by the current model. Keeping
+// the newest 20 bounds prompt cost and excludes older context that is riskier to mis-associate.
+export const MEETING_PROGRESS_CANDIDATE_LIMIT = 20;
+
 const ResolveDecisionSchemaBase = z.object({
   decision: z.enum(['same_as', 'new', 'unsure']),
 }).strict();
+
+const directProgressSignalPatterns = [
+  /(?:已|已经|现已|均已|都已|刚|刚刚)\s*(?:到(?:达|场|位)?|抵达|就位|完成|办妥|补齐|准备好|改完|处理完|提交|发送|发出|交付|确认|通过|批准|签署|签完|上线|开工|开始|结束|取消|延期|回复|联系)(?:了)?/u,
+  /(?:总|导|老师|主任|经理|先生|女士|哥|姐|嘉宾|客户|领导|同事|团队)\s*(?:到了|到达了|抵达了)/u,
+  /(?:完成|办妥|补齐|就位|准备好|改完|处理完|提交|发送|发出|交付|确认|批准|签署|签完|上线|开工|开始|结束|取消|延期|回复|联系)(?:了|啦|完毕)/u,
+];
 
 function normalizeComparableText(value: string): string {
   return value.trim().toLocaleLowerCase();
@@ -253,6 +294,211 @@ function buildResolutionMessages(
     { role: 'system', content: prompt.systemPrompt },
     { role: 'user', content: prompt.userPrompt },
   ];
+}
+
+function hasDirectProgressSignal(content: string, sourceQuote: string): boolean {
+  return directProgressSignalPatterns.some(
+    (pattern) => pattern.test(content) || pattern.test(sourceQuote),
+  );
+}
+
+function collectMeetingProgressFragments(
+  extraction: PerceptionResult,
+): MeetingProgressFragment[] {
+  // A progress card is only useful when the unchanged proposal flow can also
+  // produce the person's interaction fallback from the same perception result.
+  if (!extraction.participants.some((participant) => !isSelfParticipant(participant))) {
+    return [];
+  }
+
+  const candidates: MeetingProgressFragment[] = [];
+  const seenSourceQuotes = new Set<string>();
+
+  const addCandidate = (content: string | undefined, sourceQuote: string): void => {
+    if (!content?.trim() || !sourceQuote.trim()) {
+      return;
+    }
+
+    const sourceQuoteKey = sourceQuote.trim();
+
+    if (
+      seenSourceQuotes.has(sourceQuoteKey) ||
+      !hasDirectProgressSignal(content, sourceQuote)
+    ) {
+      return;
+    }
+
+    seenSourceQuotes.add(sourceQuoteKey);
+    candidates.push({ content, source_quote: sourceQuote });
+  };
+
+  for (const participant of extraction.participants) {
+    if (participant.confidence === 'low') {
+      continue;
+    }
+
+    addCandidate(participant.interaction_summary, participant.source_quote);
+    addCandidate(participant.notes, participant.source_quote);
+  }
+
+  for (const fact of extraction.facts) {
+    if (
+      fact.confidence === 'low' ||
+      (fact.field !== 'notes' && fact.field !== 'other')
+    ) {
+      continue;
+    }
+
+    addCandidate(fact.value, fact.source_quote);
+  }
+
+  for (const event of extraction.events) {
+    if (event.confidence === 'low') {
+      continue;
+    }
+
+    addCandidate(event.agenda ?? event.title, event.source_quote);
+  }
+
+  for (const quote of extraction.quotes) {
+    addCandidate(quote.text, quote.source_quote);
+  }
+
+  return candidates;
+}
+
+function selectMeetingProgressCandidates(meetings: ResolvableMeeting[]): ResolvableMeeting[] {
+  const seenMeetingIds = new Set<number>();
+
+  return meetings
+    .filter((meeting) => meeting.status === 'upcoming')
+    .sort((left, right) => right.created_at.localeCompare(left.created_at))
+    .filter((meeting) => {
+      if (seenMeetingIds.has(meeting.id)) {
+        return false;
+      }
+
+      seenMeetingIds.add(meeting.id);
+      return true;
+    })
+    .slice(0, MEETING_PROGRESS_CANDIDATE_LIMIT);
+}
+
+function buildMeetingProgressResponseSchema(fragmentIds: number[], meetingIds: number[]) {
+  const fragmentIdSet = new Set(fragmentIds);
+  const meetingIdSet = new Set(meetingIds);
+
+  return z.object({
+    matches: z.array(
+      z.object({
+        fragment_id: z.number().int().refine((value) => fragmentIdSet.has(value)),
+        meeting_id: z.number().int().refine((value) => meetingIdSet.has(value)),
+        confidence: z.enum(['high', 'medium', 'low']),
+      }).strict(),
+    ),
+  }).strict();
+}
+
+export async function resolveMeetingProgress({
+  extraction,
+  meetings,
+  provider,
+  providerFactory,
+}: ResolveMeetingProgressOptions): Promise<MeetingProgressResolution[]> {
+  const meetingCandidates = selectMeetingProgressCandidates(meetings);
+
+  if (meetingCandidates.length === 0) {
+    return [];
+  }
+
+  const fragments = collectMeetingProgressFragments(extraction);
+
+  if (fragments.length === 0) {
+    return [];
+  }
+
+  let llmProvider = provider;
+
+  if (!llmProvider && providerFactory) {
+    try {
+      llmProvider = providerFactory();
+    } catch {
+      return [];
+    }
+  }
+
+  if (!llmProvider) {
+    throw new TypeError('A structured-output provider is required for meeting progress resolution');
+  }
+
+  const promptFragments = fragments.map((fragment, index) => ({
+    fragment_id: index + 1,
+    content: fragment.content,
+    source_quote: fragment.source_quote,
+  }));
+  const prompt = buildMeetingProgressResolutionPrompt({
+    perception: extraction,
+    fragments: promptFragments,
+    meetings: meetingCandidates.map((meeting) => ({
+      id: meeting.id,
+      title: meeting.title,
+      time_iso: meeting.time_iso,
+      time_text: meeting.time_text,
+      kind: meeting.kind,
+    })),
+  });
+  let parsedResponse: z.infer<ReturnType<typeof buildMeetingProgressResponseSchema>>;
+
+  try {
+    const rawResponse = await llmProvider.complete({
+      messages: buildResolutionMessages(prompt),
+      temperature: 0,
+      responseFormat: { type: 'json_object' },
+    });
+    const responseSchema = buildMeetingProgressResponseSchema(
+      promptFragments.map((fragment) => fragment.fragment_id),
+      meetingCandidates.map((meeting) => meeting.id),
+    );
+    parsedResponse = responseSchema.parse(JSON.parse(rawResponse));
+  } catch {
+    return [];
+  }
+
+  const matchesByFragment = new Map<
+    number,
+    Array<z.infer<ReturnType<typeof buildMeetingProgressResponseSchema>>['matches'][number]>
+  >();
+
+  for (const match of parsedResponse.matches) {
+    const fragmentMatches = matchesByFragment.get(match.fragment_id) ?? [];
+    fragmentMatches.push(match);
+    matchesByFragment.set(match.fragment_id, fragmentMatches);
+  }
+
+  const resolutionsByMeeting = new Map<number, MeetingProgressResolution>();
+
+  for (const promptFragment of promptFragments) {
+    const fragmentMatches = matchesByFragment.get(promptFragment.fragment_id) ?? [];
+    const meetingIds = new Set(fragmentMatches.map((match) => match.meeting_id));
+
+    if (
+      fragmentMatches.length === 0 ||
+      fragmentMatches.some((match) => match.confidence !== 'high') ||
+      meetingIds.size !== 1
+    ) {
+      continue;
+    }
+
+    const meetingId = [...meetingIds][0];
+    const resolution = resolutionsByMeeting.get(meetingId) ?? {
+      meeting_id: meetingId,
+      fragments: [],
+    };
+    resolution.fragments.push(fragments[promptFragment.fragment_id - 1]);
+    resolutionsByMeeting.set(meetingId, resolution);
+  }
+
+  return [...resolutionsByMeeting.values()];
 }
 
 export async function resolveParticipants({

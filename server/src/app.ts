@@ -53,6 +53,10 @@ import {
   type ParticipantResolution,
   type ResolvableContact,
 } from "./agent/resolve.ts";
+import {
+  resolveMeetingProgress as defaultResolveMeetingProgress,
+  type MeetingProgressResolution,
+} from "../../shared/core/agent/resolve.ts";
 import { MailuoDb } from "./db.ts";
 import {
   ConfigurationError,
@@ -85,8 +89,10 @@ type ProposeCardsFn = (
   contacts?: ResolvableContact[],
   now?: Date,
   existingMeetings?: ExistingMeeting[],
+  meetingProgressResolutions?: MeetingProgressResolution[],
 ) => ActionCard[] | Promise<ActionCard[]>;
 type ResolveParticipantsFn = typeof defaultResolveParticipants;
+type ResolveMeetingProgressFn = typeof defaultResolveMeetingProgress;
 type ExecuteCardFn = typeof defaultExecuteCard;
 type RejectCardFn = typeof defaultRejectCard;
 type GenerateInsightsFn = typeof defaultGenerateInsights;
@@ -420,6 +426,7 @@ type BuildAppOptions = {
   webRoot?: string | false;
   perceiveScreenshot?: PerceiveScreenshotFn;
   resolveParticipants?: ResolveParticipantsFn;
+  resolveMeetingProgress?: ResolveMeetingProgressFn;
   proposeCards?: ProposeCardsFn;
   executeCard?: ExecuteCardFn;
   rejectCard?: RejectCardFn;
@@ -452,22 +459,33 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const db = options.db ?? options.createDb?.() ?? new MailuoDb();
   const perceiveScreenshot = options.perceiveScreenshot ?? defaultPerceiveScreenshot;
   const resolveParticipants = options.resolveParticipants ?? defaultResolveParticipants;
+  const resolveMeetingProgress = options.resolveMeetingProgress ?? defaultResolveMeetingProgress;
+  const createTextProvider = options.createTextProvider ?? defaultCreateTextProvider;
   const configuredProposeCards = options.proposeCards ?? defaultProposeCards;
-  const proposeCards = (
+  const proposeCards = async (
     extraction: PerceptionResult,
     resolutions?: ParticipantResolution[],
     contacts?: ResolvableContact[],
-  ) => configuredProposeCards(
-    extraction,
-    resolutions,
-    contacts,
-    undefined,
-    db.listMeetings(),
-  );
+  ) => {
+    const existingMeetings = db.listMeetings();
+    const meetingProgressResolutions = await resolveMeetingProgress({
+      extraction,
+      meetings: existingMeetings,
+      providerFactory: createTextProvider,
+    });
+
+    return configuredProposeCards(
+      extraction,
+      resolutions,
+      contacts,
+      undefined,
+      existingMeetings,
+      meetingProgressResolutions,
+    );
+  };
   const executeCard = options.executeCard ?? defaultExecuteCard;
   const rejectCard = options.rejectCard ?? defaultRejectCard;
   const generateInsights = options.generateInsights ?? defaultGenerateInsights;
-  const createTextProvider = options.createTextProvider ?? defaultCreateTextProvider;
   const webRoot = resolveWebRoot(options.webRoot);
   const canServeSpaIndex = webRoot ? existsSync(resolve(webRoot, "index.html")) : false;
   const app = Fastify({ logger: true });

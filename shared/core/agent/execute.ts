@@ -19,7 +19,11 @@ import {
   parseStoredPerceptionResult,
   type PerceptionResult,
 } from "./perceive.ts";
-import { buildMeetingChanges, type ExistingMeeting } from "./propose.ts";
+import {
+  appendMeetingAgenda,
+  buildMeetingChanges,
+  type ExistingMeeting,
+} from "./propose.ts";
 
 export const CONTACT_EDITABLE_FIELDS = [
   "company",
@@ -369,6 +373,7 @@ function sanitizeCreateMeetingPayload(payload: CreateMeetingPayload): CreateMeet
     payload.duplicate_of_meeting_id,
     "duplicate_of_meeting_id",
   );
+  const agendaAppend = normalizeOptionalString(payload.agenda_append);
   return {
     kind: payload.kind,
     title,
@@ -380,6 +385,7 @@ function sanitizeCreateMeetingPayload(payload: CreateMeetingPayload): CreateMeet
     ...(duplicateMeetingId != null
       ? {
           duplicate_of_meeting_id: duplicateMeetingId,
+          ...(agendaAppend ? { agenda_append: agendaAppend } : {}),
           // Diff metadata is never trusted from the client; executeCard derives it from the target row and final payload.
           changes: {},
         }
@@ -406,6 +412,30 @@ function sanitizeRecordInteractionPayload(payload: RecordInteractionPayload): Re
     contact_name: contactName,
     summary,
   };
+}
+
+function rebaseDuplicateMeetingAgenda(
+  baseAgenda: string | null | undefined,
+  currentAgenda: string | null | undefined,
+  confirmedAgenda: string | null | undefined,
+): string | null {
+  const base = normalizeOptionalString(baseAgenda);
+  const current = normalizeOptionalString(currentAgenda);
+  const confirmed = normalizeOptionalString(confirmedAgenda);
+
+  if (current === base || current === confirmed) {
+    return confirmed;
+  }
+
+  const appendedSinceProposal = base == null
+    ? current
+    : current?.startsWith(`${base}；`)
+      ? current.slice(base.length + 1)
+      : null;
+
+  return appendedSinceProposal
+    ? appendMeetingAgenda(confirmed, [appendedSinceProposal])
+    : confirmed;
 }
 
 function validatePayloadForType(type: StoredActionCard["type"], payload: unknown): StoredActionCard["payload"] {
@@ -985,10 +1015,18 @@ export function executeCard({ db, cardId, payload, resolvedContactId }: ExecuteC
           storedMeetingPayload.duplicate_of_meeting_id,
           "stored duplicate_of_meeting_id",
         );
+        const storedAgendaAppend = normalizeOptionalString(storedMeetingPayload.agenda_append);
+        const confirmedAgendaAppend = normalizeOptionalString(typedPayload.agenda_append);
 
         if (typedPayload.duplicate_of_meeting_id !== storedDuplicateMeetingId) {
           throw new ExecuteValidationError(
             "create_meeting cannot change duplicate_of_meeting_id during confirmation",
+          );
+        }
+
+        if ((storedAgendaAppend == null) !== (confirmedAgendaAppend == null)) {
+          throw new ExecuteValidationError(
+            "create_meeting cannot change agenda append mode during confirmation",
           );
         }
 
@@ -1008,22 +1046,46 @@ export function executeCard({ db, cardId, payload, resolvedContactId }: ExecuteC
           );
         }
 
-        const hydratedParticipants = hydrateMeetingParticipants({
-          db,
-          screenshotId: screenshot.id,
-          extraction,
-          participants: typedPayload.participants,
-        });
-        const meetingInput: MeetingWriteInput = {
-          kind: typedPayload.kind ?? "meeting",
-          title: typedPayload.title,
-          timeIso: typedPayload.time_iso,
-          timeText: typedPayload.time_text,
-          location: typedPayload.location ?? null,
-          participants: hydratedParticipants,
-          agenda: typedPayload.agenda ?? null,
-          sourceScreenshotId: screenshot.id,
-        };
+        const isAgendaAppend = storedAgendaAppend != null;
+        const storedAgendaChange = storedMeetingPayload.changes?.agenda;
+        const agendaAtProposal = storedAgendaChange
+          ? storedAgendaChange.old
+          : storedMeetingPayload.agenda;
+        const hydratedParticipants = isAgendaAppend
+          ? existingMeeting!.participants.map((participant) => ({ ...participant }))
+          : hydrateMeetingParticipants({
+              db,
+              screenshotId: screenshot.id,
+              extraction,
+              participants: typedPayload.participants,
+            });
+        const meetingInput: MeetingWriteInput = isAgendaAppend
+          ? {
+              kind: existingMeeting!.kind,
+              title: existingMeeting!.title,
+              timeIso: existingMeeting!.time_iso,
+              timeText: existingMeeting!.time_text,
+              location: existingMeeting!.location,
+              participants: hydratedParticipants,
+              agenda: appendMeetingAgenda(existingMeeting!.agenda, [confirmedAgendaAppend!]),
+              sourceScreenshotId: screenshot.id,
+            }
+          : {
+              kind: typedPayload.kind ?? "meeting",
+              title: typedPayload.title,
+              timeIso: typedPayload.time_iso,
+              timeText: typedPayload.time_text,
+              location: typedPayload.location ?? null,
+              participants: hydratedParticipants,
+              agenda: existingMeeting
+                ? rebaseDuplicateMeetingAgenda(
+                    agendaAtProposal,
+                    existingMeeting.agenda,
+                    typedPayload.agenda,
+                  )
+                : typedPayload.agenda ?? null,
+              sourceScreenshotId: screenshot.id,
+            };
         const meeting = existingMeeting == null
           ? db.insertMeeting({ ...meetingInput, createdAt: executedAt })
           : db.updateMeeting(existingMeeting.id, meetingInput);
@@ -1056,7 +1118,13 @@ export function executeCard({ db, cardId, payload, resolvedContactId }: ExecuteC
         const finalMeetingPayload: CreateMeetingPayload = {
           ...typedPayload,
           kind: meetingInput.kind,
+          title: meetingInput.title,
+          time_iso: meetingInput.timeIso,
+          time_text: meetingInput.timeText,
+          ...(meetingInput.location ? { location: meetingInput.location } : { location: undefined }),
           participants: hydratedParticipants,
+          ...(meetingInput.agenda ? { agenda: meetingInput.agenda } : { agenda: undefined }),
+          ...(confirmedAgendaAppend ? { agenda_append: confirmedAgendaAppend } : {}),
         };
         storedPayload = existingMeeting
           ? {

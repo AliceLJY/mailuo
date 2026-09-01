@@ -307,7 +307,7 @@ test('runE2eFlow deletes the orphan screenshot row when perception fails before 
   }
 });
 
-test('runE2eFlow passes existing meetings into its proposal step', async () => {
+test('runE2eFlow passes existing meetings and progress resolutions into its proposal step', async () => {
   const { db, cleanup } = withTempDb();
 
   try {
@@ -318,7 +318,13 @@ test('runE2eFlow passes existing meetings into its proposal step', async () => {
       timeText: '',
       participants: [],
     });
-    let receivedMeetings: unknown;
+    const meetingProgressResolutions = [{
+      meeting_id: existingMeeting.id,
+      fragments: [{ content: '荀导已到', source_quote: '荀导已到' }],
+    }];
+    let receivedResolverMeetings: unknown;
+    let receivedProposalMeetings: unknown;
+    let receivedMeetingProgressResolutions: unknown;
     const result = await runE2eFlow({
       db,
       imagePath: screenshotPath,
@@ -328,8 +334,21 @@ test('runE2eFlow passes existing meetings into its proposal step', async () => {
       async resolveParticipantsImpl() {
         return [];
       },
-      proposeCardsImpl(_extraction, _resolutions, _contacts, _now, existingMeetings) {
-        receivedMeetings = existingMeetings;
+      async resolveMeetingProgressImpl(input) {
+        receivedResolverMeetings = input.meetings;
+        assert.equal(typeof input.providerFactory, 'function');
+        return meetingProgressResolutions;
+      },
+      proposeCardsImpl(
+        _extraction,
+        _resolutions,
+        _contacts,
+        _now,
+        existingMeetings,
+        progressResolutions,
+      ) {
+        receivedProposalMeetings = existingMeetings;
+        receivedMeetingProgressResolutions = progressResolutions;
         return [];
       },
       async generateInsightsImpl() {
@@ -342,7 +361,9 @@ test('runE2eFlow passes existing meetings into its proposal step', async () => {
       },
     });
 
-    assert.deepEqual(receivedMeetings, [existingMeeting]);
+    assert.deepEqual(receivedResolverMeetings, [existingMeeting]);
+    assert.deepEqual(receivedProposalMeetings, [existingMeeting]);
+    assert.deepEqual(receivedMeetingProgressResolutions, meetingProgressResolutions);
     assert.deepEqual(result.cards, []);
     assert.deepEqual(result.meeting_ids, []);
   } finally {

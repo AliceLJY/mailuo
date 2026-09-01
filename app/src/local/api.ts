@@ -3,7 +3,11 @@ import { generateInsights } from "../../../shared/core/agent/insight.ts";
 import { perceiveScreenshot } from "../../../shared/core/agent/perceive.ts";
 import type { PerceptionResult } from "../../../shared/core/agent/perceive.ts";
 import { proposeCards } from "../../../shared/core/agent/propose.ts";
-import { resolveParticipants, type ResolvableContact } from "../../../shared/core/agent/resolve.ts";
+import {
+  resolveMeetingProgress,
+  resolveParticipants,
+  type ResolvableContact,
+} from "../../../shared/core/agent/resolve.ts";
 import type { LocalLlmSecretStore } from "../connection/secrets";
 import type { LocalProcessingSettings } from "../connection/config";
 import type {
@@ -118,6 +122,12 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           contacts,
           provider: textProvider,
         });
+        const existingMeetings = options.store.listMeetings();
+        const meetingProgressResolutions = await resolveMeetingProgress({
+          extraction,
+          meetings: existingMeetings,
+          provider: textProvider,
+        });
         const cards = options.store.saveScreenshotAnalysis({
           screenshotId: screenshot.id,
           rawExtraction: extraction,
@@ -126,7 +136,8 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
             resolutions,
             contacts,
             timestamp,
-            options.store.listMeetings(),
+            existingMeetings,
+            meetingProgressResolutions,
           ),
           createdAt: timestamp.toISOString(),
         });
@@ -250,12 +261,19 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           contacts,
           provider: textProvider,
         });
+        const existingMeetings = options.store.listMeetings();
+        const meetingProgressResolutions = await resolveMeetingProgress({
+          extraction,
+          meetings: existingMeetings,
+          provider: textProvider,
+        });
         const proposedCards = proposeCards(
           extraction,
           resolutions,
           contacts,
           timestamp,
-          options.store.listMeetings(),
+          existingMeetings,
+          meetingProgressResolutions,
         );
         let cards: ActionCardRecord[];
         let localBatchContactMerges: LocalBatchContactMerge[] | undefined;

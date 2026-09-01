@@ -41,11 +41,18 @@ class FakeStructuredOutputProvider implements StructuredOutputProvider {
   readonly name = "fake";
   readonly model = "fake-model";
   calls = 0;
+  completeCalls = 0;
 
-  constructor(private readonly response: () => unknown) {}
+  constructor(
+    private readonly response: () => unknown,
+    private readonly completionResponse: () => string = () => {
+      throw new Error("complete is not used by this test");
+    },
+  ) {}
 
   async complete(_request: ChatCompletionRequest): Promise<string> {
-    throw new Error("complete is not used by this test");
+    this.completeCalls += 1;
+    return this.completionResponse();
   }
 
   async generateStructuredOutput<T>(request: StructuredOutputRequest<T>): Promise<T> {
@@ -70,6 +77,7 @@ class FakeLocalStore implements LocalStore {
   private readonly insights: InsightRecord[] = [];
   transactionCalls = 0;
   pendingCardUpdateCalls = 0;
+  listMeetingCalls = 0;
 
   withTransaction<T>(callback: () => T): T {
     this.transactionCalls += 1;
@@ -424,6 +432,7 @@ class FakeLocalStore implements LocalStore {
   }
 
   listMeetings(): MeetingRecord[] {
+    this.listMeetingCalls += 1;
     return [...this.meetings];
   }
 
@@ -1670,6 +1679,7 @@ test("forced cloud path does not invoke OCR or OCR text interpretation", async (
   assert.equal(qwen.calls, 1);
   assert.equal(ocrCalls, 0);
   assert.equal(textPerceptionCalls, 0);
+  assert.equal(store.listMeetingCalls, 1);
   assert.equal(upload.processing_notice, undefined);
 });
 
@@ -1726,4 +1736,150 @@ test("OCR export failure is reported without changing a healthy text result", as
   assert.equal(qwen.calls, 0);
   assert.match(upload.processing_notice ?? "", /OCR 原始结果没有导出/u);
   assert.ok(await api.getScreenshotDetail(upload.screenshot_id));
+});
+
+test("text upload proposes a linked meeting update for a high-confidence progress match", async () => {
+  const store = new FakeLocalStore();
+  const contact = store.createContact({ canonicalName: "荀导" });
+  const meeting = store.insertMeeting({
+    kind: "other",
+    title: "项目碰头会",
+    timeIso: null,
+    timeText: "今天上午",
+    participants: [{ contact_id: contact.id, name: "荀导" }],
+    agenda: "等主创到场",
+  });
+  const extraction = {
+    participants: [
+      {
+        name: "荀导",
+        is_self: false,
+        interaction_summary: "荀导已到",
+        confidence: "high" as const,
+        source_quote: "荀导已到",
+      },
+    ],
+    events: [],
+    facts: [],
+    quotes: [],
+  } satisfies PerceptionResult;
+  const text = new FakeStructuredOutputProvider(
+    () => ({ insights: [] }),
+    () => JSON.stringify({
+      matches: [
+        {
+          fragment_id: 1,
+          meeting_id: meeting.id,
+          confidence: "high",
+        },
+      ],
+    }),
+  );
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async () => {
+      throw new Error("image loading is not used for text uploads");
+    },
+    providers: {
+      async createQwenProvider() {
+        throw new Error("Qwen is not used for text uploads");
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    async perceiveOcrText() {
+      return extraction;
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  const upload = await api.uploadText({ text: "荀导已到" });
+  const meetingUpdate = upload.cards.find((card) => card.type === "create_meeting");
+  const interaction = upload.cards.find((card) => card.type === "record_interaction");
+
+  assert.ok(meetingUpdate);
+  assert.equal(meetingUpdate.payload.duplicate_of_meeting_id, meeting.id);
+  assert.equal(meetingUpdate.payload.agenda_append, "荀导已到");
+  assert.ok(interaction);
+  assert.equal(interaction.payload.contact_id, contact.id);
+  assert.equal(store.listMeetingCalls, 1);
+  assert.equal(text.completeCalls, 1);
+});
+
+test("medium meeting progress keeps the interaction card and confirmation persists its observation", async () => {
+  const store = new FakeLocalStore();
+  const contact = store.createContact({ canonicalName: "荀导" });
+  const meeting = store.insertMeeting({
+    kind: "other",
+    title: "项目碰头会",
+    timeIso: null,
+    timeText: "今天上午",
+    participants: [{ contact_id: contact.id, name: "荀导" }],
+  });
+  const extraction = {
+    participants: [
+      {
+        name: "荀导",
+        is_self: false,
+        interaction_summary: "荀导已到",
+        confidence: "high" as const,
+        source_quote: "荀导已到",
+      },
+    ],
+    events: [],
+    facts: [],
+    quotes: [],
+  } satisfies PerceptionResult;
+  const text = new FakeStructuredOutputProvider(
+    () => ({ insights: [] }),
+    () => JSON.stringify({
+      matches: [
+        {
+          fragment_id: 1,
+          meeting_id: meeting.id,
+          confidence: "medium",
+        },
+      ],
+    }),
+  );
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async () => {
+      throw new Error("image loading is not used for text uploads");
+    },
+    providers: {
+      async createQwenProvider() {
+        throw new Error("Qwen is not used for text uploads");
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    async perceiveOcrText() {
+      return extraction;
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  const upload = await api.uploadText({ text: "荀导已到" });
+  const interaction = upload.cards.find((card) => card.type === "record_interaction");
+
+  assert.equal(upload.cards.some((card) => card.type === "create_meeting"), false);
+  assert.ok(interaction);
+  assert.equal(text.completeCalls, 1);
+  assert.equal(store.listMeetingCalls, 1);
+
+  const confirmed = await api.confirmCard(interaction.id);
+  const detail = await api.getContactDetail(contact.id);
+
+  assert.equal(confirmed.observation_ids.length, 1);
+  assert.ok(detail.observations.some((observation) =>
+    observation.kind === "interaction" &&
+    observation.screenshot_id === upload.screenshot_id &&
+    observation.content.includes("荀导已到")));
+  assert.equal(text.calls, 1);
+  assert.equal(store.listMeetingCalls, 1);
 });

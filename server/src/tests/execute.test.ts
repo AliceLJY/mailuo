@@ -836,6 +836,174 @@ test("executeCard updates a duplicate meeting without inserting a new row", () =
   }
 });
 
+test("executeCard rebases stale agenda-append cards onto the latest meeting in either confirmation order", () => {
+  for (const order of ["arrival-first", "materials-first"] as const) {
+    const { db, cleanup } = withTempDb();
+
+    try {
+      const existing = db.insertMeeting({
+        kind: "other",
+        title: "准备报名材料",
+        timeIso: null,
+        timeText: "",
+        location: "一楼服务大厅",
+        participants: [{ name: "王老师" }],
+        agenda: "携带身份证复印件",
+        status: "upcoming",
+        createdAt: "2026-08-20T01:00:00.000Z",
+      });
+      const makeAppendCard = (agendaAppend: string, imagePath: string) => createPendingCard({
+        db,
+        imagePath,
+        rawExtraction: { participants: [], events: [], facts: [], quotes: [] },
+        card: {
+          type: "create_meeting",
+          payload: {
+            kind: "other",
+            title: "准备报名材料",
+            time_iso: null,
+            time_text: "",
+            location: "一楼服务大厅",
+            participants: [{ name: "王老师" }],
+            agenda: `携带身份证复印件；${agendaAppend}`,
+            agenda_append: agendaAppend,
+            duplicate_of_meeting_id: existing.id,
+            changes: {
+              agenda: {
+                old: "携带身份证复印件",
+                new: `携带身份证复印件；${agendaAppend}`,
+              },
+            },
+          },
+          confidence: "high",
+          source_quote: agendaAppend,
+        },
+      });
+      const arrivalCard = makeAppendCard("荀导已经到场", "/tmp/progress-arrival.png");
+      const materialsCard = makeAppendCard("报名材料已补齐", "/tmp/progress-materials.png");
+
+      db.updateMeeting(existing.id, {
+        kind: "other",
+        title: "准备报名材料（窗口调整）",
+        timeIso: null,
+        timeText: "",
+        location: "二楼新窗口",
+        participants: [{ name: "王老师" }, { name: "鲍老师" }],
+        agenda: "携带身份证复印件",
+      });
+      const ordinaryUpdateCard = createPendingCard({
+        db,
+        imagePath: "/tmp/ordinary-meeting-update.png",
+        rawExtraction: { participants: [], events: [], facts: [], quotes: [] },
+        card: {
+          type: "create_meeting",
+          payload: {
+            kind: "other",
+            title: "准备报名材料（窗口调整）",
+            time_iso: null,
+            time_text: "",
+            location: "三楼确认窗口",
+            participants: [{ name: "王老师" }, { name: "鲍老师" }],
+            agenda: "携带身份证复印件",
+            duplicate_of_meeting_id: existing.id,
+            changes: {
+              location: { old: "二楼新窗口", new: "三楼确认窗口" },
+            },
+          },
+          confidence: "high",
+          source_quote: "改到三楼确认窗口办理",
+        },
+      });
+
+      const confirmationCards = order === "arrival-first"
+        ? [arrivalCard, materialsCard]
+        : [materialsCard, arrivalCard];
+      for (const card of confirmationCards) {
+        executeCard({ db, cardId: card.id });
+      }
+      executeCard({ db, cardId: ordinaryUpdateCard.id });
+
+      const [updated] = db.listMeetings();
+      assert.equal(countRows(db, "meetings"), 1);
+      assert.ok(updated);
+      assert.equal(updated.title, "准备报名材料（窗口调整）");
+      assert.equal(updated.location, "三楼确认窗口");
+      assert.deepEqual(updated.participants, [{ name: "王老师" }, { name: "鲍老师" }]);
+      assert.deepEqual(
+        new Set(updated.agenda?.split("；")),
+        new Set(["携带身份证复印件", "荀导已经到场", "报名材料已补齐"]),
+      );
+      assert.equal(db.getStoredActionCardById(arrivalCard.id)?.status, "confirmed");
+      assert.equal(db.getStoredActionCardById(materialsCard.id)?.status, "confirmed");
+      assert.equal(db.getStoredActionCardById(ordinaryUpdateCard.id)?.status, "confirmed");
+    } finally {
+      cleanup();
+    }
+  }
+});
+
+test("executeCard preserves a concurrent append when an ordinary update started from an empty agenda", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const existing = db.insertMeeting({
+      kind: "other",
+      title: "项目碰头会",
+      timeIso: null,
+      timeText: "",
+      participants: [],
+      agenda: null,
+    });
+    const ordinaryCard = createPendingCard({
+      db,
+      rawExtraction: { participants: [], events: [], facts: [], quotes: [] },
+      card: {
+        type: "create_meeting",
+        payload: {
+          kind: "other",
+          title: "项目碰头会",
+          time_iso: null,
+          time_text: "",
+          participants: [],
+          agenda: "确认主创名单",
+          duplicate_of_meeting_id: existing.id,
+          changes: { agenda: { old: null, new: "确认主创名单" } },
+        },
+        confidence: "high",
+        source_quote: "先确认主创名单",
+      },
+    });
+    const progressCard = createPendingCard({
+      db,
+      rawExtraction: { participants: [], events: [], facts: [], quotes: [] },
+      card: {
+        type: "create_meeting",
+        payload: {
+          kind: "other",
+          title: "项目碰头会",
+          time_iso: null,
+          time_text: "",
+          participants: [],
+          agenda: "荀导已经到场",
+          agenda_append: "荀导已经到场",
+          duplicate_of_meeting_id: existing.id,
+          changes: { agenda: { old: null, new: "荀导已经到场" } },
+        },
+        confidence: "high",
+        source_quote: "荀导已经到场",
+      },
+    });
+
+    executeCard({ db, cardId: progressCard.id });
+    executeCard({ db, cardId: ordinaryCard.id });
+
+    assert.equal(db.listMeetings()[0]?.agenda, "确认主创名单；荀导已经到场");
+    assert.equal(countRows(db, "meetings"), 1);
+  } finally {
+    cleanup();
+  }
+});
+
 test("executeCard rejects a changed duplicate target and leaves both meetings untouched", () => {
   const { db, cleanup } = withTempDb();
 

@@ -70,7 +70,11 @@ export function ReviewCard({
   const editable = stage === "current" && card.status === "pending";
   const isDuplicateMeeting =
     card.type === "create_meeting" && card.payload.duplicate_of_meeting_id != null;
-  const meta = isDuplicateMeeting
+  const isMeetingProgressUpdate =
+    card.type === "create_meeting" && card.payload.agenda_append != null;
+  const meta = isMeetingProgressUpdate
+    ? { icon: "更", label: "更新事项备注" }
+    : isDuplicateMeeting
     ? { icon: "更", label: "已有相似事项 · 是否更新" }
     : card.type === "create_meeting" && card.payload.kind === "other"
       ? { icon: "事", label: "新事项" }
@@ -168,7 +172,7 @@ export function ReviewCard({
           <View style={styles.actionRow}>
             <AppButton
               disabled={busy}
-              label={busy ? "处理中..." : isDuplicateMeeting ? "确认更新" : "确认这张"}
+              label={busy ? "处理中..." : isMeetingProgressUpdate ? "确认追加" : isDuplicateMeeting ? "确认更新" : "确认这张"}
               onPress={onConfirm}
               style={styles.actionButton}
             />

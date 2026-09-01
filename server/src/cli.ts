@@ -5,11 +5,16 @@ import { executeCard } from './agent/execute.ts';
 import { generateInsights } from './agent/insight.ts';
 import { perceiveScreenshot } from './agent/perceive.ts';
 import { proposeCards } from '../../shared/core/agent/propose.ts';
+import {
+  resolveMeetingProgress,
+  type MeetingProgressResolution,
+} from '../../shared/core/agent/resolve.ts';
 import { resolveParticipants, type ResolvableContact } from './agent/resolve.ts';
 import { MailuoDb } from './db.ts';
 import type { PerceptionResult } from './agent/perceive.ts';
 import type { ParticipantResolution } from './agent/resolve.ts';
 import { ConfigurationError, ProviderRequestError, StructuredOutputError } from './llm/provider.ts';
+import { createTextProvider } from './llm/text.ts';
 
 type CommonCommandArgs = { imagePath: string; note?: string };
 
@@ -55,21 +60,37 @@ async function runPerceiveResolvePropose(args: {
   note?: string;
   perceiveScreenshotImpl?: typeof perceiveScreenshot;
   resolveParticipantsImpl?: typeof resolveParticipants;
+  resolveMeetingProgressImpl?: typeof resolveMeetingProgress;
 }): Promise<{
   extraction: PerceptionResult;
   resolutions: ParticipantResolution[];
   contacts: ResolvableContact[];
+  existingMeetings: ReturnType<MailuoDb['listMeetings']>;
+  meetingProgressResolutions: MeetingProgressResolution[];
 }> {
   const perceiveScreenshotImpl = args.perceiveScreenshotImpl ?? perceiveScreenshot;
   const resolveParticipantsImpl = args.resolveParticipantsImpl ?? resolveParticipants;
+  const resolveMeetingProgressImpl = args.resolveMeetingProgressImpl ?? resolveMeetingProgress;
   const extraction = await perceiveScreenshotImpl({
     imagePath: args.imagePath,
     note: args.note,
   });
   const contacts = listResolvableContacts(args.db);
   const resolutions = await resolveParticipantsImpl({ extraction, contacts });
+  const existingMeetings = args.db.listMeetings();
+  const meetingProgressResolutions = await resolveMeetingProgressImpl({
+    extraction,
+    meetings: existingMeetings,
+    providerFactory: createTextProvider,
+  });
 
-  return { extraction, resolutions, contacts };
+  return {
+    extraction,
+    resolutions,
+    contacts,
+    existingMeetings,
+    meetingProgressResolutions,
+  };
 }
 
 function sortCardsForExecution<T extends Pick<ActionCardRecord, 'id' | 'type'>>(cards: T[]): T[] {
@@ -108,6 +129,7 @@ type RunE2eFlowArgs = {
   note?: string;
   perceiveScreenshotImpl?: typeof perceiveScreenshot;
   resolveParticipantsImpl?: typeof resolveParticipants;
+  resolveMeetingProgressImpl?: typeof resolveMeetingProgress;
   proposeCardsImpl?: typeof proposeCards;
   executeCardImpl?: typeof executeCard;
   generateInsightsImpl?: typeof generateInsights;
@@ -121,12 +143,19 @@ export async function runE2eFlow(args: RunE2eFlowArgs) {
   let analysisPersisted = false;
 
   try {
-    const { extraction, resolutions, contacts } = await runPerceiveResolvePropose({
+    const {
+      extraction,
+      resolutions,
+      contacts,
+      existingMeetings,
+      meetingProgressResolutions,
+    } = await runPerceiveResolvePropose({
       db: args.db,
       imagePath: args.imagePath,
       note: args.note,
       perceiveScreenshotImpl: args.perceiveScreenshotImpl,
       resolveParticipantsImpl: args.resolveParticipantsImpl,
+      resolveMeetingProgressImpl: args.resolveMeetingProgressImpl,
     });
     const proposeCardsImpl = args.proposeCardsImpl ?? proposeCards;
     const executeCardImpl = args.executeCardImpl ?? executeCard;
@@ -139,7 +168,8 @@ export async function runE2eFlow(args: RunE2eFlowArgs) {
         resolutions,
         contacts,
         undefined,
-        args.db.listMeetings(),
+        existingMeetings,
+        meetingProgressResolutions,
       ),
     });
     analysisPersisted = true;
@@ -197,7 +227,13 @@ async function runExtractCommand(args: CommonCommandArgs): Promise<void> {
   const db = new MailuoDb();
 
   try {
-    const { extraction, resolutions, contacts } = await runPerceiveResolvePropose({
+    const {
+      extraction,
+      resolutions,
+      contacts,
+      existingMeetings,
+      meetingProgressResolutions,
+    } = await runPerceiveResolvePropose({
       db,
       imagePath: args.imagePath,
       note: args.note,
@@ -207,7 +243,8 @@ async function runExtractCommand(args: CommonCommandArgs): Promise<void> {
       resolutions,
       contacts,
       undefined,
-      db.listMeetings(),
+      existingMeetings,
+      meetingProgressResolutions,
     );
     stdout.write(`${JSON.stringify(cards, null, 2)}\n`);
   } finally {

@@ -797,7 +797,7 @@ test('POST /api/screenshots cleans partial uploads when screenshot analysis pers
   }
 });
 
-test('POST /api/screenshots runs perceive, resolve, and propose with current DB contacts before persistence', async () => {
+test('POST /api/screenshots passes complete meetings and progress resolutions through the outer proposal adapter', async () => {
   const { db, screenshotDir, cleanup } = withTempAppDirectory();
   seedDb(db);
   const existingMeeting = db.insertMeeting({
@@ -831,8 +831,26 @@ test('POST /api/screenshots runs perceive, resolve, and propose with current DB 
       source: 'exact' as const,
     },
   ];
+  const meetingProgressResolutions = [
+    {
+      meeting_id: existingMeeting.id,
+      fragments: [
+        {
+          content: '荀导已到',
+          source_quote: '荀导已到',
+        },
+      ],
+    },
+  ];
+  const textProvider = structuredProvider(async () => {
+    throw new Error('structured output is not used');
+  });
   const app = buildApp({
     db,
+    createTextProvider() {
+      calls.push('provider');
+      return textProvider;
+    },
     async perceiveScreenshot() {
       calls.push('perceive');
       return extraction;
@@ -845,12 +863,29 @@ test('POST /api/screenshots runs perceive, resolve, and propose with current DB 
       assert.equal(input.contacts[1]?.canonical_name, '陈昕');
       return resolutions;
     },
-    proposeCards(receivedExtraction, receivedResolutions, contacts, _now, existingMeetings) {
+    async resolveMeetingProgress(input) {
+      calls.push('resolve-meeting-progress');
+      assert.deepEqual(input.extraction, extraction);
+      assert.deepEqual(input.meetings, [existingMeeting]);
+      assert.equal(input.meetings[0]?.status, 'upcoming');
+      assert.equal(input.meetings[0]?.created_at, existingMeeting.created_at);
+      assert.equal(input.providerFactory?.(), textProvider);
+      return meetingProgressResolutions;
+    },
+    proposeCards(
+      receivedExtraction,
+      receivedResolutions,
+      contacts,
+      _now,
+      existingMeetings,
+      receivedMeetingProgressResolutions,
+    ) {
       calls.push('propose');
       assert.deepEqual(receivedExtraction, extraction);
       assert.deepEqual(receivedResolutions, resolutions);
       assert.equal(contacts?.length, 2);
       assert.deepEqual(existingMeetings, [existingMeeting]);
+      assert.deepEqual(receivedMeetingProgressResolutions, meetingProgressResolutions);
       return [
         {
           type: 'update_contact',
@@ -893,7 +928,13 @@ test('POST /api/screenshots runs perceive, resolve, and propose with current DB 
     );
 
     assert.equal(response.statusCode, 201);
-    assert.deepEqual(calls, ['perceive', 'resolve', 'propose']);
+    assert.deepEqual(calls, [
+      'perceive',
+      'resolve',
+      'resolve-meeting-progress',
+      'provider',
+      'propose',
+    ]);
     const payload = response.json();
     assert.equal(payload.data.cards.length, 1);
     assert.equal(payload.data.cards[0]?.type, 'update_contact');
@@ -901,6 +942,120 @@ test('POST /api/screenshots runs perceive, resolve, and propose with current DB 
       db.getScreenshotDetail(payload.data.screenshot_id)?.raw_extraction,
       extraction,
     );
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
+test('POST /api/screenshots keeps interaction cards while only high-confidence progress creates a meeting update', async () => {
+  const { db, screenshotDir, cleanup } = withTempAppDirectory();
+  const contact = db.createContact({ canonicalName: '荀导' });
+  const meeting = db.insertMeeting({
+    kind: 'other',
+    title: '项目碰头会',
+    timeIso: null,
+    timeText: '今天上午',
+    participants: [{ contact_id: contact.id, name: '荀导' }],
+    agenda: '等主创到场',
+  });
+  const extraction = {
+    participants: [
+      {
+        name: '荀导',
+        is_self: false,
+        interaction_summary: '荀导已到',
+        confidence: 'high' as const,
+        source_quote: '荀导已到',
+      },
+    ],
+    events: [],
+    facts: [],
+    quotes: [],
+  };
+  let completeCalls = 0;
+  const textProvider: StructuredOutputProvider = {
+    name: 'meeting-progress-test',
+    model: 'meeting-progress-test-model',
+    async complete() {
+      completeCalls += 1;
+      return JSON.stringify({
+        matches: [
+          {
+            fragment_id: 1,
+            meeting_id: meeting.id,
+            confidence: completeCalls === 1 ? 'high' : 'medium',
+          },
+        ],
+      });
+    },
+    async generateStructuredOutput<T>() {
+      throw new Error('structured output is not used');
+    },
+  };
+  const app = buildApp({
+    db,
+    createTextProvider() {
+      return textProvider;
+    },
+    async perceiveScreenshot() {
+      return extraction;
+    },
+    async resolveParticipants() {
+      return [
+        {
+          participant_name: '荀导',
+          normalized_name: '荀导',
+          status: 'same_as',
+          contact_id: contact.id,
+          source: 'exact',
+        },
+      ];
+    },
+  });
+
+  async function upload() {
+    const { boundary, body } = buildMultipartBody([
+      {
+        type: 'file',
+        name: 'image',
+        contentType: 'image/png',
+        value: fakeImage,
+      },
+    ]);
+
+    return withScreenshotDir(screenshotDir, () => app.inject({
+      method: 'POST',
+      url: '/api/screenshots',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: body,
+    }));
+  }
+
+  try {
+    const highResponse = await upload();
+    assert.equal(highResponse.statusCode, 201);
+    const highCards = highResponse.json().data.cards as ActionCard[];
+    const progressCard = highCards.find((card) => card.type === 'create_meeting');
+    const highInteraction = highCards.find((card) => card.type === 'record_interaction');
+
+    assert.ok(progressCard);
+    assert.equal(progressCard.payload.duplicate_of_meeting_id, meeting.id);
+    assert.equal(progressCard.payload.agenda_append, '荀导已到');
+    assert.ok(highInteraction);
+    assert.equal(highInteraction.payload.contact_id, contact.id);
+    assert.equal(highInteraction.payload.summary, '荀导已到');
+
+    const mediumResponse = await upload();
+    assert.equal(mediumResponse.statusCode, 201);
+    const mediumCards = mediumResponse.json().data.cards as ActionCard[];
+    const mediumInteraction = mediumCards.find((card) => card.type === 'record_interaction');
+
+    assert.equal(mediumCards.some((card) => card.type === 'create_meeting'), false);
+    assert.ok(mediumInteraction);
+    assert.equal(mediumInteraction.payload.contact_id, contact.id);
+    assert.equal(mediumInteraction.payload.summary, '荀导已到');
+    assert.equal(completeCalls, 2);
   } finally {
     await app.close();
     cleanup();

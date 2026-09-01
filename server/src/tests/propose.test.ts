@@ -2,7 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { PerceptionResult } from '../../../shared/core/agent/perceive.ts';
-import type { ParticipantResolution, ResolvableContact } from '../../../shared/core/agent/resolve.ts';
+import type {
+  MeetingProgressResolution,
+  ParticipantResolution,
+  ResolvableContact,
+} from '../../../shared/core/agent/resolve.ts';
 import {
   proposeCards as baseProposeCards,
   type ExistingMeeting,
@@ -16,8 +20,16 @@ function proposeCards(
   contacts: ResolvableContact[] = [],
   now = proposalNow,
   existingMeetings: ExistingMeeting[] = [],
+  meetingProgressResolutions: MeetingProgressResolution[] = [],
 ) {
-  return baseProposeCards(extraction, resolutions, contacts, now, existingMeetings);
+  return baseProposeCards(
+    extraction,
+    resolutions,
+    contacts,
+    now,
+    existingMeetings,
+    meetingProgressResolutions,
+  );
 }
 
 test('proposeCards creates contact and meeting cards from perception output', () => {
@@ -1624,4 +1636,98 @@ test('proposeCards uses the adjustable high-similarity rule only for a unique sa
       : undefined,
     undefined,
   );
+});
+
+test('proposeCards turns matched progress fragments into one agenda-append card and keeps the interaction fallback', () => {
+  const extraction: PerceptionResult = {
+    participants: [
+      {
+        name: '王老师',
+        is_self: false,
+        interaction_summary: '王老师告知荀导已经到场，报名材料也补齐了。',
+        confidence: 'high',
+        source_quote: '王老师：荀导已经到了，材料也补齐了',
+      },
+    ],
+    events: [],
+    facts: [],
+    quotes: [],
+  };
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '王老师',
+      normalized_name: '王老师',
+      status: 'same_as',
+      contact_id: 7,
+      source: 'exact',
+    },
+  ];
+  const contacts: ResolvableContact[] = [
+    {
+      id: 7,
+      canonical_name: '王老师',
+      aliases: [],
+      company: null,
+      title: null,
+      phone: null,
+      wechat_id: null,
+      notes: null,
+    },
+  ];
+  const meetingProgressResolutions: MeetingProgressResolution[] = [
+    {
+      meeting_id: existingItem.id,
+      fragments: [
+        { content: '荀导已经到场', source_quote: '荀导已经到了' },
+        { content: '报名材料已补齐', source_quote: '材料也补齐了' },
+      ],
+    },
+  ];
+
+  const cards = proposeCards(
+    extraction,
+    resolutions,
+    contacts,
+    proposalNow,
+    [existingItem],
+    meetingProgressResolutions,
+  );
+  const progressCard = cards.find(
+    (card) => card.type === 'create_meeting' && card.payload.agenda_append != null,
+  );
+  const interactionCard = cards.find((card) => card.type === 'record_interaction');
+
+  assert.ok(progressCard);
+  if (progressCard.type !== 'create_meeting') {
+    throw new Error('expected a create_meeting progress card');
+  }
+  assert.deepEqual(progressCard, {
+    type: 'create_meeting',
+    payload: {
+      kind: existingItem.kind,
+      title: existingItem.title,
+      time_iso: existingItem.time_iso,
+      time_text: existingItem.time_text,
+      location: existingItem.location,
+      participants: existingItem.participants,
+      agenda: '携带身份证复印件；荀导已经到场；报名材料已补齐',
+      agenda_append: '荀导已经到场；报名材料已补齐',
+      duplicate_of_meeting_id: existingItem.id,
+      changes: {
+        agenda: {
+          old: '携带身份证复印件',
+          new: '携带身份证复印件；荀导已经到场；报名材料已补齐',
+        },
+      },
+    },
+    confidence: 'high',
+    source_quote: '荀导已经到了\n\n材料也补齐了',
+  });
+  assert.ok(interactionCard);
+  assert.deepEqual(interactionCard.payload, {
+    contact_id: 7,
+    contact_name: '王老师',
+    summary: '王老师告知荀导已经到场，报名材料也补齐了。',
+  });
+  assert.equal(interactionCard.source_quote, '王老师：荀导已经到了，材料也补齐了');
 });

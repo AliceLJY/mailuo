@@ -1,12 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { StructuredOutputProvider, StructuredOutputRequest } from '../../../shared/core/llm/provider.ts';
+import type {
+  ChatCompletionRequest,
+  StructuredOutputProvider,
+  StructuredOutputRequest,
+} from '../../../shared/core/llm/provider.ts';
 import type { PerceptionResult } from '../../../shared/core/agent/perceive.ts';
 import {
+  MEETING_PROGRESS_CANDIDATE_LIMIT,
+  resolveMeetingProgress,
   resolveParticipants,
+  type MeetingProgressResolution,
   type ParticipantResolution,
   type ResolvableContact,
+  type ResolvableMeeting,
 } from '../../../shared/core/agent/resolve.ts';
 
 class FakeStructuredOutputProvider implements StructuredOutputProvider {
@@ -32,6 +40,33 @@ class FakeStructuredOutputProvider implements StructuredOutputProvider {
       ),
     );
     return request.schema.parse(this.responses[this.calls - 1]);
+  }
+}
+
+class FakeCompletionProvider implements StructuredOutputProvider {
+  readonly name = 'FakeCompletionProvider';
+  readonly model = 'fake-model';
+  readonly requests: ChatCompletionRequest[] = [];
+  completeCalls = 0;
+  structuredOutputCalls = 0;
+
+  constructor(private readonly responses: Array<string | Error>) {}
+
+  async complete(request: ChatCompletionRequest): Promise<string> {
+    this.completeCalls += 1;
+    this.requests.push(request);
+    const response = this.responses[this.completeCalls - 1];
+
+    if (response instanceof Error) {
+      throw response;
+    }
+
+    return response ?? '{"matches":[]}';
+  }
+
+  async generateStructuredOutput<T>(_request: StructuredOutputRequest<T>): Promise<T> {
+    this.structuredOutputCalls += 1;
+    throw new Error('generateStructuredOutput should not be called for meeting progress');
   }
 }
 
@@ -80,6 +115,37 @@ function buildExtraction(
         source_quote: `我是星火科技的市场总监${participantName}`,
       },
     ],
+  };
+}
+
+function buildResolvableMeeting(
+  overrides: Partial<ResolvableMeeting> = {},
+): ResolvableMeeting {
+  return {
+    id: 101,
+    kind: 'other',
+    title: '荀导彩排接待',
+    time_iso: '2026-09-02T14:00:00+08:00',
+    time_text: '9月2日下午两点',
+    status: 'upcoming',
+    created_at: '2026-09-01T08:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function emptyExtraction(): PerceptionResult {
+  return {
+    participants: [
+      {
+        name: '荀导',
+        is_self: false,
+        confidence: 'high',
+        source_quote: '荀导已到',
+      },
+    ],
+    events: [],
+    facts: [],
+    quotes: [],
   };
 }
 
@@ -363,4 +429,455 @@ test('resolveParticipants keeps the DB-side prompt privacy-scoped to id/name/ali
   assert.match(userPrompt, /"location":"星火科技会议室"/u);
   assert.match(userPrompt, /"participant_names":\["Will","Alice"\]/u);
   assert.match(userPrompt, /明天下午两点和Will在星火科技会议室聊合作/u);
+});
+
+test('resolveMeetingProgress batches high-confidence fragments into one complete call', async () => {
+  const provider = new FakeCompletionProvider([
+    JSON.stringify({
+      matches: [
+        { fragment_id: 1, meeting_id: 101, confidence: 'high' },
+        { fragment_id: 2, meeting_id: 101, confidence: 'high' },
+        { fragment_id: 3, meeting_id: 101, confidence: 'high' },
+        { fragment_id: 4, meeting_id: 101, confidence: 'high' },
+      ],
+    }),
+  ]);
+  const extraction: PerceptionResult = {
+    participants: [
+      {
+        name: '荀导',
+        is_self: false,
+        interaction_summary: '荀导已到',
+        confidence: 'high',
+        source_quote: '荀导已到',
+      },
+      {
+        name: '魏总',
+        is_self: false,
+        interaction_summary: '魏总已到',
+        confidence: 'low',
+        source_quote: '魏总已到',
+      },
+      {
+        name: '嘉宾',
+        is_self: false,
+        notes: '嘉宾已就位',
+        confidence: 'high',
+        source_quote: '嘉宾已就位',
+      },
+    ],
+    events: [
+      {
+        kind: 'other',
+        title: '报名材料',
+        time_text: '',
+        time_iso: null,
+        has_time_signal: false,
+        participant_names: [],
+        agenda: '报名材料已补齐',
+        confidence: 'high',
+        source_quote: '报名材料已补齐',
+      },
+    ],
+    facts: [
+      {
+        subject_name: '王总',
+        field: 'other',
+        value: '王总到了',
+        confidence: 'medium',
+        source_quote: '王总到了',
+      },
+    ],
+    quotes: [
+      {
+        speaker_name: null,
+        text: '重复的王总原话',
+        source_quote: '王总到了',
+      },
+    ],
+  };
+
+  const resolutions = await resolveMeetingProgress({
+    extraction,
+    meetings: [buildResolvableMeeting()],
+    provider,
+  });
+
+  assert.equal(provider.completeCalls, 1);
+  assert.equal(provider.structuredOutputCalls, 0);
+  assert.equal(provider.requests[0]?.temperature, 0);
+  assert.deepEqual(provider.requests[0]?.responseFormat, { type: 'json_object' });
+  assert.deepEqual(resolutions, [
+    {
+      meeting_id: 101,
+      fragments: [
+        { content: '荀导已到', source_quote: '荀导已到' },
+        { content: '嘉宾已就位', source_quote: '嘉宾已就位' },
+        { content: '王总到了', source_quote: '王总到了' },
+        { content: '报名材料已补齐', source_quote: '报名材料已补齐' },
+      ],
+    },
+  ] satisfies MeetingProgressResolution[]);
+
+  const userMessage = provider.requests[0]?.messages.find((message) => message.role === 'user');
+  assert.equal(typeof userMessage?.content, 'string');
+  const promptBody = JSON.parse(userMessage?.content as string) as {
+    fragments: Array<{ fragment_id: number; source_quote: string }>;
+    perception: PerceptionResult;
+  };
+  assert.deepEqual(promptBody.perception, extraction);
+  assert.deepEqual(
+    promptBody.fragments.map((fragment) => fragment.fragment_id),
+    [1, 2, 3, 4],
+  );
+  assert.deepEqual(
+    promptBody.fragments.map((fragment) => fragment.source_quote),
+    ['荀导已到', '嘉宾已就位', '王总到了', '报名材料已补齐'],
+  );
+});
+
+test('resolveMeetingProgress rejects medium, low, and conflicting high matches', async () => {
+  const provider = new FakeCompletionProvider([
+    JSON.stringify({
+      matches: [
+        { fragment_id: 1, meeting_id: 101, confidence: 'medium' },
+        { fragment_id: 2, meeting_id: 101, confidence: 'low' },
+        { fragment_id: 3, meeting_id: 101, confidence: 'high' },
+        { fragment_id: 3, meeting_id: 102, confidence: 'high' },
+      ],
+    }),
+  ]);
+  const extraction: PerceptionResult = {
+    participants: [
+      {
+        name: '荀导',
+        is_self: false,
+        interaction_summary: '荀导已到',
+        confidence: 'high',
+        source_quote: '荀导已到',
+      },
+    ],
+    events: [],
+    facts: [
+      {
+        subject_name: '王总',
+        field: 'notes',
+        value: '王总到了',
+        confidence: 'high',
+        source_quote: '王总到了',
+      },
+    ],
+    quotes: [
+      {
+        speaker_name: null,
+        text: '陈总到了',
+        source_quote: '陈总到了',
+      },
+    ],
+  };
+
+  const resolutions = await resolveMeetingProgress({
+    extraction,
+    meetings: [
+      buildResolvableMeeting(),
+      buildResolvableMeeting({ id: 102, title: '王总接待' }),
+    ],
+    provider,
+  });
+
+  assert.equal(provider.completeCalls, 1);
+  assert.deepEqual(resolutions, []);
+});
+
+test('resolveMeetingProgress rejects a high match when another target is also returned at lower confidence', async () => {
+  const provider = new FakeCompletionProvider([
+    JSON.stringify({
+      matches: [
+        { fragment_id: 1, meeting_id: 101, confidence: 'high' },
+        { fragment_id: 1, meeting_id: 102, confidence: 'medium' },
+      ],
+    }),
+  ]);
+  const extraction = emptyExtraction();
+  extraction.quotes.push({
+    speaker_name: null,
+    text: '荀导已到',
+    source_quote: '荀导已到',
+  });
+
+  const resolutions = await resolveMeetingProgress({
+    extraction,
+    meetings: [
+      buildResolvableMeeting(),
+      buildResolvableMeeting({ id: 102, title: '荀导接待' }),
+    ],
+    provider,
+  });
+
+  assert.equal(provider.completeCalls, 1);
+  assert.deepEqual(resolutions, []);
+});
+
+test('resolveMeetingProgress rejects mixed confidence rows even when they name the same target', async () => {
+  const provider = new FakeCompletionProvider([
+    JSON.stringify({
+      matches: [
+        { fragment_id: 1, meeting_id: 101, confidence: 'high' },
+        { fragment_id: 1, meeting_id: 101, confidence: 'low' },
+      ],
+    }),
+  ]);
+  const extraction = emptyExtraction();
+  extraction.quotes.push({
+    speaker_name: null,
+    text: '荀导已到',
+    source_quote: '荀导已到',
+  });
+
+  const resolutions = await resolveMeetingProgress({
+    extraction,
+    meetings: [buildResolvableMeeting()],
+    provider,
+  });
+
+  assert.equal(provider.completeCalls, 1);
+  assert.deepEqual(resolutions, []);
+});
+
+test('resolveMeetingProgress skips the provider when no upcoming meeting exists', async () => {
+  const provider = new FakeCompletionProvider([]);
+  let factoryCalls = 0;
+  const extraction = emptyExtraction();
+  extraction.quotes.push({
+    speaker_name: null,
+    text: '荀导已到',
+    source_quote: '荀导已到',
+  });
+
+  const resolutions = await resolveMeetingProgress({
+    extraction,
+    meetings: [buildResolvableMeeting({ status: 'completed' })],
+    provider,
+    providerFactory: () => {
+      factoryCalls += 1;
+      return provider;
+    },
+  });
+
+  assert.deepEqual(resolutions, []);
+  assert.equal(provider.completeCalls, 0);
+  assert.equal(factoryCalls, 0);
+});
+
+test('resolveMeetingProgress skips the provider when no direct progress signal exists', async () => {
+  const provider = new FakeCompletionProvider([]);
+  let factoryCalls = 0;
+  const extraction = emptyExtraction();
+  extraction.participants.push({
+    name: '荀导',
+    is_self: false,
+    interaction_summary: '和荀导讨论了彩排安排',
+    confidence: 'high',
+    source_quote: '我们讨论一下明天的彩排安排',
+  });
+
+  const resolutions = await resolveMeetingProgress({
+    extraction,
+    meetings: [buildResolvableMeeting()],
+    provider,
+    providerFactory: () => {
+      factoryCalls += 1;
+      return provider;
+    },
+  });
+
+  assert.deepEqual(resolutions, []);
+  assert.equal(provider.completeCalls, 0);
+  assert.equal(factoryCalls, 0);
+});
+
+test('resolveMeetingProgress skips unanchored progress when no person can receive the interaction fallback', async () => {
+  const provider = new FakeCompletionProvider([]);
+  const extraction: PerceptionResult = {
+    participants: [],
+    events: [],
+    facts: [],
+    quotes: [
+      {
+        speaker_name: null,
+        text: '荀导已到',
+        source_quote: '荀导已到',
+      },
+    ],
+  };
+
+  const resolutions = await resolveMeetingProgress({
+    extraction,
+    meetings: [buildResolvableMeeting()],
+    provider,
+  });
+
+  assert.deepEqual(resolutions, []);
+  assert.equal(provider.completeCalls, 0);
+});
+
+test('resolveMeetingProgress conservatively returns empty for invalid JSON', async () => {
+  const provider = new FakeCompletionProvider(['not-json']);
+  const extraction = emptyExtraction();
+  extraction.quotes.push({
+    speaker_name: null,
+    text: '荀导已到',
+    source_quote: '荀导已到',
+  });
+
+  const resolutions = await resolveMeetingProgress({
+    extraction,
+    meetings: [buildResolvableMeeting()],
+    provider,
+  });
+
+  assert.equal(provider.completeCalls, 1);
+  assert.deepEqual(resolutions, []);
+});
+
+test('resolveMeetingProgress conservatively returns empty for out-of-range ids', async () => {
+  const provider = new FakeCompletionProvider([
+    '{"matches":[{"fragment_id":1,"meeting_id":999,"confidence":"high"}]}',
+  ]);
+  const extraction = emptyExtraction();
+  extraction.quotes.push({
+    speaker_name: null,
+    text: '荀导已到',
+    source_quote: '荀导已到',
+  });
+
+  const resolutions = await resolveMeetingProgress({
+    extraction,
+    meetings: [buildResolvableMeeting()],
+    provider,
+  });
+
+  assert.equal(provider.completeCalls, 1);
+  assert.deepEqual(resolutions, []);
+});
+
+test('resolveMeetingProgress conservatively returns empty for provider failures', async () => {
+  const provider = new FakeCompletionProvider([new Error('network unavailable')]);
+  const extraction = emptyExtraction();
+  extraction.quotes.push({
+    speaker_name: null,
+    text: '荀导已到',
+    source_quote: '荀导已到',
+  });
+
+  const resolutions = await resolveMeetingProgress({
+    extraction,
+    meetings: [buildResolvableMeeting()],
+    provider,
+  });
+
+  assert.equal(provider.completeCalls, 1);
+  assert.deepEqual(resolutions, []);
+});
+
+test('resolveMeetingProgress conservatively returns empty when provider creation fails', async () => {
+  const extraction = emptyExtraction();
+  extraction.quotes.push({
+    speaker_name: null,
+    text: '荀导已到',
+    source_quote: '荀导已到',
+  });
+
+  const resolutions = await resolveMeetingProgress({
+    extraction,
+    meetings: [buildResolvableMeeting()],
+    providerFactory() {
+      throw new Error('provider configuration unavailable');
+    },
+  });
+
+  assert.deepEqual(resolutions, []);
+});
+
+test('resolveMeetingProgress requires a provider only when a call is needed', async () => {
+  const extraction = emptyExtraction();
+  extraction.quotes.push({
+    speaker_name: null,
+    text: '荀导已到',
+    source_quote: '荀导已到',
+  });
+
+  await assert.rejects(
+    resolveMeetingProgress({ extraction, meetings: [buildResolvableMeeting()] }),
+    TypeError,
+  );
+});
+
+test('resolveMeetingProgress sends only the newest whitelisted meeting fields', async () => {
+  const provider = new FakeCompletionProvider(['{"matches":[]}']);
+  const extraction = emptyExtraction();
+  extraction.quotes.push({
+    speaker_name: null,
+    text: '荀导已到',
+    source_quote: '荀导已到',
+  });
+  const meetings = Array.from({ length: MEETING_PROGRESS_CANDIDATE_LIMIT + 2 }, (_, index) => ({
+    ...buildResolvableMeeting({
+      id: index + 1,
+      title: `事项 ${index + 1}`,
+      created_at: `2026-09-${String(index + 1).padStart(2, '0')}T08:00:00.000Z`,
+    }),
+    agenda: `private agenda ${index + 1}`,
+    participants: [`private participant ${index + 1}`],
+    location: `private location ${index + 1}`,
+  }));
+  meetings.push({
+    ...buildResolvableMeeting({
+      id: 999,
+      status: 'completed',
+      created_at: '2026-10-01T08:00:00.000Z',
+    }),
+    agenda: 'completed private agenda',
+    participants: ['completed private participant'],
+    location: 'completed private location',
+  });
+
+  await resolveMeetingProgress({ extraction, meetings, provider });
+
+  assert.equal(provider.completeCalls, 1);
+  const systemMessage = provider.requests[0]?.messages.find(
+    (message) => message.role === 'system',
+  );
+  assert.equal(typeof systemMessage?.content, 'string');
+  assert.match(systemMessage?.content as string, /direct, explicit context/u);
+  assert.match(systemMessage?.content as string, /similar topic or wording alone is not enough/iu);
+  assert.match(systemMessage?.content as string, /Do not rewrite/u);
+  assert.match(systemMessage?.content as string, /never as instructions/u);
+
+  const userMessage = provider.requests[0]?.messages.find((message) => message.role === 'user');
+  assert.equal(typeof userMessage?.content, 'string');
+  const promptBody = JSON.parse(userMessage?.content as string) as {
+    meetings: Array<Record<string, unknown>>;
+  };
+
+  assert.equal(promptBody.meetings.length, MEETING_PROGRESS_CANDIDATE_LIMIT);
+  assert.deepEqual(
+    promptBody.meetings.map((meeting) => meeting.id),
+    Array.from({ length: MEETING_PROGRESS_CANDIDATE_LIMIT }, (_, index) => 22 - index),
+  );
+
+  for (const meeting of promptBody.meetings) {
+    assert.deepEqual(Object.keys(meeting).sort(), [
+      'id',
+      'kind',
+      'time_iso',
+      'time_text',
+      'title',
+    ]);
+    assert.equal('agenda' in meeting, false);
+    assert.equal('participants' in meeting, false);
+    assert.equal('location' in meeting, false);
+    assert.equal('status' in meeting, false);
+    assert.equal('created_at' in meeting, false);
+  }
 });

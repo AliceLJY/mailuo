@@ -88,6 +88,10 @@ export function ActionCardPreview({ card, compact = false, onPressSource }: Prop
 }
 
 function getCardTypeLabel(card: ActionCardRecord) {
+  if (card.type === "create_meeting" && card.payload.agenda_append != null) {
+    return "更新事项备注";
+  }
+
   if (card.type === "create_meeting" && card.payload.duplicate_of_meeting_id != null) {
     return "已有相似事项 · 是否更新";
   }
@@ -113,6 +117,10 @@ function summarizeCard(card: ActionCardRecord) {
   }
 
   if (card.type === "create_meeting") {
+    if (card.payload.agenda_append != null) {
+      return `${card.payload.title}：追加备注 ${card.payload.agenda_append}`;
+    }
+
     if (card.payload.duplicate_of_meeting_id != null) {
       const differences = Object.entries(card.payload.changes ?? {})
         .map(([field, value]) =>

@@ -125,7 +125,50 @@ export function MeetingFields({
   setPayload: (payload: ReviewCardDraft["payload"]) => void;
 }) {
   const isOther = payload.kind === "other";
+  const isProgressUpdate = payload.agenda_append != null;
   const duplicateChanges = Object.entries(payload.changes ?? {});
+
+  if (isProgressUpdate) {
+    const existingAgenda = payload.changes?.agenda?.old ?? null;
+
+    return (
+      <View style={styles.section}>
+        <View style={styles.block}>
+          <Text style={styles.fieldLabel}>更新事项备注</Text>
+          <Text style={styles.metaText}>
+            确认后只把这段推进追加到现有事项 #{payload.duplicate_of_meeting_id}，不会覆盖其他更新。
+          </Text>
+        </View>
+        <StaticLine label="事项" value={payload.title} />
+        {existingAgenda ? <StaticLine label="现有备注" value={existingAgenda} /> : null}
+        <FieldInput
+          editable={editable}
+          label="追加事项备注"
+          multiline
+          value={payload.agenda_append ?? ""}
+          onChangeText={(agenda_append) => {
+            const normalizedAppend = agenda_append.trim();
+            const agenda = [existingAgenda, normalizedAppend].filter(Boolean).join("；");
+            setPayload({
+              ...payload,
+              agenda_append,
+              agenda,
+              changes: {
+                ...payload.changes,
+                agenda: { old: existingAgenda, new: agenda || null },
+              },
+            });
+          }}
+        />
+        {payload.participants.length ? (
+          <StaticLine
+            label={isOther ? "相关人" : "参与人"}
+            value={payload.participants.map((participant) => participant.name).join("、")}
+          />
+        ) : null}
+      </View>
+    );
+  }
 
   return (
     <View style={styles.section}>

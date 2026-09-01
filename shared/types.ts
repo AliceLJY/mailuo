@@ -43,6 +43,9 @@ export type CreateMeetingPayload = {
   location?: string;
   participants: Array<{ contact_id?: number; name: string }>;
   agenda?: string;
+  // Goal 3 progress cards carry the append delta separately so confirmation can
+  // rebase it onto the latest agenda instead of overwriting another pending update.
+  agenda_append?: string;
   duplicate_of_meeting_id?: number;
   changes?: MeetingChanges;
 };

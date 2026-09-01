@@ -48,6 +48,7 @@ export const CreateMeetingPayloadSchema = z
     location: z.string().optional(),
     participants: z.array(MeetingParticipantSchema),
     agenda: z.string().optional(),
+    agenda_append: z.string().trim().min(1).optional(),
     duplicate_of_meeting_id: z.number().int().positive().optional(),
     changes: z
       .partialRecord(
@@ -75,6 +76,14 @@ export const CreateMeetingPayloadSchema = z
       context.addIssue({
         code: 'custom',
         message: 'meeting changes require duplicate_of_meeting_id',
+        path: ['duplicate_of_meeting_id'],
+      });
+    }
+
+    if (payload.agenda_append != null && payload.duplicate_of_meeting_id == null) {
+      context.addIssue({
+        code: 'custom',
+        message: 'agenda append cards require duplicate_of_meeting_id',
         path: ['duplicate_of_meeting_id'],
       });
     }
