@@ -43,6 +43,10 @@ owner 评价「基本满足智能化」；本批修人脉侧最后两个体验�
 - 可动：`shared/core/agent/propose.ts`（仅 buildInteractionPayload fallback）、
   `shared/core/agent/insight.ts`、`shared/core/llm/prompts.ts`、`server/src/db.ts` 与
   `app/src/local/store.ts`（仅新增删除洞察接口）、prompt 快照、测试
+- **db 层放开口径（2026-09-01 补，回答 codex 的 NEEDS_CONTEXT）**：「删旧→插新」的原子性
+  **首选新增组合接口**（如 `replaceInsightsForContacts`，内部单事务删旧+插新），
+  已有 `insertInsights` 保持原样零改动；若组合接口路线有硬障碍，允许把 `insertInsights`
+  改为事务感知，但要在报告里说明为什么组合接口走不通
 - 不可动：数据库 schema（删数据不改结构）、卡片拆分与确认行为、M4 及 fix1 已交付行为、
   `/api/screenshots`
 - 不新增依赖
