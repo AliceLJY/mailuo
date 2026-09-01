@@ -156,6 +156,13 @@ aliases 的写入全部经用户确认的卡片走，感知层只在同图证据
 - 可动：`app/`；`shared/core/`（schema.ts + 新迁移模块、agent 的 propose / resolve、
   llm/prompts.ts、perceive 的 kind 流转）；`server/src/db.ts`（**仅迁移机制接入**）；
   `docs/`；README 两份；`PLAN.md`（仅新增产品原则段与里程碑记录）
+- **server 端有限放开（2026-09-01 补，回答 codex Goal 2 的 NEEDS_CONTEXT——Goal 2 的
+  UPDATE 路径必须过 server 才能两端生效，原 Scope 写窄了）**：
+  - ✅ `server/src/app.ts`、`server/src/cli.ts`：**仅**向 `proposeCards` 透传已有事项清单
+  - ✅ `server/src/db.ts`：迁移接入之外，允许**新增最小会议 UPDATE 接口**（现有接口只有
+    insert / list）
+  - ✅ `server/src/tests/`：补 Goal 2 验收测试
+  - ❌ `/api/screenshots` 现有行为、请求格式、返回结构仍一行不动；不许借机重构 server 其它部分
 - **不可动**：`/api/screenshots` 现有行为；M1-M3 已验收行为（本地 OCR 链路、降级分级、
   批次归并与负数 id 映射、时间不推测两层规则、卡片按截图顺序排）；
   `platform-variant-imports.test.ts`（可扩展不可删改）
