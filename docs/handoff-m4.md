@@ -26,7 +26,7 @@
 - `deploy/README.md`：部署步骤 + tailscale serve 一行命令示例（`tailscale serve --bg --https=<port> http://127.0.0.1:3300`）。
 
 ### 6. Android APK 构建配置
-- `app/eas.json`：`preview` profile 出 APK（`buildType: "apk"`），env 里 `EXPO_PUBLIC_API_URL` 设为 `https://mac-mini.tail791fb9.ts.net:8443`（部署后的 tailnet 地址，出门可用）。
+- `app/eas.json`：`preview` profile 出 APK（`buildType: "apk"`），env 里 `EXPO_PUBLIC_API_URL` 设为 `https://<your-mac>.<tailnet>.ts.net:8443`（部署后的 tailnet 地址，出门可用）。
 - `app/app.json` 补齐：应用名"脉络"、`android.package`（如 `com.alice.mailuo`）、图标与启动屏用纯色占位即可（不花时间做美术资产）。
 - 构建触发由 owner 执行，你只保证配置文件就绪。
 

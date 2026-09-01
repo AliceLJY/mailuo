@@ -238,7 +238,7 @@ UI 基调：微信绿系配色致敬场景，卡片圆角阴影，不引 UI 库�
 
 **M4 部署 + 交付面**
 - 内容：mini launchd plist（`com.alice.mailuo-server`）+ tailscale serve 暴露 + 部署脚本 `deploy/install.sh`；README（架构图 + agent 环说明 + memory 三层 + demo 截图/GIF + 隐私边界 + Future work）；三张测试截图 fixtures 入仓。
-- 验收：手机（蜂窝网/非家庭 WiFi）Expo Go 走通全流程；`curl https://mac-mini.tail791fb9.ts.net:<port>/api/health` 返回 ok；repo 推 GitHub（可见性由 Alice 定）。
+- 验收：手机（蜂窝网/非家庭 WiFi）Expo Go 走通全流程；`curl https://<your-mac>.<tailnet>.ts.net:<port>/api/health` 返回 ok；repo 推 GitHub（可见性由 Alice 定）。
 
 **明说不做（Future work，写进 README 防止被当遗漏）**：系统日历集成、消息 App 直连、多用户与鉴权体系、iOS 独立安装包（EAS iOS 构建需 Apple Developer 账号）、群聊多人复杂场景的深度优化、洞察定时主动推送。
 

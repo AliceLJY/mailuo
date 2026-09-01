@@ -84,7 +84,7 @@ That split lets the model use profile fields for "who this person is" and observ
 The project was hardened through a three-layer test funnel.
 
 - Mock funnel: by the M4 handoff checkpoint, the suite had grown from 53 to 74 green cases across schema, proposal, resolution, execution, route behavior, and grounded insights.
-- Current M4 baseline: the mock suite is now 87/87 green, with the added coverage focused on provider defaults, self-contact guards, partial upload cleanup, no-time-signal meeting folding, and same-origin static serving.
+- Current baseline: the test suites are now 182/182 green (server 109 + app 73), with the added coverage focused on provider defaults, self-contact guards, partial upload cleanup, no-time-signal meeting folding, and same-origin static serving.
 - Live model pass: owner testing with real keys exposed four prompt-layer failures that mocks had not covered yet. The system used to create a contact for the user's own self-side messages, push a company change into `notes` instead of `company`, turn "let's talk later" into a meeting without a time signal, and truncate insight JSON when the token ceiling was too small.
 - Real devices: iPhone and Android surfaced two platform issues. Expo SDK 57 native uploads rejected legacy React Native `{ uri, name, type }` parts, so the app switched to standard `Blob` and `File`. The web client also needed CORS because the Metro dev server and the API server ran on different ports.
 
@@ -175,9 +175,12 @@ M4 build and deployment assets live in [deploy/README.md](deploy/README.md) and 
 - Vision extraction can occasionally misread text. In owner testing, the same screenshot produced the company name once as `Chengyao Lab` and once as the OCR variant `Qianyao Lab`, so confirmation cards should still be used to manually verify important fields.
 - Re-uploading the same screenshot currently accumulates duplicate observations and meetings. In owner testing, uploading the same image three times produced 22 observations for one contact and two identical meetings on the schedule. The system does not deduplicate those repeats yet.
 
+## Distribution Modes
+
+One package offers (1) **BYOK local mode**, where users enter their own model keys and the pipeline runs in the native app; (2) **self-hosted server mode**, which connects to the user's own Mailuo backend; and (3) a disabled **subscription** placeholder marked “Coming soon.” The web build supports server mode only; local mode is exclusive to the native app.
+
 ## Future Work
 
-- **Distribution modes on the v2 branch**: one package now offers (1) **BYOK local mode**, where users enter their own model keys and the pipeline runs in the native app; (2) **self-hosted server mode**, which connects to the user's own Mailuo backend; and (3) a disabled **subscription** placeholder marked “Coming soon.” The web build supports server mode only; local mode is exclusive to the native app.
 - iOS native distribution: when the target region's App Store does not offer Expo Go, native iOS distribution needs an Apple Developer account plus EAS and TestFlight.
 - Duplicate screenshot detection and merge.
 - Insight retry endpoint.
