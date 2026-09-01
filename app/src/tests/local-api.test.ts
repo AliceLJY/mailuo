@@ -1247,6 +1247,8 @@ async function runOcrFallbackCase(
   assert.equal(textPerceptionCalls, expectedTextPerceptionCalls);
   assert.match(upload.processing_notice ?? "", /已用云端模型重新处理/u);
   assert.ok(await api.getScreenshotDetail(upload.screenshot_id));
+
+  return upload;
 }
 
 async function runOcrTextOnlyCase(ocr: OcrPerceptionResult) {
@@ -1294,17 +1296,27 @@ async function runOcrTextOnlyCase(ocr: OcrPerceptionResult) {
 }
 
 test("OCR exception falls back to Qwen-VL without deleting the screenshot", async () => {
-  await runOcrFallbackCase(async () => {
-    throw new Error("ML Kit unavailable");
+  const upload = await runOcrFallbackCase(async () => {
+    throw new Error("xxx");
   });
+
+  assert.match(
+    upload.processing_notice ?? "",
+    /^本地 OCR 运行失败，已用云端模型重新处理。 本地 OCR 未能运行：message=xxx；name=Error；stack=Error: xxx$/u,
+  );
 });
 
 test("zero OCR lines fall back to Qwen-VL without crashing", async () => {
-  await runOcrFallbackCase(async () => ({
+  const upload = await runOcrFallbackCase(async () => ({
     lines: [],
     warnings: [],
     degraded: false,
   }));
+
+  assert.equal(
+    upload.processing_notice,
+    "本地 OCR 未识别到文本，已用云端模型重新处理。",
+  );
 });
 
 test("all-null region samples stay on OCR text and do not create a Qwen-VL provider", async () => {
@@ -1367,7 +1379,7 @@ test("recognized text without geometry stays on text perception and skips Qwen-V
 });
 
 test("low-confidence OCR rows above the threshold fall back to Qwen-VL", async () => {
-  await runOcrFallbackCase(async () => ({
+  const upload = await runOcrFallbackCase(async () => ({
     lines: [0.2, 0.3, 0.4, 0.95].map((confidence, index) => ({
       text: `第 ${index + 1} 行`,
       side: null,
@@ -1380,6 +1392,11 @@ test("low-confidence OCR rows above the threshold fall back to Qwen-VL", async (
     warnings: [],
     degraded: false,
   }));
+
+  assert.equal(
+    upload.processing_notice,
+    "本地 OCR 识别结果置信度过低，已用云端模型重新处理。",
+  );
 });
 
 test("OCR text interpretation failure falls back to Qwen-VL once", async () => {

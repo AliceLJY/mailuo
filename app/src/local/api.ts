@@ -31,6 +31,10 @@ import {
 import type { LocalStore, ScreenshotImageLoader } from "./types";
 
 const OCR_FALLBACK_NOTICE = "部分内容可能识别不全，已用云端模型重新处理。";
+const OCR_RUNTIME_FALLBACK_NOTICE = "本地 OCR 运行失败，已用云端模型重新处理。";
+const OCR_EMPTY_FALLBACK_NOTICE = "本地 OCR 未识别到文本，已用云端模型重新处理。";
+const OCR_LOW_CONFIDENCE_FALLBACK_NOTICE =
+  "本地 OCR 识别结果置信度过低，已用云端模型重新处理。";
 const OCR_SPEAKER_NOTICE = "部分消息的发言人未能确定，已交由模型从文本判断。";
 const OCR_EXPORT_FAILURE_NOTICE = "截图已处理，但 OCR 原始结果没有导出，请再试一次。";
 
@@ -69,6 +73,15 @@ function listResolvableContacts(store: LocalStore): ResolvableContact[] {
 
 function notFound(entity: string, id: number): Error {
   return new Error(`${entity} ${id} not found`);
+}
+
+function formatOcrRuntimeFailureNotice(error: unknown): string {
+  if (error instanceof Error) {
+    const stackFirstLine = error.stack?.split(/\r?\n/u, 1)[0] ?? "";
+    return `本地 OCR 未能运行：message=${error.message}；name=${error.name}；stack=${stackFirstLine}`;
+  }
+
+  return `本地 OCR 未能运行：message=${String(error)}；name=${typeof error}；stack=`;
 }
 
 export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
@@ -167,11 +180,12 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           options.perceiveOcrText
         ) {
           let ocr: OcrPerceptionResult | null = null;
+          let ocrRuntimeFailureNotice: string | null = null;
 
           try {
             ocr = await options.perceiveOcr(loadedImage.imagePath);
-          } catch {
-            // Recognition failure is handled by the original visual path below.
+          } catch (error) {
+            ocrRuntimeFailureNotice = formatOcrRuntimeFailureNotice(error);
           }
 
           if (ocr && processing.exportOcrResults) {
@@ -189,9 +203,18 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
             }
           }
 
-          if (!ocr || ocr.lines.length === 0 || isOcrTextQualityPoor(ocr)) {
+          if (!ocr) {
             extraction = await perceiveVisually();
-            notices.unshift(OCR_FALLBACK_NOTICE);
+            notices.unshift(
+              OCR_RUNTIME_FALLBACK_NOTICE,
+              ocrRuntimeFailureNotice ?? formatOcrRuntimeFailureNotice(ocr),
+            );
+          } else if (ocr.lines.length === 0) {
+            extraction = await perceiveVisually();
+            notices.unshift(OCR_EMPTY_FALLBACK_NOTICE);
+          } else if (isOcrTextQualityPoor(ocr)) {
+            extraction = await perceiveVisually();
+            notices.unshift(OCR_LOW_CONFIDENCE_FALLBACK_NOTICE);
           } else {
             try {
               extraction = await options.perceiveOcrText({
