@@ -8,13 +8,17 @@ import { FormNotice } from "@/components/connection-fields";
 import { Page, SectionCard } from "@/components/page";
 import { getLocalProcessingSettings, type LocalProcessingSettings } from "@/connection/config";
 import { useConnection } from "@/connection/context";
+import { exportLocalDiagnosticsBundle } from "@/diagnostics/diagnostics-export-runtime";
+import { logEvent } from "@/diagnostics/event-log";
 import { hasInProgressFlowItems, useFlow } from "@/flow-context";
 import { theme } from "@/theme";
+import { useToast } from "@/toast-context";
 
 export default function SettingsScreen() {
   const { clearConfig, config, saveConfig } = useConnection();
   const { batchItems, resetFlow } = useFlow();
   const [clearingData, setClearingData] = useState(false);
+  const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [savingPreference, setSavingPreference] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -22,7 +26,9 @@ export default function SettingsScreen() {
   const localProcessing = getLocalProcessingSettings(config);
   const hasInProgressUpload = hasInProgressFlowItems(batchItems);
   const clearingDataRef = useRef(false);
+  const exportingDiagnosticsRef = useRef(false);
   const hasInProgressUploadRef = useRef(hasInProgressUpload);
+  const { showToast } = useToast();
   hasInProgressUploadRef.current = hasInProgressUpload;
 
   async function saveLocalProcessing(patch: Partial<LocalProcessingSettings>) {
@@ -48,6 +54,11 @@ export default function SettingsScreen() {
   }
 
   async function switchMode() {
+    if (exportingDiagnosticsRef.current) {
+      setMessage("诊断包正在导出，请完成后再切换连接方式。");
+      return;
+    }
+
     if (hasInProgressUpload) {
       setMessage("当前内容仍在整理，请完成后再切换连接方式。");
       return;
@@ -71,6 +82,11 @@ export default function SettingsScreen() {
       return;
     }
 
+    if (exportingDiagnosticsRef.current) {
+      setMessage("诊断包正在导出，请完成后再清空全部数据。");
+      return;
+    }
+
     if (hasInProgressUploadRef.current) {
       setMessage("当前内容仍在整理，请完成后再清空全部数据。");
       return;
@@ -81,6 +97,7 @@ export default function SettingsScreen() {
     setMessage(null);
 
     try {
+      logEvent("clear_all");
       await clearAllData();
       resetFlow();
       Alert.alert(
@@ -95,8 +112,48 @@ export default function SettingsScreen() {
     }
   }
 
+  async function exportDiagnostics() {
+    if (
+      exportingDiagnosticsRef.current ||
+      clearingDataRef.current ||
+      switching ||
+      !isLocal ||
+      Platform.OS === "web"
+    ) {
+      return;
+    }
+
+    if (hasInProgressUploadRef.current) {
+      setMessage("当前内容仍在整理，请完成后再导出诊断包。");
+      return;
+    }
+
+    exportingDiagnosticsRef.current = true;
+    setExportingDiagnostics(true);
+    setMessage(null);
+
+    try {
+      const result = await exportLocalDiagnosticsBundle({ connectionMode: "local" });
+      showToast(`诊断包已导出到 ${result.directoryName}`, "info");
+    } catch (error) {
+      const reason = error instanceof Error && error.message.trim()
+        ? error.message.trim()
+        : "诊断包暂时没有导出成功，请确认所选文件夹可写后再试一次。";
+      setMessage(reason);
+      showToast(reason, "error");
+    } finally {
+      exportingDiagnosticsRef.current = false;
+      setExportingDiagnostics(false);
+    }
+  }
+
   function confirmClearAllData() {
     if (clearingDataRef.current) {
+      return;
+    }
+
+    if (exportingDiagnosticsRef.current) {
+      setMessage("诊断包正在导出，请完成后再清空全部数据。");
       return;
     }
 
@@ -179,7 +236,7 @@ export default function SettingsScreen() {
             : "更换后会回到选择页。手机里已经保存的模型 Key 不会被显示或删除。"}
         </Text>
         <AppButton
-          disabled={switching || hasInProgressUpload}
+          disabled={switching || exportingDiagnostics || hasInProgressUpload}
           label={switching ? "正在切换..." : hasInProgressUpload ? "整理完成后可切换" : "切换连接方式"}
           onPress={() => void switchMode()}
           tone="secondary"
@@ -187,23 +244,45 @@ export default function SettingsScreen() {
       </SectionCard>
 
       {Platform.OS !== "web" && config?.mode === "local" ? (
-        <SectionCard title="清空全部数据">
-          <Text style={styles.description}>
-            清空这台设备上的全部联系人、截图、卡片、会面、观察和洞察等本地数据。API Key 与设置会保留。
-          </Text>
-          <AppButton
-            disabled={clearingData || hasInProgressUpload}
-            label={
-              clearingData
-                ? "正在清空..."
-                : hasInProgressUpload
-                  ? "整理完成后可清空"
-                  : "清空全部数据"
-            }
-            onPress={confirmClearAllData}
-            tone="danger"
-          />
-        </SectionCard>
+        <>
+          <SectionCard title="诊断">
+            <Text style={styles.description}>
+              把这台设备上的本地档案、原始整理结果、过程记录与黑匣子日志写入你选择的文件夹。内容不脱敏，也不会上传。
+            </Text>
+            <AppButton
+              disabled={
+                exportingDiagnostics || clearingData || switching || hasInProgressUpload
+              }
+              label={
+                exportingDiagnostics
+                  ? "正在导出..."
+                  : hasInProgressUpload
+                    ? "整理完成后可导出"
+                    : "导出诊断包"
+              }
+              onPress={() => void exportDiagnostics()}
+              tone="secondary"
+            />
+          </SectionCard>
+
+          <SectionCard title="清空全部数据">
+            <Text style={styles.description}>
+              清空这台设备上的全部联系人、截图、卡片、会面、观察和洞察等本地数据。API Key 与设置会保留。
+            </Text>
+            <AppButton
+              disabled={clearingData || exportingDiagnostics || hasInProgressUpload}
+              label={
+                clearingData
+                  ? "正在清空..."
+                  : hasInProgressUpload
+                    ? "整理完成后可清空"
+                    : "清空全部数据"
+              }
+              onPress={confirmClearAllData}
+              tone="danger"
+            />
+          </SectionCard>
+        </>
       ) : null}
 
       {message ? <FormNotice message={message} tone="error" /> : null}

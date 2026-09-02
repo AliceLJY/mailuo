@@ -1,3 +1,5 @@
+import { appendEvent } from "./event-log";
+
 export const CRASH_RECORD_KEY = "mailuo.crash.last.v1";
 export const MAX_CRASH_STACK_FRAMES = 8;
 
@@ -16,8 +18,19 @@ export type CrashContext = {
 
 export type CrashRecord = {
   timestamp: string;
-  name: string;
   message: string;
+  name?: string;
+  stackFrames?: string[];
+  isFatal?: boolean;
+  appVersion?: string;
+  currentRoute?: string;
+  batchProgress?: CrashBatchProgress | null;
+  exportOcrResults?: boolean;
+  hermesStats?: Record<string, number>;
+};
+
+export type CapturedCrashRecord = CrashRecord & {
+  name: string;
   stackFrames: string[];
   isFatal: boolean;
   appVersion: string;
@@ -67,7 +80,7 @@ export function createCrashRecord(
   error: unknown,
   isFatal: boolean,
   options: CreateCrashRecordOptions = {},
-): CrashRecord {
+): CapturedCrashRecord {
   const context = options.context
     ? { ...DEFAULT_CONTEXT, ...options.context }
     : currentContext;
@@ -104,6 +117,8 @@ export function writeCrashRecord(
     // A crash reporter must not replace the original error with a storage failure.
   }
 
+  appendEvent(storage, "crash", record.message);
+
   return record;
 }
 
@@ -114,8 +129,7 @@ export function readCrashRecord(storage: SyncCrashStorage): CrashRecord | null {
       return null;
     }
 
-    const parsed: unknown = JSON.parse(serialized);
-    return isCrashRecord(parsed) ? parsed : null;
+    return toCrashRecord(JSON.parse(serialized));
   } catch {
     return null;
   }
@@ -251,26 +265,52 @@ function numericHermesStats(stats: Record<string, unknown> | null | undefined) {
   return numeric;
 }
 
-function isCrashRecord(value: unknown): value is CrashRecord {
+function toCrashRecord(value: unknown): CrashRecord | null {
   if (!value || typeof value !== "object") {
-    return false;
+    return null;
   }
 
   const candidate = value as Partial<CrashRecord>;
-  return (
-    typeof candidate.timestamp === "string" &&
-    typeof candidate.name === "string" &&
-    typeof candidate.message === "string" &&
-    Array.isArray(candidate.stackFrames) &&
-    candidate.stackFrames.length <= MAX_CRASH_STACK_FRAMES &&
-    candidate.stackFrames.every((frame) => typeof frame === "string") &&
-    typeof candidate.isFatal === "boolean" &&
-    typeof candidate.appVersion === "string" &&
-    typeof candidate.currentRoute === "string" &&
-    isBatchProgress(candidate.batchProgress) &&
-    typeof candidate.exportOcrResults === "boolean" &&
-    isNumericRecord(candidate.hermesStats)
-  );
+  if (
+    typeof candidate.timestamp !== "string" ||
+    typeof candidate.message !== "string"
+  ) {
+    return null;
+  }
+
+  const record: CrashRecord = {
+    timestamp: candidate.timestamp,
+    message: candidate.message,
+  };
+
+  if (typeof candidate.name === "string") {
+    record.name = candidate.name;
+  }
+  if (Array.isArray(candidate.stackFrames)) {
+    record.stackFrames = candidate.stackFrames
+      .filter((frame): frame is string => typeof frame === "string")
+      .slice(0, MAX_CRASH_STACK_FRAMES);
+  }
+  if (typeof candidate.isFatal === "boolean") {
+    record.isFatal = candidate.isFatal;
+  }
+  if (typeof candidate.appVersion === "string") {
+    record.appVersion = candidate.appVersion;
+  }
+  if (typeof candidate.currentRoute === "string") {
+    record.currentRoute = candidate.currentRoute;
+  }
+  if (candidate.batchProgress === null || isBatchProgress(candidate.batchProgress)) {
+    record.batchProgress = candidate.batchProgress;
+  }
+  if (typeof candidate.exportOcrResults === "boolean") {
+    record.exportOcrResults = candidate.exportOcrResults;
+  }
+  if (isObjectRecord(candidate.hermesStats)) {
+    record.hermesStats = numericHermesStats(candidate.hermesStats);
+  }
+
+  return record;
 }
 
 function isBatchProgress(value: unknown): value is CrashBatchProgress | null {
@@ -295,12 +335,6 @@ function isBatchProgress(value: unknown): value is CrashBatchProgress | null {
   );
 }
 
-function isNumericRecord(value: unknown): value is Record<string, number> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-
-  return Object.values(value).every(
-    (entry) => typeof entry === "number" && Number.isFinite(entry),
-  );
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

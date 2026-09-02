@@ -22,6 +22,7 @@ import {
 } from "@/components/review/review-fields";
 import { useConnection } from "@/connection/context";
 import { setCrashContext } from "@/diagnostics/crash-record";
+import { logEvent } from "@/diagnostics/event-log";
 import { useFlow, type FlowBatchItem } from "@/flow-context";
 import {
   buildOrderedReviewGroups,
@@ -389,6 +390,7 @@ export default function ReviewScreen() {
       return;
     }
 
+    logEvent("confirm_start", `id=${card.id},type=${card.type}`);
     const draft = drafts[card.id] ?? cloneDraft(card);
     const localBatchAnchor = resolveReviewLocalBatchAnchor(
       card,
@@ -399,6 +401,7 @@ export default function ReviewScreen() {
     );
     const dependencyMessage = getInteractionDependencyMessage(localBatchAnchor);
     if (dependencyMessage) {
+      logEvent("confirm_error", dependencyMessage);
       setActionError(dependencyMessage);
       showToast(dependencyMessage, "error");
       return;
@@ -418,6 +421,7 @@ export default function ReviewScreen() {
           ? { resolved_contact_id: draft.resolved_contact_id }
           : {}),
       });
+      logEvent("confirm_ok", `id=${card.id},type=${card.type}`);
       if (
         !canCommitReviewAsync(
           mountedRef,
@@ -436,6 +440,8 @@ export default function ReviewScreen() {
       }
       void hydrateAffectedContacts(result.affected_contact_ids, requestGeneration, runToken);
     } catch (error) {
+      const message = getErrorMessage(error, "确认失败。");
+      logEvent("confirm_error", message);
       if (
         !canCommitReviewAsync(
           mountedRef,
@@ -476,7 +482,6 @@ export default function ReviewScreen() {
         return;
       }
 
-      const message = getErrorMessage(error, "确认失败。");
       setActionError(message);
       showError(error, "确认失败。");
     } finally {
@@ -544,6 +549,7 @@ export default function ReviewScreen() {
         }
       }
 
+      logEvent("reject", `id=${card.id},type=${card.type}`);
       const result = await rejectCard(card.id);
       if (
         !canCommitReviewAsync(

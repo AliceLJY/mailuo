@@ -11,16 +11,29 @@ import {
   type CrashRecord,
   type SyncCrashStorage,
 } from "@/diagnostics/crash-record";
+import {
+  acknowledgePreviousSession,
+  type EventLogEntry,
+  type PreviousSessionSnapshot,
+} from "@/diagnostics/event-log";
+import {
+  formatEventLogEntry,
+  getPreviousExitPanelCopy,
+  getRecentPreviousEvents,
+  shouldShowPreviousExit,
+} from "@/diagnostics/previous-exit";
 import { theme } from "@/theme";
 
 type Props = PropsWithChildren<{
   storage: SyncCrashStorage;
   onReturnHome: () => void;
+  previousSession?: PreviousSessionSnapshot | null;
 }>;
 
 type State = {
   activeError: Error | null;
   activeRecord: CrashRecord | null;
+  previousDismissed: boolean;
   previousRecord: CrashRecord | null;
 };
 
@@ -28,6 +41,7 @@ export class CrashBoundary extends Component<Props, State> {
   state: State = {
     activeError: null,
     activeRecord: null,
+    previousDismissed: false,
     previousRecord: readCrashRecord(this.props.storage),
   };
 
@@ -42,7 +56,11 @@ export class CrashBoundary extends Component<Props, State> {
 
   private acknowledgePrevious = () => {
     clearCrashRecord(this.props.storage);
-    this.setState({ previousRecord: null });
+    acknowledgePreviousSession(
+      this.props.storage,
+      this.props.previousSession ?? null,
+    );
+    this.setState({ previousDismissed: true, previousRecord: null });
   };
 
   private returnHome = () => {
@@ -60,19 +78,29 @@ export class CrashBoundary extends Component<Props, State> {
         <CrashPanel
           actionLabel="回到首页"
           heading="页面发生异常"
+          intro="以下诊断信息已保存在本机。可以先截图，再继续使用。"
           onAction={this.returnHome}
           record={record}
         />
       );
     }
 
-    if (this.state.previousRecord) {
+    if (
+      !this.state.previousDismissed &&
+      shouldShowPreviousExit(
+        this.state.previousRecord,
+        this.props.previousSession,
+      )
+    ) {
+      const copy = getPreviousExitPanelCopy(this.state.previousRecord !== null);
       return (
         <CrashPanel
           actionLabel="知道了"
-          heading="上次异常退出"
+          events={getRecentPreviousEvents(this.props.previousSession)}
+          heading={copy.heading}
+          intro={copy.intro}
           onAction={this.acknowledgePrevious}
-          record={this.state.previousRecord}
+          record={this.state.previousRecord ?? undefined}
         />
       );
     }
@@ -83,60 +111,91 @@ export class CrashBoundary extends Component<Props, State> {
 
 function CrashPanel({
   actionLabel,
+  events = [],
   heading,
+  intro,
   onAction,
   record,
 }: {
   actionLabel: string;
+  events?: EventLogEntry[];
   heading: string;
+  intro: string;
   onAction: () => void;
-  record: CrashRecord;
+  record?: CrashRecord;
 }) {
-  const hermesEntries = Object.entries(record.hermesStats);
+  const hermesEntries = Object.entries(record?.hermesStats ?? {});
+  const stackFrames = record?.stackFrames ?? [];
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.header}>
           <Text style={styles.heading}>{heading}</Text>
-          <Text style={styles.intro}>
-            以下诊断信息已保存在本机。可以先截图，再继续使用。
-          </Text>
+          <Text style={styles.intro}>{intro}</Text>
         </View>
 
         <View style={styles.card}>
-          <DiagnosticLine label="时间" value={record.timestamp} />
-          <DiagnosticLine label="错误" value={record.name} />
-          <DiagnosticLine label="消息" value={record.message} />
-          <DiagnosticLine label="致命异常" value={record.isFatal ? "是" : "否"} />
-          <DiagnosticLine label="应用版本" value={record.appVersion} />
-          <DiagnosticLine label="当前路由" value={record.currentRoute} />
-          <DiagnosticLine
-            label="批次进度"
-            value={formatBatchProgress(record)}
-          />
-          <DiagnosticLine
-            label="导出 OCR"
-            value={record.exportOcrResults ? "开启" : "关闭"}
-          />
+          {record ? (
+            <>
+              <DiagnosticLine label="时间" value={record.timestamp} />
+              <DiagnosticLine label="错误" value={record.name ?? "未记录"} />
+              <DiagnosticLine label="消息" value={record.message} />
+              <DiagnosticLine
+                label="致命异常"
+                value={formatOptionalBoolean(record.isFatal, "是", "否")}
+              />
+              <DiagnosticLine
+                label="应用版本"
+                value={record.appVersion ?? "未记录"}
+              />
+              <DiagnosticLine
+                label="当前路由"
+                value={record.currentRoute ?? "未记录"}
+              />
+              <DiagnosticLine
+                label="批次进度"
+                value={formatBatchProgress(record)}
+              />
+              <DiagnosticLine
+                label="导出 OCR"
+                value={formatOptionalBoolean(
+                  record.exportOcrResults,
+                  "开启",
+                  "关闭",
+                )}
+              />
 
-          <View style={styles.section}>
-            <Text style={styles.label}>Hermes 数值</Text>
-            <Text selectable style={styles.mono}>
-              {hermesEntries.length > 0
-                ? hermesEntries.map(([key, value]) => `${key}: ${value}`).join("\n")
-                : "无可用数值"}
-            </Text>
-          </View>
+              <View style={styles.section}>
+                <Text style={styles.label}>Hermes 数值</Text>
+                <Text selectable style={styles.mono}>
+                  {hermesEntries.length > 0
+                    ? hermesEntries.map(([key, value]) => `${key}: ${value}`).join("\n")
+                    : "无可用数值"}
+                </Text>
+              </View>
 
-          <View style={styles.section}>
-            <Text style={styles.label}>堆栈（前 8 帧）</Text>
-            <Text selectable style={styles.mono}>
-              {record.stackFrames.length > 0
-                ? record.stackFrames.join("\n")
-                : "无可用堆栈"}
-            </Text>
-          </View>
+              <View style={styles.section}>
+                <Text style={styles.label}>堆栈（前 8 帧）</Text>
+                <Text selectable style={styles.mono}>
+                  {stackFrames.length > 0
+                    ? stackFrames.join("\n")
+                    : "无可用堆栈"}
+                </Text>
+              </View>
+            </>
+          ) : (
+            <DiagnosticLine label="崩溃记录" value="未捕获" />
+          )}
+
+          {events.length > 0 ? (
+            <View style={styles.section}>
+              <Text style={styles.label}>上一段事件（最后 20 条）</Text>
+              <Text selectable style={styles.mono}>
+                {events.map(formatEventLogEntry).join("\n")}
+              </Text>
+            </View>
+          ) : null}
         </View>
 
         <AppButton label={actionLabel} onPress={onAction} />
@@ -161,6 +220,17 @@ function formatBatchProgress(record: CrashRecord) {
 
   const { position, status, totalCount } = record.batchProgress;
   return `第 ${position} 张 / 共 ${totalCount} 张 · ${status}`;
+}
+
+function formatOptionalBoolean(
+  value: boolean | undefined,
+  truthy: string,
+  falsy: string,
+) {
+  if (value === undefined) {
+    return "未记录";
+  }
+  return value ? truthy : falsy;
 }
 
 const styles = StyleSheet.create({

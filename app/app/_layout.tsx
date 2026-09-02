@@ -1,6 +1,8 @@
 import Constants from "expo-constants";
 import { router, Stack, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import { useEffect, useRef } from "react";
+import { AppState } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { CrashBoundary } from "@/components/crash-boundary";
@@ -10,10 +12,19 @@ import {
   setCrashContext,
 } from "@/diagnostics/crash-record";
 import { crashStorage } from "@/diagnostics/crash-storage";
+import {
+  configureEventLogStorage,
+  logEvent,
+  startAppSession,
+} from "@/diagnostics/event-log";
+import { installDeviceDiagnosticsTraceWriter } from "@/diagnostics/trace-runtime";
 import { FlowProvider } from "@/flow-context";
 import { theme } from "@/theme";
 import { ToastProvider } from "@/toast-context";
 
+configureEventLogStorage(crashStorage);
+installDeviceDiagnosticsTraceWriter();
+const previousSession = startAppSession();
 setCrashContext({ appVersion: Constants.expoConfig?.version ?? "unknown" });
 installGlobalCrashHandler(crashStorage);
 
@@ -34,6 +45,12 @@ export default function RootLayout() {
 function AppStack() {
   const pathname = usePathname();
   const { config } = useConnection();
+  const lastLoggedRouteRef = useRef<string | null>(null);
+
+  if (lastLoggedRouteRef.current !== pathname) {
+    logEvent("route", pathname);
+    lastLoggedRouteRef.current = pathname;
+  }
 
   // Set synchronously so a child render failure captures the route being rendered.
   setCrashContext({
@@ -41,11 +58,24 @@ function AppStack() {
     exportOcrResults: config?.exportOcrResults === true,
   });
 
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "background") {
+        logEvent("app_background");
+      } else if (state === "active") {
+        logEvent("app_active");
+      }
+    });
+
+    return () => subscription.remove();
+  }, []);
+
   return (
     <>
       <StatusBar style="dark" />
       <CrashBoundary
         onReturnHome={() => router.replace("/")}
+        previousSession={previousSession}
         storage={crashStorage}
       >
         <Stack

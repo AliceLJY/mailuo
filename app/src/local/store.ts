@@ -31,7 +31,11 @@ import type {
   ScreenshotRecord,
 } from "../types";
 
-import type { LocalStore } from "./types";
+import type {
+  DiagnosticsDataSource,
+  DiagnosticsSnapshot,
+  LocalStore,
+} from "./types";
 
 type ContactRow = Omit<ContactRecord, "aliases" | "tags"> & {
   aliases: string;
@@ -152,6 +156,27 @@ function hydrateActionCard(row: ActionCardRow | null): StoredActionCardRecord | 
   } as StoredActionCardRecord;
 }
 
+function hydrateScreenshot(row: ScreenshotRow): ScreenshotRecord {
+  return {
+    id: assertSafeInteger(row.id, "screenshots.id"),
+    image_path: row.image_path,
+    user_note: row.user_note,
+    raw_extraction: row.raw_extraction ? JSON.parse(row.raw_extraction) : null,
+    uploaded_at: row.uploaded_at,
+  };
+}
+
+function hydrateObservation(row: ObservationRow): ObservationRecord {
+  return {
+    ...row,
+    id: assertSafeInteger(row.id, "observations.id"),
+    contact_id: assertSafeInteger(row.contact_id, "observations.contact_id"),
+    screenshot_id: row.screenshot_id == null
+      ? null
+      : assertSafeInteger(row.screenshot_id, "observations.screenshot_id"),
+  };
+}
+
 function hydrateMeeting(row: MeetingRow): MeetingRecord {
   if (!isMeetingKind(row.kind)) {
     throw new TypeError(`Invalid meetings.kind: ${row.kind}`);
@@ -178,7 +203,7 @@ function hydrateInsight(row: InsightRow): InsightRecord {
   };
 }
 
-export class ExpoSqliteLocalStore implements LocalStore {
+export class ExpoSqliteLocalStore implements LocalStore, DiagnosticsDataSource {
   constructor(private readonly db: SQLiteDatabase) {
     this.db.execSync("PRAGMA foreign_keys = ON");
     initializeMailuoSchema({
@@ -347,13 +372,7 @@ export class ExpoSqliteLocalStore implements LocalStore {
       return null;
     }
 
-    return {
-      id: assertSafeInteger(row.id, "screenshots.id"),
-      image_path: row.image_path,
-      user_note: row.user_note,
-      raw_extraction: row.raw_extraction ? JSON.parse(row.raw_extraction) : null,
-      uploaded_at: row.uploaded_at,
-    };
+    return hydrateScreenshot(row);
   }
 
   getScreenshotDetail(screenshotId: number): ScreenshotDetail | null {
@@ -407,6 +426,61 @@ export class ExpoSqliteLocalStore implements LocalStore {
         return count;
       }
     }, 0);
+  }
+
+  readDiagnosticsSnapshot(): DiagnosticsSnapshot {
+    return this.withTransaction(() => {
+      const screenshots = this.db
+        .getAllSync<ScreenshotRow>(
+          `SELECT id, image_path, user_note, raw_extraction, uploaded_at
+           FROM screenshots ORDER BY id ASC`,
+        )
+        .map(hydrateScreenshot);
+      const actionCards = this.db
+        .getAllSync<ActionCardRow>(
+          `SELECT id, screenshot_id, type, payload, confidence, source_quote,
+                  disambiguation, status, resolved_contact_id, created_at, resolved_at
+           FROM action_cards ORDER BY id ASC`,
+        )
+        .map((row) => hydrateActionCard(row))
+        .filter((card): card is StoredActionCardRecord => card !== null);
+      const contacts = this.db
+        .getAllSync<ContactRow>(
+          `SELECT id, canonical_name, aliases, company, title, phone, wechat_id,
+                  tags, notes, created_at, updated_at
+           FROM contacts ORDER BY id ASC`,
+        )
+        .map((row) => hydrateContact(row))
+        .filter((contact): contact is ContactRecord => contact !== null);
+      const observations = this.db
+        .getAllSync<ObservationRow>(
+          `SELECT id, contact_id, screenshot_id, kind, content, source_quote, observed_at
+           FROM observations ORDER BY id ASC`,
+        )
+        .map(hydrateObservation);
+      const meetings = this.db
+        .getAllSync<MeetingRow>(
+          `SELECT id, title, time_iso, time_text, location, participants, agenda,
+                  source_screenshot_id, status, created_at, kind
+           FROM meetings ORDER BY id ASC`,
+        )
+        .map(hydrateMeeting);
+      const insights = this.db
+        .getAllSync<InsightRow>(
+          `SELECT id, contact_id, kind, content, based_on, generated_at
+           FROM insights ORDER BY id ASC`,
+        )
+        .map(hydrateInsight);
+
+      return {
+        screenshots,
+        action_cards: actionCards,
+        contacts,
+        observations,
+        meetings,
+        insights,
+      };
+    });
   }
 
   private listStoredActionCardsByScreenshotId(screenshotId: number): ActionCardRecord[] {

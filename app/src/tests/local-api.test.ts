@@ -40,6 +40,7 @@ import {
 import { perceiveScreenshotWithOcr, type OcrPerceptionResult } from "../local/perceive-ocr";
 import type { LocalStore } from "../local/types";
 import type { LocalLlmSecretStore } from "../connection/secrets";
+import type { DiagnosticsTrace } from "../diagnostics/trace-store";
 
 const FIXED_NOW = new Date("2026-08-27T04:00:00.000Z");
 
@@ -2484,6 +2485,7 @@ test("forced cloud path does not invoke OCR or OCR text interpretation", async (
   const store = new FakeLocalStore();
   const qwen = new FakeStructuredOutputProvider(() => emptyExtraction);
   const text = new FakeStructuredOutputProvider(() => emptyExtraction);
+  const traces: DiagnosticsTrace[] = [];
   let imageLoads = 0;
   let ocrCalls = 0;
   let textPerceptionCalls = 0;
@@ -2516,6 +2518,9 @@ test("forced cloud path does not invoke OCR or OCR text interpretation", async (
       textPerceptionCalls += 1;
       return emptyExtraction;
     },
+    traceWriter(traceRecord) {
+      traces.push(traceRecord);
+    },
     now: () => new Date(FIXED_NOW),
   });
 
@@ -2529,6 +2534,9 @@ test("forced cloud path does not invoke OCR or OCR text interpretation", async (
   assert.equal(textPerceptionCalls, 0);
   assert.equal(store.listMeetingCalls, 1);
   assert.equal(upload.processing_notice, undefined);
+  assert.equal(traces.length, 1);
+  assert.equal(traces[0]?.perception_path, "cloud");
+  assert.equal(traces[0]?.ocr_text, undefined);
 });
 
 test("OCR export failure is reported without changing a healthy text result", async () => {
@@ -2792,4 +2800,296 @@ test("confirmed same_as alias makes the next batch exact without calling the LLM
   assert.equal(text.calls, 0);
   assert.equal(text.completeCalls, 0);
   assert.deepEqual(secondUpload.cards.map((card) => card.type), ["record_interaction"]);
+});
+
+test("local screenshot success records OCR decisions and proposed cards", async () => {
+  const store = new FakeLocalStore();
+  const existingMeeting = store.insertMeeting({
+    kind: "meeting",
+    title: "市场部周会",
+    timeIso: "2026-09-03T09:00:00+08:00",
+    timeText: "明天上午九点",
+    participants: [],
+    createdAt: "2026-09-01T01:00:00.000Z",
+  });
+  const traces: DiagnosticsTrace[] = [];
+  const text = new FakeStructuredOutputProvider(() => ({ insights: [] }));
+  const extraction: PerceptionResult = {
+    participants: [{
+      name: "王磊",
+      is_self: false,
+      role: "speaker",
+      interaction_summary: "确认材料进度",
+      confidence: "high",
+      source_quote: "王磊：材料已经发出",
+    }],
+    events: [{
+      kind: "meeting",
+      title: "市场部周会",
+      time_text: "明天上午九点",
+      time_iso: "2026-09-03T09:00:00+08:00",
+      has_time_signal: true,
+      participant_names: ["王磊"],
+      confidence: "high",
+      source_quote: "明天上午九点开市场部周会",
+    }],
+    facts: [],
+    quotes: [],
+  };
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async () => {
+      throw new Error("healthy OCR must not load the image");
+    },
+    providers: {
+      async createQwenProvider() {
+        throw new Error("healthy OCR must not create Qwen");
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    async getProcessingSettings() {
+      return { perceptionPath: "ocr", exportOcrResults: false };
+    },
+    async perceiveOcr() {
+      return {
+        lines: [{
+          text: "王磊：材料已经发出",
+          side: "them",
+          x: 20,
+          y: 40,
+          width: 180,
+          height: 30,
+          confidence: 0.98,
+        }],
+        warnings: [],
+        degraded: false,
+      };
+    },
+    async perceiveOcrText() {
+      return extraction;
+    },
+    traceWriter(traceRecord) {
+      traces.push(traceRecord);
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  const upload = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/trace-success.png", mimeType: "image/png" },
+  });
+
+  assert.equal(upload.screenshot_id, 1);
+  assert.equal(traces.length, 1);
+  assert.deepEqual(traces[0], {
+    screenshot_id: 1,
+    started_at: FIXED_NOW.toISOString(),
+    finished_at: FIXED_NOW.toISOString(),
+    perception_path: "ocr",
+    ocr_text: "王磊：材料已经发出",
+    extraction,
+    resolutions: [{
+      participant_name: "王磊",
+      status: "new",
+      source: "empty_db",
+    }],
+    proposed_cards: upload.cards.map((card) => ({
+      type: card.type,
+      payload: card.payload,
+      disambiguation: card.disambiguation ?? null,
+    })),
+    meeting_dedup: [{
+      title: "市场部周会",
+      duplicate_of_meeting_id: existingMeeting.id,
+    }],
+    notices: [],
+  });
+});
+
+test("local screenshot failure records OCR fallback state and preserves the original error", async () => {
+  const store = new FakeLocalStore();
+  const traces: DiagnosticsTrace[] = [];
+  const processingError = new Error("视觉整理失败");
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async () => {
+      throw processingError;
+    },
+    providers: {
+      async createQwenProvider() {
+        throw new Error("image loading fails first");
+      },
+      async createTextProvider() {
+        return new FakeStructuredOutputProvider(() => emptyExtraction);
+      },
+    },
+    async getProcessingSettings() {
+      return { perceptionPath: "ocr", exportOcrResults: false };
+    },
+    async perceiveOcr() {
+      return {
+        lines: [{
+          text: "王磊：材料已经发出",
+          side: "them",
+          x: 20,
+          y: 40,
+          width: 180,
+          height: 30,
+          confidence: 0.98,
+        }],
+        warnings: [],
+        degraded: false,
+      };
+    },
+    async perceiveOcrText() {
+      throw new Error("文字整理失败");
+    },
+    traceWriter(traceRecord) {
+      traces.push(traceRecord);
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  await assert.rejects(
+    api.uploadScreenshot({
+      asset: { uri: "file:///fake/trace-failure.png", mimeType: "image/png" },
+    }),
+    (error) => {
+      assert.strictEqual(error, processingError);
+      return true;
+    },
+  );
+
+  assert.equal(store.tableCounts().screenshots, 0);
+  assert.equal(traces.length, 1);
+  assert.equal(traces[0]?.perception_path, "ocr->cloud");
+  assert.equal(traces[0]?.ocr_text, "王磊：材料已经发出");
+  assert.equal(traces[0]?.extraction, null);
+  assert.deepEqual(traces[0]?.resolutions, []);
+  assert.deepEqual(traces[0]?.proposed_cards, []);
+  assert.match(traces[0]?.notices.join(" ") ?? "", /已用云端模型重新处理/u);
+  assert.deepEqual(traces[0]?.error, {
+    name: "Error",
+    message: "视觉整理失败",
+  });
+});
+
+test("OCR configuration is recorded before text-provider creation fails", async () => {
+  const store = new FakeLocalStore();
+  const traces: DiagnosticsTrace[] = [];
+  const providerError = new Error("文字模型配置不可用");
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async () => {
+      throw new Error("image loading is not reached");
+    },
+    providers: {
+      async createQwenProvider() {
+        throw new Error("Qwen is not reached");
+      },
+      async createTextProvider() {
+        throw providerError;
+      },
+    },
+    async getProcessingSettings() {
+      return { perceptionPath: "ocr", exportOcrResults: false };
+    },
+    async perceiveOcr() {
+      throw new Error("OCR is not reached");
+    },
+    async perceiveOcrText() {
+      throw new Error("OCR text is not reached");
+    },
+    traceWriter(traceRecord) {
+      traces.push(traceRecord);
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  await assert.rejects(
+    api.uploadScreenshot({
+      asset: { uri: "file:///fake/provider-failure.png", mimeType: "image/png" },
+    }),
+    (error) => {
+      assert.strictEqual(error, providerError);
+      return true;
+    },
+  );
+
+  assert.equal(store.tableCounts().screenshots, 0);
+  assert.equal(traces.length, 1);
+  assert.equal(traces[0]?.perception_path, "ocr");
+  assert.equal(traces[0]?.extraction, null);
+  assert.deepEqual(traces[0]?.error, {
+    name: "Error",
+    message: "文字模型配置不可用",
+  });
+});
+
+test("trace writer failures never replace screenshot success or the original processing error", async () => {
+  const successfulStore = new FakeLocalStore();
+  const qwen = new FakeStructuredOutputProvider(() => emptyExtraction);
+  const successfulApi = createLocalApi({
+    store: successfulStore,
+    keys: fakeKeys,
+    loadImage: async (asset) => ({
+      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+      imagePath: asset.uri,
+    }),
+    providers: {
+      async createQwenProvider() {
+        return qwen;
+      },
+      async createTextProvider() {
+        return new FakeStructuredOutputProvider(() => emptyExtraction);
+      },
+    },
+    traceWriter() {
+      throw new Error("trace storage unavailable");
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  const upload = await successfulApi.uploadScreenshot({
+    asset: { uri: "file:///fake/trace-writer-success.png", mimeType: "image/png" },
+  });
+  assert.equal(upload.screenshot_id, 1);
+  assert.ok(await successfulApi.getScreenshotDetail(upload.screenshot_id));
+
+  const failedStore = new FakeLocalStore();
+  const providerError = new Error("模型配置不可用");
+  const failedApi = createLocalApi({
+    store: failedStore,
+    keys: fakeKeys,
+    loadImage: async () => {
+      throw new Error("image loading is not reached");
+    },
+    providers: {
+      async createQwenProvider() {
+        throw new Error("Qwen is not reached");
+      },
+      async createTextProvider() {
+        throw providerError;
+      },
+    },
+    traceWriter() {
+      throw new Error("trace storage unavailable");
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  await assert.rejects(
+    failedApi.uploadScreenshot({
+      asset: { uri: "file:///fake/trace-writer-failure.png", mimeType: "image/png" },
+    }),
+    (error) => {
+      assert.strictEqual(error, providerError);
+      return true;
+    },
+  );
+  assert.equal(failedStore.tableCounts().screenshots, 0);
 });

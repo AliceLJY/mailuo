@@ -6,11 +6,27 @@ import type {
   ActionCardRecord,
   ContactDetail,
   ContactListItem,
+  ContactRecord,
+  InsightRecord,
   MeetingRecord,
+  ObservationRecord,
   ScreenshotDetail,
   ScreenshotRecord,
   UploadImageAsset,
 } from "../types";
+
+export type DiagnosticsSnapshot = {
+  readonly screenshots: readonly ScreenshotRecord[];
+  readonly action_cards: readonly ActionCardRecord[];
+  readonly contacts: readonly ContactRecord[];
+  readonly observations: readonly ObservationRecord[];
+  readonly meetings: readonly MeetingRecord[];
+  readonly insights: readonly InsightRecord[];
+};
+
+export interface DiagnosticsDataSource {
+  readDiagnosticsSnapshot(): DiagnosticsSnapshot;
+}
 
 export interface LocalStore extends ExecuteStore, InsightGenerationDb {
   getStoredActionCardById(cardId: number): ActionCardRecord | null;

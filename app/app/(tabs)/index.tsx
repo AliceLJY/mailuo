@@ -18,6 +18,7 @@ import { EmptyHint, MetaLine, Page, SectionCard } from "@/components/page";
 import { useConnection } from "@/connection/context";
 import { humanizeLocalProviderError } from "@/connection/presentation";
 import { setCrashContext } from "@/diagnostics/crash-record";
+import { logEvent } from "@/diagnostics/event-log";
 import {
   findCompletedPastedTextItem,
   hasPendingFlowCards,
@@ -201,6 +202,10 @@ export default function UploadScreen() {
 
     clearLoadingTimer(loadingTimerRef.current);
     loadingTimerRef.current = null;
+    logEvent(
+      "upload_progress",
+      `${progress.position}/${progress.totalCount}:${progress.status}`,
+    );
     setCrashContext({
       batchProgress: {
         position: progress.position,
@@ -249,6 +254,7 @@ export default function UploadScreen() {
     submitTokenRef.current = submitToken;
     const focusEpoch = focusEpochRef.current;
     const totalCount = "assets" in source ? source.assets.length : source.items.length;
+    logEvent("upload_start", `count=${totalCount}`);
     const mode: UploadBatchMode = previousResult?.mode ?? (isLocal ? "local" : "server");
     const serverUrl = previousResult
       ? previousResult.serverUrl
@@ -309,6 +315,10 @@ export default function UploadScreen() {
           isFlowGenerationCurrent(generation)
         ),
       });
+      logEvent(
+        "upload_done",
+        `success=${result.successCount},failure=${result.failureCount}`,
+      );
 
       if (
         !canCommitSubmitResult(mountedRef, submitTokenRef, submitToken) ||

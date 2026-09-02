@@ -16,6 +16,11 @@ import type {
   UploadImageAsset,
 } from "../types";
 import type { RoutedApi } from "../connection/dispatch";
+import {
+  writeConfiguredDiagnosticsTrace,
+  type DiagnosticsTrace,
+  type DiagnosticsTraceWriter,
+} from "../diagnostics/trace-store";
 
 import { createLocalProviderFactory, type LocalProviderFactory } from "./providers";
 import {
@@ -66,6 +71,7 @@ export type CreateLocalApiOptions = {
   perceiveOcr?: OcrPerceiver;
   perceiveOcrText?: OcrTextPerceiver;
   exportOcr?: OcrExporter;
+  traceWriter?: DiagnosticsTraceWriter;
 };
 
 function listResolvableContacts(store: LocalStore): ResolvableContact[] {
@@ -91,7 +97,21 @@ function formatOcrRuntimeFailureNotice(error: unknown): string {
 export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
   const providerFactory = options.providers ?? createLocalProviderFactory();
   const now = options.now ?? (() => new Date());
+  const traceWriter = options.traceWriter ?? writeConfiguredDiagnosticsTrace;
   const batchSessionByCardId = new Map<number, LocalBatchContactSession>();
+
+  async function writeTraceBestEffort(
+    trace: Omit<DiagnosticsTrace, "finished_at">,
+  ): Promise<void> {
+    try {
+      await traceWriter({
+        ...trace,
+        finished_at: now().toISOString(),
+      });
+    } catch {
+      // Diagnostics must never replace a successful upload or its original error.
+    }
+  }
 
   return {
     async uploadText(input) {
@@ -159,16 +179,6 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
     },
     async uploadScreenshot(input) {
       const batchSession = input.localBatch?.session;
-      batchSession?.reconcilePendingContacts((cardId) =>
-        options.store.getStoredActionCardById(cardId),
-      );
-      const [textProvider, processing] = await Promise.all([
-        providerFactory.createTextProvider(options.keys),
-        options.getProcessingSettings?.() ?? Promise.resolve({
-          perceptionPath: "cloud" as const,
-          exportOcrResults: false,
-        }),
-      ]);
       const note = input.note?.trim() || undefined;
       const timestamp = now();
       const screenshot = options.store.createScreenshot({
@@ -176,10 +186,41 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
         userNote: note ?? null,
         uploadedAt: timestamp.toISOString(),
       });
+      let tracePerceptionPath: DiagnosticsTrace["perception_path"] = "cloud";
+      let traceOcrText: string | undefined;
+      let traceExtraction: DiagnosticsTrace["extraction"] = null;
+      let traceResolutions: DiagnosticsTrace["resolutions"] = [];
+      let traceProposedCards: DiagnosticsTrace["proposed_cards"] = [];
+      let traceMeetingDedup: DiagnosticsTrace["meeting_dedup"] = [];
+      const notices: string[] = [];
+
+      const traceState = (): Omit<DiagnosticsTrace, "finished_at"> => ({
+        screenshot_id: screenshot.id,
+        started_at: timestamp.toISOString(),
+        perception_path: tracePerceptionPath,
+        ...(traceOcrText !== undefined ? { ocr_text: traceOcrText } : {}),
+        extraction: traceExtraction,
+        resolutions: traceResolutions,
+        proposed_cards: traceProposedCards,
+        meeting_dedup: traceMeetingDedup,
+        notices: [...notices],
+      });
 
       try {
+        batchSession?.reconcilePendingContacts((cardId) =>
+          options.store.getStoredActionCardById(cardId),
+        );
+        const processing = await (options.getProcessingSettings?.() ?? Promise.resolve({
+          perceptionPath: "cloud" as const,
+          exportOcrResults: false,
+        }));
+        const canUseOcr =
+          processing.perceptionPath === "ocr" &&
+          Boolean(options.perceiveOcr) &&
+          Boolean(options.perceiveOcrText);
+        tracePerceptionPath = canUseOcr ? "ocr" : "cloud";
+        const textProvider = await providerFactory.createTextProvider(options.keys);
         let qwenProviderPromise: ReturnType<LocalProviderFactory["createQwenProvider"]> | null = null;
-        const notices: string[] = [];
         const perceiveVisually = async () => {
           const loadedImage = await options.loadImage(input.asset);
           qwenProviderPromise ??= providerFactory.createQwenProvider(options.keys);
@@ -192,11 +233,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
         };
         let extraction: PerceptionResult;
 
-        if (
-          processing.perceptionPath === "ocr" &&
-          options.perceiveOcr &&
-          options.perceiveOcrText
-        ) {
+        if (canUseOcr && options.perceiveOcr && options.perceiveOcrText) {
           let ocr: OcrPerceptionResult | null = null;
           let ocrRuntimeFailureNotice: string | null = null;
 
@@ -204,6 +241,10 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
             ocr = await options.perceiveOcr(input.asset.uri);
           } catch (error) {
             ocrRuntimeFailureNotice = formatOcrRuntimeFailureNotice(error);
+          }
+
+          if (ocr) {
+            traceOcrText = ocr.lines.map((line) => line.text).join("\n");
           }
 
           if (ocr && processing.exportOcrResults) {
@@ -222,17 +263,20 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           }
 
           if (!ocr) {
-            extraction = await perceiveVisually();
+            tracePerceptionPath = "ocr->cloud";
             notices.unshift(
               OCR_RUNTIME_FALLBACK_NOTICE,
               ocrRuntimeFailureNotice ?? formatOcrRuntimeFailureNotice(ocr),
             );
+            extraction = await perceiveVisually();
           } else if (ocr.lines.length === 0) {
-            extraction = await perceiveVisually();
+            tracePerceptionPath = "ocr->cloud";
             notices.unshift(OCR_EMPTY_FALLBACK_NOTICE);
-          } else if (isOcrTextQualityPoor(ocr)) {
             extraction = await perceiveVisually();
+          } else if (isOcrTextQualityPoor(ocr)) {
+            tracePerceptionPath = "ocr->cloud";
             notices.unshift(OCR_LOW_CONFIDENCE_FALLBACK_NOTICE);
+            extraction = await perceiveVisually();
           } else {
             try {
               extraction = await options.perceiveOcrText({
@@ -245,13 +289,15 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
                 notices.unshift(OCR_SPEAKER_NOTICE);
               }
             } catch {
-              extraction = await perceiveVisually();
+              tracePerceptionPath = "ocr->cloud";
               notices.unshift(OCR_FALLBACK_NOTICE);
+              extraction = await perceiveVisually();
             }
           }
         } else {
           extraction = await perceiveVisually();
         }
+        traceExtraction = extraction;
 
         const contacts = [
           ...listResolvableContacts(options.store),
@@ -262,6 +308,17 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           contacts,
           provider: textProvider,
         });
+        traceResolutions = resolutions.map((resolution) => ({
+          participant_name: resolution.participant_name,
+          status: resolution.status,
+          source: resolution.source,
+          ...(resolution.status === "same_as"
+            ? { contact_id: resolution.contact_id }
+            : {}),
+          ...(resolution.status === "unsure"
+            ? { candidate_ids: [...resolution.candidate_ids] }
+            : {}),
+        }));
         const existingMeetings = options.store.listMeetings();
         const meetingProgressResolutions = await resolveMeetingProgress({
           extraction,
@@ -275,6 +332,21 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           timestamp,
           existingMeetings,
           meetingProgressResolutions,
+        );
+        traceProposedCards = proposedCards.map((card) => ({
+          type: card.type,
+          payload: card.payload,
+          disambiguation: card.disambiguation ?? null,
+        }));
+        traceMeetingDedup = proposedCards.flatMap((card) =>
+          card.type === "create_meeting"
+            ? [{
+                title: card.payload.title,
+                ...(card.payload.duplicate_of_meeting_id != null
+                  ? { duplicate_of_meeting_id: card.payload.duplicate_of_meeting_id }
+                  : {}),
+              }]
+            : [],
         );
         let cards: ActionCardRecord[];
         let localBatchContactMerges: LocalBatchContactMerge[] | undefined;
@@ -322,7 +394,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           });
         }
 
-        return {
+        const response = {
           screenshot_id: screenshot.id,
           cards,
           ...(notices.length ? { processing_notice: notices.join(" ") } : {}),
@@ -330,12 +402,20 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
             ? { local_batch_contact_merges: localBatchContactMerges }
             : {}),
         };
+        await writeTraceBestEffort(traceState());
+        return response;
       } catch (error) {
         try {
           options.store.deleteScreenshotUploadArtifacts(screenshot.id);
         } catch {
           // Preserve the processing error; cleanup can be retried during a later storage repair.
         }
+
+        const trace = traceState();
+        await writeTraceBestEffort({
+          ...trace,
+          error: describeTraceError(error),
+        });
 
         throw error;
       }
@@ -455,4 +535,25 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
       };
     },
   };
+}
+
+function describeTraceError(error: unknown): { name: string; message: string } {
+  try {
+    if (error instanceof Error) {
+      return {
+        name: error.name || "Error",
+        message: error.message || String(error),
+      };
+    }
+
+    return {
+      name: typeof error,
+      message: String(error),
+    };
+  } catch {
+    return {
+      name: "Error",
+      message: "无法读取错误信息",
+    };
+  }
 }

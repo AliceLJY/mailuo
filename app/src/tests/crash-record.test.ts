@@ -11,28 +11,37 @@ import {
   writeCrashRecord,
   type SyncCrashStorage,
 } from "../diagnostics/crash-record";
+import {
+  EVENT_LOG_KEY,
+  readEventLog,
+} from "../diagnostics/event-log";
 
 function createMemoryStorage(initial: string | null = null) {
-  let value = initial;
+  const values = new Map<string, string>();
+  if (initial !== null) {
+    values.set(CRASH_RECORD_KEY, initial);
+  }
   const calls: string[] = [];
   const storage: SyncCrashStorage = {
     getItemSync(key) {
       calls.push(`get:${key}`);
-      return value;
+      return values.get(key) ?? null;
     },
     setItemSync(key, nextValue) {
       calls.push(`set:${key}`);
-      value = nextValue;
+      values.set(key, nextValue);
     },
     removeItemSync(key) {
       calls.push(`remove:${key}`);
-      const existed = value !== null;
-      value = null;
-      return existed;
+      return values.delete(key);
     },
   };
 
-  return { calls, read: () => value, storage };
+  return {
+    calls,
+    read: (key = CRASH_RECORD_KEY) => values.get(key) ?? null,
+    storage,
+  };
 }
 
 test("crash record keeps context, numeric Hermes stats, and only the first eight frames", () => {
@@ -88,6 +97,8 @@ test("sync storage round trip and acknowledgement use the dedicated crash key", 
   assert.equal(readCrashRecord(memory.storage), null);
   assert.deepEqual(memory.calls, [
     `set:${CRASH_RECORD_KEY}`,
+    `get:${EVENT_LOG_KEY}`,
+    `set:${EVENT_LOG_KEY}`,
     `get:${CRASH_RECORD_KEY}`,
     `remove:${CRASH_RECORD_KEY}`,
     `get:${CRASH_RECORD_KEY}`,
@@ -95,6 +106,79 @@ test("sync storage round trip and acknowledgement use the dedicated crash key", 
 
   const malformed = createMemoryStorage('{"message":"incomplete"}');
   assert.equal(readCrashRecord(malformed.storage), null);
+});
+
+test("readCrashRecord requires only timestamp and message while preserving valid optional fields", () => {
+  const minimal = createMemoryStorage(JSON.stringify({
+    timestamp: "2026-09-02T08:09:09.000Z",
+    message: "minimum record",
+  }));
+  assert.deepEqual(readCrashRecord(minimal.storage), {
+    timestamp: "2026-09-02T08:09:09.000Z",
+    message: "minimum record",
+  });
+
+  const memory = createMemoryStorage(JSON.stringify({
+    timestamp: "2026-09-02T08:09:10.000Z",
+    message: "partial failure",
+    name: "TypeError",
+    stackFrames: ["at valid (app.ts:1:1)", 42, "at next (app.ts:2:1)"],
+    isFatal: "not-a-boolean",
+    appVersion: "3.1.4",
+    currentRoute: 17,
+    batchProgress: { position: 4, totalCount: 2, status: "processing" },
+    exportOcrResults: true,
+    hermesStats: { valid: 3, invalid: "ignored" },
+  }));
+
+  assert.deepEqual(readCrashRecord(memory.storage), {
+    timestamp: "2026-09-02T08:09:10.000Z",
+    message: "partial failure",
+    name: "TypeError",
+    stackFrames: ["at valid (app.ts:1:1)", "at next (app.ts:2:1)"],
+    appVersion: "3.1.4",
+    exportOcrResults: true,
+    hermesStats: { valid: 3 },
+  });
+});
+
+test("writeCrashRecord synchronously appends a crash event for every capture path", () => {
+  const values = new Map<string, string>();
+  const storage: SyncCrashStorage = {
+    getItemSync(key) {
+      return values.get(key) ?? null;
+    },
+    setItemSync(key, value) {
+      values.set(key, value);
+    },
+    removeItemSync(key) {
+      return values.delete(key);
+    },
+  };
+  writeCrashRecord(storage, new Error("boundary failure"), false, {
+    hermesStats: null,
+  });
+
+  let currentHandler = (_error: unknown, _isFatal?: boolean) => {};
+  const uninstall = installGlobalCrashHandler(storage, {
+    getGlobalHandler: () => currentHandler,
+    setGlobalHandler(handler) {
+      currentHandler = handler;
+    },
+  });
+  currentHandler(new Error("global failure"), true);
+
+  assert.ok(values.has(CRASH_RECORD_KEY));
+  assert.ok(values.has(EVENT_LOG_KEY));
+  assert.deepEqual(
+    readEventLog(storage).map(({ detail, kind }) => ({ detail, kind })),
+    [
+      { kind: "crash", detail: "boundary failure" },
+      { kind: "crash", detail: "global failure" },
+    ],
+  );
+
+  uninstall();
 });
 
 test("global handler always delegates the original error even when crash storage fails", () => {
@@ -134,18 +218,17 @@ test("global handler always delegates the original error even when crash storage
 
 test("global handler synchronously records fatal context before delegating", () => {
   const events: string[] = [];
-  let serialized: string | null = null;
+  const values = new Map<string, string>();
   const storage: SyncCrashStorage = {
-    getItemSync() {
-      return serialized;
+    getItemSync(key) {
+      return values.get(key) ?? null;
     },
-    setItemSync(_key, value) {
-      events.push("stored");
-      serialized = value;
+    setItemSync(key, value) {
+      events.push(`stored:${key}`);
+      values.set(key, value);
     },
-    removeItemSync() {
-      serialized = null;
-      return true;
+    removeItemSync(key) {
+      return values.delete(key);
     },
   };
   const originalHandler = (_error: unknown, _isFatal?: boolean) => {
@@ -168,7 +251,11 @@ test("global handler synchronously records fatal context before delegating", () 
 
   currentHandler(new RangeError("fatal test"), true);
 
-  assert.deepEqual(events, ["stored", "delegated"]);
+  assert.deepEqual(events, [
+    `stored:${CRASH_RECORD_KEY}`,
+    `stored:${EVENT_LOG_KEY}`,
+    "delegated",
+  ]);
   const record = readCrashRecord(storage);
   assert.equal(record?.name, "RangeError");
   assert.equal(record?.message, "fatal test");
