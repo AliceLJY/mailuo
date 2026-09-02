@@ -54,6 +54,49 @@ export const MEETING_DUPLICATE_RULES = {
 
 const selfParticipantName = '我';
 const trackedContactFields: ContactField[] = ['company', 'title', 'phone', 'wechat_id', 'notes'];
+const pureAcknowledgementTexts = new Set([
+  '收到',
+  '好的',
+  '好',
+  '嗯',
+  '嗯嗯',
+  'OK',
+  'ok',
+  '好嘞',
+  '了解',
+  '明白',
+  '知道了',
+  '谢谢',
+  '收到谢谢',
+  '好的收到',
+]);
+const genericMentionNames = new Set([
+  '大家',
+  '各位',
+  '全体',
+  '同事们',
+  '同学们',
+  '各位同事',
+  '各位领导',
+  '领导们',
+  '全体员工',
+]);
+const organizationMentionSuffixes = [
+  '部',
+  '处',
+  '科',
+  '室',
+  '办',
+  '办公室',
+  '公司',
+  '集团',
+  '中心',
+  '委员会',
+  '工作部',
+  '事业部',
+  '小组',
+] as const;
+const acknowledgementNoisePattern = /(?:[0-9#*]\uFE0F?\u20E3|[\p{P}\p{White_Space}\p{Extended_Pictographic}\p{Emoji_Presentation}\p{Emoji_Modifier}\u200D\u20E3\uFE0E\uFE0F\u{E0020}-\u{E007F}])/gu;
 
 function dedupeStrings(values: Array<string | undefined>): string[] {
   const seen = new Set<string>();
@@ -884,6 +927,37 @@ function codePointLength(value: string): number {
   return Array.from(value).length;
 }
 
+function isPureAcknowledgement(value: string): boolean {
+  const normalized = value.replace(acknowledgementNoisePattern, '');
+
+  return codePointLength(normalized) <= 2 || pureAcknowledgementTexts.has(normalized);
+}
+
+function shouldSkipMentionedContactCreation(
+  participant: ProposeParticipant,
+  relatedFacts: PerceptionFact[] | undefined,
+): boolean {
+  if (participant.role !== 'mentioned') {
+    return false;
+  }
+
+  const normalizedName = normalizeContactText(participant.name);
+  const isGenericName = genericMentionNames.has(normalizedName);
+  const isOrganizationName = codePointLength(normalizedName) >= 3 &&
+    organizationMentionSuffixes.some((suffix) => normalizedName.endsWith(suffix));
+  const hasIdentityField = [
+    participant.company,
+    participant.title,
+    participant.phone,
+    participant.wechat_id,
+    ...(participant.aliases ?? []),
+  ].some((value) => Boolean(normalizeOptionalText(value)));
+
+  return isGenericName || isOrganizationName || (
+    !hasIdentityField && (relatedFacts?.length ?? 0) === 0
+  );
+}
+
 function isComposedOfTokens(value: string, tokens: string[]): boolean {
   if (!value || tokens.length === 0) {
     return false;
@@ -1221,6 +1295,11 @@ export function proposeCards(
       }
 
       const relatedFacts = factsBySubject.get(normalizeComparableText(participant.name));
+
+      if (shouldSkipMentionedContactCreation(participant, relatedFacts)) {
+        continue;
+      }
+
       const draft = buildCreateContactPayload(participant, relatedFacts, libraryFieldValues);
 
       cards.push({
@@ -1338,6 +1417,10 @@ export function proposeCards(
       continue;
     }
 
+    if (shouldSkipMentionedContactCreation(participant, relatedFacts)) {
+      continue;
+    }
+
     const createCard: Extract<ActionCard, { type: 'create_contact' }> = {
       type: 'create_contact',
       payload: draft.payload,
@@ -1387,6 +1470,15 @@ export function proposeCards(
 
       return normalizeComparableText(card.payload.name) === normalizeComparableText(candidate.participantName);
     })) {
+      continue;
+    }
+
+    const sourceEvidence = dedupeStrings([
+      ...candidate.participantSourceQuotes,
+      ...candidate.relatedQuotes.map((quote) => quote.text),
+    ]);
+
+    if (sourceEvidence.length > 0 && sourceEvidence.every(isPureAcknowledgement)) {
       continue;
     }
 

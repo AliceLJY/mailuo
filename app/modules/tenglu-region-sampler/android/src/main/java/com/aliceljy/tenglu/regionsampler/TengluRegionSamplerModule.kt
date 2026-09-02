@@ -1,5 +1,7 @@
 package com.aliceljy.tenglu.regionsampler
 
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.BitmapRegionDecoder
@@ -7,6 +9,7 @@ import android.graphics.Rect
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
+import android.os.Debug
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import org.json.JSONArray
@@ -30,6 +33,85 @@ class TengluRegionSamplerModule : Module() {
 
     AsyncFunction("cleanupFrames") {
       cleanupFrames()
+    }
+
+    AsyncFunction("readLastExitInfo") {
+      readLastExitInfo()
+    }
+
+    AsyncFunction("readMemoryStats") {
+      readMemoryStats()
+    }
+  }
+
+  private fun readLastExitInfo(): List<Map<String, Any?>> {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return emptyList()
+
+    return try {
+      val context = appContext.reactContext ?: return emptyList()
+      val activityManager = context.getSystemService(ActivityManager::class.java)
+        ?: return emptyList()
+      activityManager
+        .getHistoricalProcessExitReasons(context.packageName, 0, 5)
+        .map { info ->
+          mapOf(
+            "reason" to info.reason,
+            "reason_name" to exitReasonName(info.reason),
+            "status" to info.status,
+            "description" to info.description?.toString(),
+            "timestamp" to info.timestamp,
+            "importance" to info.importance,
+            "pss_kb" to info.pss,
+            "rss_kb" to info.rss,
+          )
+        }
+    } catch (_: Throwable) {
+      emptyList()
+    }
+  }
+
+  private fun exitReasonName(reason: Int): String = when (reason) {
+    ApplicationExitInfo.REASON_UNKNOWN -> "REASON_UNKNOWN"
+    ApplicationExitInfo.REASON_EXIT_SELF -> "REASON_EXIT_SELF"
+    ApplicationExitInfo.REASON_SIGNALED -> "REASON_SIGNALED"
+    ApplicationExitInfo.REASON_LOW_MEMORY -> "REASON_LOW_MEMORY"
+    ApplicationExitInfo.REASON_CRASH -> "REASON_CRASH"
+    ApplicationExitInfo.REASON_CRASH_NATIVE -> "REASON_CRASH_NATIVE"
+    ApplicationExitInfo.REASON_ANR -> "REASON_ANR"
+    ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "REASON_INITIALIZATION_FAILURE"
+    ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "REASON_PERMISSION_CHANGE"
+    ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "REASON_EXCESSIVE_RESOURCE_USAGE"
+    ApplicationExitInfo.REASON_USER_REQUESTED -> "REASON_USER_REQUESTED"
+    ApplicationExitInfo.REASON_USER_STOPPED -> "REASON_USER_STOPPED"
+    ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "REASON_DEPENDENCY_DIED"
+    ApplicationExitInfo.REASON_OTHER -> "REASON_OTHER"
+    ApplicationExitInfo.REASON_FREEZER -> "REASON_FREEZER"
+    ApplicationExitInfo.REASON_PACKAGE_STATE_CHANGE -> "REASON_PACKAGE_STATE_CHANGE"
+    ApplicationExitInfo.REASON_PACKAGE_UPDATED -> "REASON_PACKAGE_UPDATED"
+    // These reason codes are newer than compileSdk 36; numeric matching keeps
+    // future Android exit records readable without referencing newer stubs.
+    17 -> "REASON_MEMORY_LIMITER"
+    18 -> "REASON_ANOMALY"
+    else -> "REASON_UNKNOWN_$reason"
+  }
+
+  private fun readMemoryStats(): Map<String, Any> {
+    return try {
+      val context = appContext.reactContext ?: return emptyMap()
+      val activityManager = context.getSystemService(ActivityManager::class.java)
+        ?: return emptyMap()
+      val memoryInfo = ActivityManager.MemoryInfo()
+      activityManager.getMemoryInfo(memoryInfo)
+      val runtime = Runtime.getRuntime()
+
+      mapOf(
+        "native_heap_kb" to Debug.getNativeHeapAllocatedSize() / 1024L,
+        "java_heap_kb" to (runtime.totalMemory() - runtime.freeMemory()) / 1024L,
+        "avail_mb" to memoryInfo.availMem / (1024L * 1024L),
+        "low_memory" to memoryInfo.lowMemory,
+      )
+    } catch (_: Throwable) {
+      emptyMap()
     }
   }
 

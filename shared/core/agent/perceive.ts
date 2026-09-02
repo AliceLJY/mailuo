@@ -128,6 +128,7 @@ export function parseStoredPerceptionResult(rawExtraction: unknown): PerceptionR
 export type PerceiveScreenshotOptions = {
   image: ScreenshotImageInput;
   note?: string;
+  timestampHints?: readonly string[];
   provider: StructuredOutputProvider;
   now?: Date;
 };
@@ -135,6 +136,7 @@ export type PerceiveScreenshotOptions = {
 export async function perceiveScreenshot({
   image,
   note,
+  timestampHints = [],
   provider,
   now = new Date(),
 }: PerceiveScreenshotOptions): Promise<PerceptionResult> {
@@ -145,7 +147,7 @@ export async function perceiveScreenshot({
     messages: [
       {
         role: 'system',
-        content: buildPerceptionSystemPrompt(now),
+        content: buildPerceptionSystemPrompt(now, timestampHints),
       },
       {
         role: 'user',

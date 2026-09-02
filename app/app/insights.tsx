@@ -7,6 +7,7 @@ import { AppButton } from "@/components/button";
 import { InsightCard } from "@/components/insight/insight-card";
 import { EmptyHint, Page, SectionCard } from "@/components/page";
 import { useConnection } from "@/connection/context";
+import { logEvent } from "@/diagnostics/event-log";
 import { useFlow } from "@/flow-context";
 import { useToast } from "@/toast-context";
 import {
@@ -47,6 +48,7 @@ export default function InsightsScreen() {
     currentServerUrl,
   });
   const loadRunTokenRef = useRef(0);
+  const representedLoadKeysRef = useRef(new Set<string>());
   const targetContactIds = useMemo(
     () => uniqueIds([...affectedContactIds, ...insights.map((item) => item.contact_id)]),
     [affectedContactIds, insights],
@@ -59,10 +61,27 @@ export default function InsightsScreen() {
     const missingIds = targetMismatch
       ? []
       : targetContactIds.filter((contactId) => !contactDetailsById[contactId]);
+    const loadKey = `${flowGeneration}:${targetContactIds.join(",")}`;
 
     if (!missingIds.length) {
+      if (!targetMismatch && !representedLoadKeysRef.current.has(loadKey)) {
+        representedLoadKeysRef.current.add(loadKey);
+        logEvent(
+          "insights_start",
+          `contacts=${targetContactIds.length},missing=0`,
+        );
+        logEvent(
+          "insights_ok",
+          `contacts=${targetContactIds.length},missing=0`,
+        );
+      }
       return;
     }
+
+    logEvent(
+      "insights_start",
+      `contacts=${targetContactIds.length},missing=${missingIds.length}`,
+    );
 
     let active = true;
 
@@ -83,12 +102,19 @@ export default function InsightsScreen() {
           mergeContactDetail(result.value);
         }
       }
+      representedLoadKeysRef.current.add(loadKey);
 
       if (failed) {
+        const failureCount = results.filter((item) => item.status === "rejected").length;
+        logEvent(
+          "insights_error",
+          `contacts=${targetContactIds.length},failed=${failureCount}`,
+        );
         const message = "有些联系人的依据还没补齐，稍后再试一次。";
         setPageError(message);
         showError(new Error(message), message);
       } else {
+        logEvent("insights_ok", `contacts=${targetContactIds.length},missing=${missingIds.length}`);
         setPageError(null);
       }
     })();

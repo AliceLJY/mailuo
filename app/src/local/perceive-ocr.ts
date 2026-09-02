@@ -10,13 +10,17 @@ export const OCR_LOW_CONFIDENCE_RATIO_THRESHOLD = 0.6;
 const WECHAT_ABSOLUTE_TIME = /^(?:\d{4}\s*年\s*)?(?:1[0-2]|0?[1-9])\s*月\s*(?:3[01]|[12]\d|0?[1-9])\s*(?:日|号)(?:\s*[（(]?(?:周|星期)[一二三四五六日天][）)]?)?\s*(?:凌晨|早上|上午|中午|下午|傍晚|晚上)?\s*(?:[01]?\d|2[0-3])[:：][0-5]\d$/;
 const WECHAT_TIME = /^(?:(?:昨天\s*|(?:(?:今天|前天)|(?:(?:上|本|这|下)?(?:周|星期)[一二三四五六日天]))\s+))?\d{1,2}[:：]\d{2}$/;
 
+export function isWechatAbsoluteTimeLine(text: string): boolean {
+  return WECHAT_ABSOLUTE_TIME.test(text.trim());
+}
+
 function isWechatTimeLine(text: string): boolean {
   const normalized = text.trim();
-  return WECHAT_ABSOLUTE_TIME.test(normalized) || WECHAT_TIME.test(normalized);
+  return isWechatAbsoluteTimeLine(normalized) || WECHAT_TIME.test(normalized);
 }
 
 function absoluteTimeAnchor(text: string): "absolute-date" | undefined {
-  return WECHAT_ABSOLUTE_TIME.test(text.trim()) ? "absolute-date" : undefined;
+  return isWechatAbsoluteTimeLine(text) ? "absolute-date" : undefined;
 }
 
 export type OcrSide = "me" | "them" | null;
@@ -187,10 +191,20 @@ function collectRecognizedLinesWithWarnings(result: OcrRecognitionResult): {
     }
   }
 
-  return { lines, warnings, hasMissingGeometry };
+  const orderedGeometryLines = lines
+    .filter(hasUsableGeometry)
+    .sort((left, right) => left.y - right.y || left.x - right.x);
+  let geometryIndex = 0;
+  const orderedLines = lines.map((line) => (
+    hasUsableGeometry(line)
+      ? orderedGeometryLines[geometryIndex++]!
+      : line
+  ));
+
+  return { lines: orderedLines, warnings, hasMissingGeometry };
 }
 
-/** Convert ML Kit's block/line result without normalizing recognized text or geometry. */
+/** Sort positioned lines by y/x while retaining unpositioned lines in their recognition slots. */
 export function collectRecognizedLines(result: OcrRecognitionResult): PerceivedOcrLine[] {
   return collectRecognizedLinesWithWarnings(result).lines;
 }

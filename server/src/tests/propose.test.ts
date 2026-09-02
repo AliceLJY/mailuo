@@ -737,6 +737,279 @@ test('proposeCards falls back to raw quote content when interaction_summary is m
   );
 });
 
+test('proposeCards omits an interaction when three source messages are only acknowledgements', () => {
+  const sourceQuotes = ['收到！', '收到1️⃣', '收到 👍'];
+  const extraction: PerceptionResult = {
+    participants: sourceQuotes.map((sourceQuote) => ({
+      name: '王磊',
+      is_self: false,
+      role: 'speaker',
+      interaction_summary: '王磊已确认收到通知。',
+      confidence: 'high',
+      source_quote: sourceQuote,
+    })),
+    events: [],
+    facts: [],
+    quotes: [],
+  };
+  const resolutions: ParticipantResolution[] = sourceQuotes.map(() => ({
+    participant_name: '王磊',
+    normalized_name: '王磊',
+    status: 'same_as',
+    contact_id: 12,
+    source: 'exact',
+  }));
+  const contacts: ResolvableContact[] = [{
+    id: 12,
+    canonical_name: '王磊',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+
+  assert.deepEqual(proposeCards(extraction, resolutions, contacts), []);
+});
+
+test('proposeCards keeps an interaction when an acknowledgement message contains substantive text', () => {
+  const extraction = singleParticipantExtraction({
+    role: 'speaker',
+    interaction_summary: '王磊明天上午会带车牌号过去。',
+    source_quote: '收到，明天上午我带车牌号过去',
+  });
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '王磊',
+    normalized_name: '王磊',
+    status: 'same_as',
+    contact_id: 13,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 13,
+    canonical_name: '王磊',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+  const interactionCard = proposeCards(extraction, resolutions, contacts)
+    .find((card) => card.type === 'record_interaction');
+
+  assert.ok(interactionCard);
+});
+
+test('proposeCards keeps an interaction when mixed source evidence includes one substantive quote', () => {
+  const extraction = singleParticipantExtraction({
+    role: 'speaker',
+    source_quote: '收到！',
+  });
+  extraction.quotes = [
+    {
+      speaker_name: '王磊',
+      text: '明天上午我带车牌号过去',
+      source_quote: '明天上午我带车牌号过去',
+    },
+  ];
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '王磊',
+    normalized_name: '王磊',
+    status: 'same_as',
+    contact_id: 14,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 14,
+    canonical_name: '王磊',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+  const interactionCard = proposeCards(extraction, resolutions, contacts)
+    .find((card) => card.type === 'record_interaction');
+
+  assert.ok(interactionCard);
+  assert.equal(interactionCard.payload.summary, '收到！；明天上午我带车牌号过去');
+});
+
+test('proposeCards skips generic mentioned contacts in the no-resolution branch but keeps item names', () => {
+  const genericNames = [
+    '大家',
+    '各位',
+    '全体',
+    '同事们',
+    '同学们',
+    '各位同事',
+    '各位领导',
+    '领导们',
+    '全体员工',
+  ];
+  const extraction: PerceptionResult = {
+    participants: genericNames.map((name) => ({
+      name,
+      is_self: false,
+      role: 'mentioned',
+      title: '副总',
+      confidence: 'high',
+      source_quote: `通知对象：${name}`,
+    })),
+    events: [
+      {
+        kind: 'other',
+        title: '发送通知',
+        time_text: '',
+        time_iso: null,
+        has_time_signal: false,
+        participant_names: genericNames,
+        confidence: 'high',
+        source_quote: '通知已发送',
+      },
+    ],
+    facts: [],
+    quotes: [],
+  };
+  const cards = proposeCards(extraction);
+  const itemCard = cards.find((card) => card.type === 'create_meeting');
+
+  assert.equal(cards.some((card) => card.type === 'create_contact'), false);
+  assert.ok(itemCard);
+  assert.deepEqual(itemCard.payload.participants, genericNames.map((name) => ({ name })));
+});
+
+test('proposeCards skips an organization-shaped mentioned contact in the resolved create branch', () => {
+  const extraction: PerceptionResult = {
+    participants: [
+      {
+        name: '党群工作部',
+        is_self: false,
+        role: 'mentioned',
+        company: '某集团 市场部',
+        confidence: 'high',
+        source_quote: '通知来自党群工作部',
+      },
+    ],
+    events: [],
+    facts: [],
+    quotes: [],
+  };
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '党群工作部',
+    normalized_name: '党群工作部',
+    status: 'new',
+    source: 'empty_db',
+  }];
+
+  assert.deepEqual(proposeCards(extraction, resolutions), []);
+});
+
+test('proposeCards skips a fieldless mentioned name but keeps a mentioned contact with identity fields', () => {
+  const extraction: PerceptionResult = {
+    participants: [
+      {
+        name: 'Amy.L',
+        is_self: false,
+        role: 'mentioned',
+        confidence: 'high',
+        source_quote: '通知抄送 Amy.L',
+      },
+      {
+        name: '王磊',
+        is_self: false,
+        role: 'mentioned',
+        title: '副总',
+        confidence: 'high',
+        source_quote: '通知抄送王磊（副总）',
+      },
+    ],
+    events: [],
+    facts: [],
+    quotes: [],
+  };
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: 'Amy.L',
+      normalized_name: 'amy.l',
+      status: 'new',
+      source: 'empty_db',
+    },
+    {
+      participant_name: '王磊',
+      normalized_name: '王磊',
+      status: 'new',
+      source: 'empty_db',
+    },
+  ];
+
+  assert.deepEqual(proposeCards(extraction, resolutions), [
+    {
+      type: 'create_contact',
+      payload: {
+        name: '王磊',
+        title: '副总',
+      },
+      confidence: 'high',
+      source_quote: '通知抄送王磊（副总）',
+    },
+  ]);
+});
+
+test('proposeCards does not apply mentioned-contact filters to speakers or legacy participants', () => {
+  const extraction: PerceptionResult = {
+    participants: [
+      {
+        name: '大家',
+        is_self: false,
+        role: 'speaker',
+        confidence: 'high',
+        source_quote: '大家说明天上午带车牌号过去',
+      },
+      {
+        name: '党群工作部',
+        is_self: false,
+        confidence: 'high',
+        source_quote: '党群工作部通知明天上午开会',
+      },
+    ],
+    events: [],
+    facts: [],
+    quotes: [],
+  };
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '大家',
+      normalized_name: '大家',
+      status: 'new',
+      source: 'empty_db',
+    },
+    {
+      participant_name: '党群工作部',
+      normalized_name: '党群工作部',
+      status: 'new',
+      source: 'empty_db',
+    },
+  ];
+  const cards = proposeCards(extraction, resolutions);
+
+  assert.deepEqual(
+    cards
+      .filter((card) => card.type === 'create_contact')
+      .map((card) => card.payload.name),
+    ['大家', '党群工作部'],
+  );
+  assert.deepEqual(
+    cards
+      .filter((card) => card.type === 'record_interaction')
+      .map((card) => card.payload.contact_name),
+    ['大家', '党群工作部'],
+  );
+});
+
 test('proposeCards keeps participant and fact fields for a mentioned new contact without recording an interaction', () => {
   const extraction: PerceptionResult = {
     participants: [

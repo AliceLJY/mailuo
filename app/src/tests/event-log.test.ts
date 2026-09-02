@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  EVENT_KINDS,
   EVENT_LOG_KEY,
+  MAX_DIAGNOSTIC_EVENT_DETAIL_CODE_POINTS,
   MAX_EVENT_DETAIL_CODE_POINTS,
   MAX_EVENT_LOG_ENTRIES,
   acknowledgePreviousSession,
   appendEvent,
+  capturePreviousSession,
   configureEventLogStorage,
   logEvent,
   readEventLog,
@@ -14,6 +17,7 @@ import {
   type EventLogEntry,
   type SyncEventLogStorage,
 } from "../diagnostics/event-log";
+import { formatMemoryEventDetail } from "../diagnostics/memory-stats";
 
 function createMemoryStorage(initialEntries: EventLogEntry[] = []) {
   const values = new Map<string, string>();
@@ -95,6 +99,29 @@ test("startAppSession snapshots the previous segment before app_start and uses t
   );
 });
 
+test("async diagnostic tails do not override the last app lifecycle state", () => {
+  const backgrounded = createMemoryStorage([
+    event("2026-09-02T00:00:00.000Z", "app_start"),
+    event("2026-09-02T00:00:01.000Z", "app_background"),
+    event("2026-09-02T00:00:02.000Z", "mem", "source=route path=/insights"),
+    event("2026-09-02T00:00:03.000Z", "insights_ok", "contacts=33"),
+    event("2026-09-02T00:00:04.000Z", "exit_reason", "reason_name=REASON_LOW_MEMORY"),
+  ]);
+  const activeAgain = createMemoryStorage([
+    ...readEventLog(backgrounded.storage),
+    event("2026-09-02T00:00:05.000Z", "app_active"),
+    event("2026-09-02T00:00:06.000Z", "mem", "source=route path=/insights"),
+  ]);
+
+  const backgroundedSnapshot = capturePreviousSession(backgrounded.storage);
+  const activeSnapshot = capturePreviousSession(activeAgain.storage);
+
+  assert.equal(backgroundedSnapshot?.lastEvent.kind, "exit_reason");
+  assert.equal(backgroundedSnapshot?.possiblyAbnormalExit, false);
+  assert.equal(activeSnapshot?.lastEvent.kind, "mem");
+  assert.equal(activeSnapshot?.possiblyAbnormalExit, true);
+});
+
 test("acknowledgement marker identifies the previous app_start", () => {
   const memory = createMemoryStorage([
     event("2026-09-02T02:00:00.000Z", "app_start"),
@@ -132,5 +159,73 @@ test("configured logEvent is synchronous and storage failures do not escape", ()
   });
   assert.doesNotThrow(() => logEvent("crash", "boom"));
   assert.equal(logEvent("crash", "boom"), null);
+  configureEventLogStorage(null);
+});
+
+test("Goal 1 event kinds survive the event-log read whitelist", () => {
+  const memory = createMemoryStorage();
+  const kinds = [
+    "exit_reason",
+    "insights_start",
+    "insights_ok",
+    "insights_error",
+    "mem",
+  ] as const;
+
+  for (const kind of kinds) {
+    assert.ok(EVENT_KINDS.includes(kind));
+    appendEvent(memory.storage, kind, kind);
+  }
+
+  assert.deepEqual(
+    readEventLog(memory.storage).map((entry) => entry.kind),
+    kinds,
+  );
+});
+
+test("exit-reason events retain the complete 80-code-point description", () => {
+  const memory = createMemoryStorage();
+  const description = "字".repeat(80);
+  const detail = [
+    "reason_name=REASON_EXCESSIVE_RESOURCE_USAGE",
+    "status=0",
+    "pss_kb=123456",
+    `description=${description}`,
+  ].join(" ");
+
+  assert.ok(Array.from(detail).length > MAX_EVENT_DETAIL_CODE_POINTS);
+  assert.ok(Array.from(detail).length <= MAX_DIAGNOSTIC_EVENT_DETAIL_CODE_POINTS);
+  assert.equal(appendEvent(memory.storage, "exit_reason", detail)?.detail, detail);
+  assert.equal(readEventLog(memory.storage).at(-1)?.detail, detail);
+});
+
+test("memory events retain all Hermes and native fields after persistence", () => {
+  const memory = createMemoryStorage();
+  const detail = formatMemoryEventDetail(
+    "route path=/insights",
+    {
+      native_heap_kb: 123_456,
+      java_heap_kb: 234_567,
+      avail_mb: 3_456,
+      low_memory: false,
+    },
+    { js_heap_kb: 345_678, js_allocated_kb: 456_789 },
+  );
+
+  assert.ok(Array.from(detail).length > MAX_EVENT_DETAIL_CODE_POINTS);
+  appendEvent(memory.storage, "mem", detail);
+  assert.equal(readEventLog(memory.storage).at(-1)?.detail, detail);
+  assert.match(detail, /avail_mb=3456 low_memory=false$/u);
+});
+
+test("every upload progress event appends a paired Hermes memory sample", () => {
+  const memory = createMemoryStorage();
+  configureEventLogStorage(memory.storage);
+
+  logEvent("upload_progress", "1/2:processing");
+
+  const entries = readEventLog(memory.storage);
+  assert.deepEqual(entries.map((entry) => entry.kind), ["upload_progress", "mem"]);
+  assert.equal(entries[1]?.detail, "source=upload_progress");
   configureEventLogStorage(null);
 });

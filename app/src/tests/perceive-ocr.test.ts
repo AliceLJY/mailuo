@@ -5,6 +5,7 @@ import {
   collectRecognizedLines,
   findAlignmentPeaks,
   isOcrTextQualityPoor,
+  isWechatAbsoluteTimeLine,
   perceiveScreenshotWithOcr,
   type OcrRecognitionResult,
   type PerceivedOcrLine,
@@ -71,15 +72,6 @@ test("collectRecognizedLines preserves raw text, geometry, confidence, and block
 
   assert.deepEqual(result, [
     {
-      text: "  原样文字  ",
-      side: null,
-      x: 12.5,
-      y: 23.5,
-      width: 120.25,
-      height: 31.75,
-      confidence: 0.875,
-    },
-    {
       text: "使用块坐标",
       side: null,
       x: 11,
@@ -87,6 +79,15 @@ test("collectRecognizedLines preserves raw text, geometry, confidence, and block
       width: 150,
       height: 40,
       confidence: null,
+    },
+    {
+      text: "  原样文字  ",
+      side: null,
+      x: 12.5,
+      y: 23.5,
+      width: 120.25,
+      height: 31.75,
+      confidence: 0.875,
     },
     {
       text: "无坐标",
@@ -98,6 +99,44 @@ test("collectRecognizedLines preserves raw text, geometry, confidence, and block
       confidence: null,
     },
   ]);
+});
+
+test("positioned OCR lines are ordered by y then x without treating missing geometry as page-top", async () => {
+  const result = await perceiveScreenshotWithOcr({
+    uri: "file:///unordered.png",
+    async recognize() {
+      return {
+        blocks: [
+          {
+            lines: [
+              { text: "8月12日 11:30", frame: frame(300, 200, 120, 30) },
+              { text: "8月11日 09:00", frame: frame(240, 100, 120, 30) },
+            ],
+          },
+          {
+            lines: [
+              { text: "8月11日 08:59", frame: frame(80, 100, 120, 30) },
+              { text: "8月10日 07:00" },
+            ],
+          },
+        ],
+      };
+    },
+    async sampleRegions() {
+      throw new Error("timestamp separators must not be sampled");
+    },
+  });
+
+  assert.deepEqual(
+    result.lines.map((line) => [line.text, line.y, line.x]),
+    [
+      ["8月11日 08:59", 100, 80],
+      ["8月11日 09:00", 100, 240],
+      ["8月12日 11:30", 200, 300],
+      ["8月10日 07:00", 0, 0],
+    ],
+  );
+  assert.equal(result.hasUnresolvedMessageSpeakers, true);
 });
 
 test("OCR text quality falls back only when low-confidence rows exceed the conservative ratio", () => {
@@ -301,6 +340,8 @@ test("Wechat timestamp rows stay side-null, only absolute dates become anchors, 
   assert.equal(Object.hasOwn(result.lines[6], "timeAnchor"), false);
   assert.equal(Object.hasOwn(result.lines[7], "timeAnchor"), false);
   assert.equal(samplerCalls, 0);
+  assert.equal(isWechatAbsoluteTimeLine(" 8月12日 09:30 "), true);
+  assert.equal(isWechatAbsoluteTimeLine("昨天 09:30"), false);
 });
 
 test("relative date wording attached to a clock stays in a message bubble and is sampled", async () => {

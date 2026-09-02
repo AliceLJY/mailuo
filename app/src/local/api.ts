@@ -25,6 +25,7 @@ import {
 import { createLocalProviderFactory, type LocalProviderFactory } from "./providers";
 import {
   isOcrTextQualityPoor,
+  isWechatAbsoluteTimeLine,
   type OcrPerceptionResult,
 } from "./perceive-ocr";
 import {
@@ -92,6 +93,18 @@ function formatOcrRuntimeFailureNotice(error: unknown): string {
   }
 
   return `本地 OCR 未能运行：message=${String(error)}；name=${typeof error}；stack=`;
+}
+
+function collectOcrTimestampHints(ocr: OcrPerceptionResult): string[] {
+  return ocr.lines
+    .filter((line) => (
+      [line.x, line.y, line.width, line.height].every(Number.isFinite) &&
+      line.width > 0 &&
+      line.height > 0 &&
+      isWechatAbsoluteTimeLine(line.text)
+    ))
+    .sort((left, right) => left.y - right.y || left.x - right.x)
+    .map((line) => line.text.trim());
 }
 
 export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
@@ -221,12 +234,13 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
         tracePerceptionPath = canUseOcr ? "ocr" : "cloud";
         const textProvider = await providerFactory.createTextProvider(options.keys);
         let qwenProviderPromise: ReturnType<LocalProviderFactory["createQwenProvider"]> | null = null;
-        const perceiveVisually = async () => {
+        const perceiveVisually = async (timestampHints?: readonly string[]) => {
           const loadedImage = await options.loadImage(input.asset);
           qwenProviderPromise ??= providerFactory.createQwenProvider(options.keys);
           return perceiveScreenshot({
             image: loadedImage.image,
             note,
+            ...(timestampHints ? { timestampHints } : {}),
             provider: await qwenProviderPromise,
             now: timestamp,
           });
@@ -272,11 +286,11 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           } else if (ocr.lines.length === 0) {
             tracePerceptionPath = "ocr->cloud";
             notices.unshift(OCR_EMPTY_FALLBACK_NOTICE);
-            extraction = await perceiveVisually();
+            extraction = await perceiveVisually(collectOcrTimestampHints(ocr));
           } else if (isOcrTextQualityPoor(ocr)) {
             tracePerceptionPath = "ocr->cloud";
             notices.unshift(OCR_LOW_CONFIDENCE_FALLBACK_NOTICE);
-            extraction = await perceiveVisually();
+            extraction = await perceiveVisually(collectOcrTimestampHints(ocr));
           } else {
             try {
               extraction = await options.perceiveOcrText({
@@ -291,7 +305,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
             } catch {
               tracePerceptionPath = "ocr->cloud";
               notices.unshift(OCR_FALLBACK_NOTICE);
-              extraction = await perceiveVisually();
+              extraction = await perceiveVisually(collectOcrTimestampHints(ocr));
             }
           }
         } else {

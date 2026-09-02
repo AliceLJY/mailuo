@@ -51,3 +51,21 @@ export type RegionSampleBatch = {
   decoderCount: number;
   elapsedMs: number;
 };
+
+export type ExitInfo = {
+  reason: number;
+  reason_name: string;
+  status: number;
+  description: string | null;
+  timestamp: number;
+  importance: number;
+  pss_kb: number;
+  rss_kb: number;
+};
+
+export type MemoryStats = {
+  native_heap_kb: number;
+  java_heap_kb: number;
+  avail_mb: number;
+  low_memory: boolean;
+};

@@ -49,6 +49,7 @@ class FakeStructuredOutputProvider implements StructuredOutputProvider {
   readonly model = "fake-model";
   calls = 0;
   completeCalls = 0;
+  readonly structuredOutputMessages: StructuredOutputRequest<unknown>["messages"][] = [];
 
   constructor(
     private readonly response: () => unknown,
@@ -64,8 +65,22 @@ class FakeStructuredOutputProvider implements StructuredOutputProvider {
 
   async generateStructuredOutput<T>(request: StructuredOutputRequest<T>): Promise<T> {
     this.calls += 1;
+    this.structuredOutputMessages.push(request.messages);
     return request.schema.parse(this.response());
   }
+}
+
+function getStructuredSystemPrompt(
+  provider: FakeStructuredOutputProvider,
+  callIndex = 0,
+): string {
+  const content = provider.structuredOutputMessages[callIndex]?.find(
+    (message) => message.role === "system",
+  )?.content;
+  if (typeof content !== "string") {
+    throw new Error(`structured output call ${callIndex} has no string system prompt`);
+  }
+  return content;
 }
 
 class FakeLocalStore implements LocalStore {
@@ -2177,6 +2192,7 @@ async function runOcrFallbackCase(
   perceiveOcr: () => Promise<OcrPerceptionResult>,
   perceiveText: () => Promise<typeof emptyExtraction> = async () => emptyExtraction,
   expectedTextPerceptionCalls = 0,
+  inspectVisualPrompt?: (prompt: string) => void,
 ) {
   const store = new FakeLocalStore();
   const qwen = new FakeStructuredOutputProvider(() => emptyExtraction);
@@ -2221,6 +2237,7 @@ async function runOcrFallbackCase(
   assert.equal(textPerceptionCalls, expectedTextPerceptionCalls);
   assert.match(upload.processing_notice ?? "", /已用云端模型重新处理/u);
   assert.ok(await api.getScreenshotDetail(upload.screenshot_id));
+  inspectVisualPrompt?.(getStructuredSystemPrompt(qwen));
 
   return upload;
 }
@@ -2283,9 +2300,16 @@ test("ML Kit recognize failure keeps its call-site tag and first four stack line
     "at uploadScreenshot (api.ts:173:25)",
     "at omittedFrame (api.ts:174:1)",
   ].join("\n");
-  const upload = await runOcrFallbackCase(async () => {
-    throw error;
-  });
+  const upload = await runOcrFallbackCase(
+    async () => {
+      throw error;
+    },
+    undefined,
+    0,
+    (prompt) => {
+      assert.doesNotMatch(prompt, /Local OCR detected these WeChat timestamp separators/u);
+    },
+  );
 
   assert.equal(
     upload.processing_notice,
@@ -2308,11 +2332,18 @@ test("region sampler failure keeps its call-site tag in the notice", async () =>
 });
 
 test("zero OCR lines fall back to Qwen-VL without crashing", async () => {
-  const upload = await runOcrFallbackCase(async () => ({
-    lines: [],
-    warnings: [],
-    degraded: false,
-  }));
+  const upload = await runOcrFallbackCase(
+    async () => ({
+      lines: [],
+      warnings: [],
+      degraded: false,
+    }),
+    undefined,
+    0,
+    (prompt) => {
+      assert.doesNotMatch(prompt, /Local OCR detected these WeChat timestamp separators/u);
+    },
+  );
 
   assert.equal(
     upload.processing_notice,
@@ -2380,19 +2411,69 @@ test("recognized text without geometry stays on text perception and skips Qwen-V
 });
 
 test("low-confidence OCR rows above the threshold fall back to Qwen-VL", async () => {
-  const upload = await runOcrFallbackCase(async () => ({
-    lines: [0.2, 0.3, 0.4, 0.95].map((confidence, index) => ({
-      text: `第 ${index + 1} 行`,
-      side: null,
-      x: 24,
-      y: 40 + index * 35,
-      width: 120,
-      height: 30,
-      confidence,
-    })),
-    warnings: [],
-    degraded: false,
-  }));
+  const upload = await runOcrFallbackCase(
+    async () => ({
+      lines: [
+        {
+          text: "8月10日07:00",
+          side: null,
+          x: 0,
+          y: 0,
+          width: 0,
+          height: 0,
+          confidence: 0.2,
+        },
+        {
+          text: "8月12日11:30",
+          side: null,
+          x: 300,
+          y: 100,
+          width: 120,
+          height: 30,
+          confidence: 0.2,
+        },
+        {
+          text: "昨天 09:30",
+          side: null,
+          x: 180,
+          y: 60,
+          width: 120,
+          height: 30,
+          confidence: 0.3,
+        },
+        {
+          text: " 8月11日08:59 ",
+          side: null,
+          x: 100,
+          y: 100,
+          width: 120,
+          height: 30,
+          confidence: 0.4,
+        },
+        {
+          text: "今天下午14:30左右",
+          side: "them",
+          x: 24,
+          y: 150,
+          width: 180,
+          height: 30,
+          confidence: 0.95,
+        },
+      ],
+      warnings: [],
+      degraded: false,
+    }),
+    undefined,
+    0,
+    (prompt) => {
+      assert.match(
+        prompt,
+        /Local OCR detected these WeChat timestamp separators in top-to-bottom order: 8月11日08:59 -> 8月12日11:30\./u,
+      );
+      assert.doesNotMatch(prompt, /昨天 09:30 ->/u);
+      assert.doesNotMatch(prompt, /8月10日07:00/u);
+    },
+  );
 
   assert.equal(
     upload.processing_notice,
@@ -2403,15 +2484,26 @@ test("low-confidence OCR rows above the threshold fall back to Qwen-VL", async (
 test("OCR text interpretation failure falls back to Qwen-VL once", async () => {
   await runOcrFallbackCase(
     async () => ({
-      lines: [{
-        text: "下周二见",
-        side: "them",
-        x: 24,
-        y: 80,
-        width: 120,
-        height: 30,
-        confidence: 0.95,
-      }],
+      lines: [
+        {
+          text: "8月12日11:30",
+          side: null,
+          x: 180,
+          y: 40,
+          width: 120,
+          height: 30,
+          confidence: 0.99,
+        },
+        {
+          text: "今天下午14:30左右",
+          side: "them",
+          x: 24,
+          y: 80,
+          width: 180,
+          height: 30,
+          confidence: 0.95,
+        },
+      ],
       warnings: [],
       degraded: false,
     }),
@@ -2419,6 +2511,12 @@ test("OCR text interpretation failure falls back to Qwen-VL once", async () => {
       throw new Error("text model unavailable");
     },
     1,
+    (prompt) => {
+      assert.match(
+        prompt,
+        /Local OCR detected these WeChat timestamp separators in top-to-bottom order: 8月12日11:30\./u,
+      );
+    },
   );
 });
 
@@ -2537,6 +2635,10 @@ test("forced cloud path does not invoke OCR or OCR text interpretation", async (
   assert.equal(traces.length, 1);
   assert.equal(traces[0]?.perception_path, "cloud");
   assert.equal(traces[0]?.ocr_text, undefined);
+  assert.doesNotMatch(
+    getStructuredSystemPrompt(qwen),
+    /Local OCR detected these WeChat timestamp separators/u,
+  );
 });
 
 test("OCR export failure is reported without changing a healthy text result", async () => {

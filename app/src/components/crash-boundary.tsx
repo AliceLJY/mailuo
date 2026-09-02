@@ -18,15 +18,18 @@ import {
 } from "@/diagnostics/event-log";
 import {
   formatEventLogEntry,
+  formatSystemExitReason,
   getPreviousExitPanelCopy,
   getRecentPreviousEvents,
   shouldShowPreviousExit,
 } from "@/diagnostics/previous-exit";
 import { theme } from "@/theme";
+import type { ExitInfo } from "../../modules/tenglu-region-sampler/src/TengluRegionSampler.types";
 
 type Props = PropsWithChildren<{
   storage: SyncCrashStorage;
   onReturnHome: () => void;
+  previousExitInfo?: ExitInfo | null;
   previousSession?: PreviousSessionSnapshot | null;
 }>;
 
@@ -100,6 +103,7 @@ export class CrashBoundary extends Component<Props, State> {
           heading={copy.heading}
           intro={copy.intro}
           onAction={this.acknowledgePrevious}
+          previousExitInfo={this.props.previousExitInfo}
           record={this.state.previousRecord ?? undefined}
         />
       );
@@ -115,6 +119,7 @@ function CrashPanel({
   heading,
   intro,
   onAction,
+  previousExitInfo,
   record,
 }: {
   actionLabel: string;
@@ -122,6 +127,7 @@ function CrashPanel({
   heading: string;
   intro: string;
   onAction: () => void;
+  previousExitInfo?: ExitInfo | null;
   record?: CrashRecord;
 }) {
   const hermesEntries = Object.entries(record?.hermesStats ?? {});
@@ -136,6 +142,12 @@ function CrashPanel({
         </View>
 
         <View style={styles.card}>
+          {previousExitInfo !== undefined ? (
+            <Text selectable style={styles.systemExitReason}>
+              {formatSystemExitReason(previousExitInfo)}
+            </Text>
+          ) : null}
+
           {record ? (
             <>
               <DiagnosticLine label="时间" value={record.timestamp} />
@@ -287,5 +299,11 @@ const styles = StyleSheet.create({
     fontFamily: "monospace",
     fontSize: 12,
     lineHeight: 18,
+  },
+  systemExitReason: {
+    color: theme.colors.textPrimary,
+    fontSize: 15,
+    fontWeight: "700",
+    lineHeight: 21,
   },
 });

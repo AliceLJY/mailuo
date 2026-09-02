@@ -138,12 +138,22 @@ const AFTER_FIX5_INTERACTION_SUMMARY_RULES = [
 const SHORTEST_SOURCE_QUOTE_RULE =
   "source_quote should be the shortest span that supports the extracted fields.";
 
+const FIX6_TIMESTAMP_HINTS = ["8月11日08:59", "8月12日11:30"];
+const FIX6_VISUAL_TIMESTAMP_HINTS = [
+  "Local OCR detected these WeChat timestamp separators in top-to-bottom order: 8月11日08:59 -> 8月12日11:30.",
+  "Anchor relative day words (今天/明天/后天/昨天) of a message to the nearest separator ABOVE that message. If uncertain which separator a message belongs to, set time_iso to null and has_time_signal accordingly.",
+].join("\n");
+
 type PerceptionPromptSnapshot = {
   sourceRevision: string;
   snapshotPhase: string;
   baselineNow: string;
   buildPerceptionSystemPrompt: string;
   buildPerceptionTextSystemPrompt: string;
+};
+
+type Fix6PerceptionPromptSnapshot = PerceptionPromptSnapshot & {
+  timestampHints: string[];
 };
 
 function readPerceptionPromptSnapshot(fileName: string): PerceptionPromptSnapshot {
@@ -164,6 +174,76 @@ test("v3-M4-fix5 visual and text system prompts match the fixed after snapshot",
   assert.equal(
     buildPerceptionTextSystemPrompt(now),
     snapshot.buildPerceptionTextSystemPrompt,
+  );
+});
+
+test("v3-M4-fix6 prompt snapshots preserve fix5 bytes and add only visual timestamp hints", () => {
+  const beforeUrl = new URL(
+    "../../../docs/perception-baseline/perception-prompts.before-v3-m4-fix6.json",
+    import.meta.url,
+  );
+  const previousUrl = new URL(
+    "../../../docs/perception-baseline/perception-prompts.after-v3-m4-fix5.json",
+    import.meta.url,
+  );
+  const afterUrl = new URL(
+    "../../../docs/perception-baseline/perception-prompts.after-v3-m4-fix6.json",
+    import.meta.url,
+  );
+  const beforeBytes = readFileSync(beforeUrl);
+  const previousBytes = readFileSync(previousUrl);
+  const afterText = readFileSync(afterUrl, "utf8");
+  const before = JSON.parse(beforeBytes.toString("utf8")) as PerceptionPromptSnapshot;
+  const after = JSON.parse(afterText) as Fix6PerceptionPromptSnapshot;
+  const now = new Date(after.baselineNow);
+
+  assert.deepEqual(beforeBytes, previousBytes);
+  assert.equal(
+    createHash("sha256").update(beforeBytes).digest("hex").slice(0, 8),
+    "741f75f9",
+  );
+  assert.equal(after.sourceRevision, "6c092ff");
+  assert.equal(after.snapshotPhase, "after v3-M4-fix6 working-tree changes");
+  assert.equal(after.baselineNow, before.baselineNow);
+  assert.deepEqual(after.timestampHints, FIX6_TIMESTAMP_HINTS);
+  assert.equal(afterText, `${JSON.stringify(after, null, 2)}\n`);
+  assert.equal(
+    buildPerceptionSystemPrompt(now, after.timestampHints),
+    after.buildPerceptionSystemPrompt,
+  );
+  assert.equal(
+    buildPerceptionTextSystemPrompt(now),
+    after.buildPerceptionTextSystemPrompt,
+  );
+  assert.equal(
+    after.buildPerceptionSystemPrompt.replace(`${FIX6_VISUAL_TIMESTAMP_HINTS}\n`, ""),
+    before.buildPerceptionSystemPrompt,
+  );
+  assert.equal(
+    after.buildPerceptionTextSystemPrompt,
+    before.buildPerceptionTextSystemPrompt,
+  );
+});
+
+test("visual timestamp hints are included only when the hint list is non-empty", () => {
+  const now = new Date("2026-08-29T08:00:00+08:00");
+  const withoutHints = buildPerceptionSystemPrompt(now);
+
+  assert.equal(buildPerceptionSystemPrompt(now, []), withoutHints);
+  assert.doesNotMatch(
+    withoutHints,
+    /Local OCR detected these WeChat timestamp separators/u,
+  );
+
+  const withHints = buildPerceptionSystemPrompt(now, FIX6_TIMESTAMP_HINTS);
+  assert.equal(withHints.split(FIX6_VISUAL_TIMESTAMP_HINTS).length, 2);
+  assert.match(
+    withHints,
+    /nearest separator ABOVE that message\. If uncertain which separator a message belongs to, set time_iso to null and has_time_signal accordingly\./u,
+  );
+  assert.equal(
+    withHints.replace(`${FIX6_VISUAL_TIMESTAMP_HINTS}\n`, ""),
+    withoutHints,
   );
 });
 

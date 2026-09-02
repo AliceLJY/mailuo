@@ -1,4 +1,5 @@
 import { appendEvent } from "./event-log";
+import { readHermesInstrumentedStats } from "./memory-stats";
 
 export const CRASH_RECORD_KEY = "mailuo.crash.last.v1";
 export const MAX_CRASH_STACK_FRAMES = 8;
@@ -53,10 +54,6 @@ type ErrorUtilsLike = {
   setGlobalHandler(handler: GlobalErrorHandler): void;
 };
 
-type HermesInternalLike = {
-  getInstrumentedStats?: () => Record<string, unknown>;
-};
-
 type CreateCrashRecordOptions = {
   context?: Partial<CrashContext>;
   hermesStats?: Record<string, unknown> | null;
@@ -87,7 +84,7 @@ export function createCrashRecord(
   const { message, name, stack } = describeError(error);
   const rawHermesStats = Object.prototype.hasOwnProperty.call(options, "hermesStats")
     ? options.hermesStats
-    : readHermesStats();
+    : readHermesInstrumentedStats();
 
   return {
     timestamp: (options.now ?? (() => new Date()))().toISOString(),
@@ -223,17 +220,6 @@ function extractStackFrames(
 
   return lines
     .slice(startsWithHeader ? 1 : 0, (startsWithHeader ? 1 : 0) + MAX_CRASH_STACK_FRAMES);
-}
-
-function readHermesStats() {
-  try {
-    const hermes = (globalThis as typeof globalThis & {
-      HermesInternal?: HermesInternalLike | null;
-    }).HermesInternal;
-    return hermes?.getInstrumentedStats?.() ?? null;
-  } catch {
-    return null;
-  }
 }
 
 function getErrorUtils(): ErrorUtilsLike | null {

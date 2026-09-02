@@ -1,6 +1,9 @@
+import { formatMemoryEventDetail } from "./memory-stats";
+
 export const EVENT_LOG_KEY = "mailuo.eventlog.v1";
 export const MAX_EVENT_LOG_ENTRIES = 200;
 export const MAX_EVENT_DETAIL_CODE_POINTS = 120;
+export const MAX_DIAGNOSTIC_EVENT_DETAIL_CODE_POINTS = 200;
 
 export const EVENT_KINDS = [
   "app_start",
@@ -17,6 +20,11 @@ export const EVENT_KINDS = [
   "app_active",
   "crash",
   "acknowledged",
+  "exit_reason",
+  "insights_start",
+  "insights_ok",
+  "insights_error",
+  "mem",
 ] as const;
 
 export type EventKind = (typeof EVENT_KINDS)[number];
@@ -92,7 +100,7 @@ export function appendEvent(
     const entry: EventLogEntry = {
       t: (options.now ?? (() => new Date()))().toISOString(),
       kind,
-      detail: truncateCodePoints(detail, MAX_EVENT_DETAIL_CODE_POINTS),
+      detail: truncateCodePoints(detail, eventDetailLimit(kind)),
     };
     const entries = [...readEventLog(storage), entry]
       .slice(-MAX_EVENT_LOG_ENTRIES);
@@ -104,7 +112,17 @@ export function appendEvent(
 }
 
 export function logEvent(kind: EventKind, detail = "") {
-  return appendEvent(configuredStorage, kind, detail);
+  const entry = appendEvent(configuredStorage, kind, detail);
+
+  if (kind === "upload_progress") {
+    appendEvent(
+      configuredStorage,
+      "mem",
+      formatMemoryEventDetail("upload_progress"),
+    );
+  }
+
+  return entry;
 }
 
 export function capturePreviousSession(
@@ -121,12 +139,13 @@ export function capturePreviousSession(
   if (!lastEvent) {
     return null;
   }
+  const lastLifecycleEvent = findLastLifecycleEvent(events);
 
   return {
     events,
     appStartedAt: latestStartIndex < 0 ? null : entries[latestStartIndex]?.t ?? null,
     lastEvent,
-    possiblyAbnormalExit: lastEvent.kind !== "app_background",
+    possiblyAbnormalExit: lastLifecycleEvent?.kind !== "app_background",
   };
 }
 
@@ -168,6 +187,20 @@ function findLatestAppStart(entries: EventLogEntry[]) {
   return -1;
 }
 
+function findLastLifecycleEvent(entries: EventLogEntry[]) {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (
+      entry?.kind === "app_start" ||
+      entry?.kind === "app_active" ||
+      entry?.kind === "app_background"
+    ) {
+      return entry;
+    }
+  }
+  return null;
+}
+
 function toEventLogEntry(value: unknown): EventLogEntry | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -185,8 +218,17 @@ function toEventLogEntry(value: unknown): EventLogEntry | null {
   return {
     t: candidate.t,
     kind: candidate.kind,
-    detail: truncateCodePoints(candidate.detail ?? "", MAX_EVENT_DETAIL_CODE_POINTS),
+    detail: truncateCodePoints(
+      candidate.detail ?? "",
+      eventDetailLimit(candidate.kind),
+    ),
   };
+}
+
+function eventDetailLimit(kind: EventKind) {
+  return kind === "exit_reason" || kind === "mem"
+    ? MAX_DIAGNOSTIC_EVENT_DETAIL_CODE_POINTS
+    : MAX_EVENT_DETAIL_CODE_POINTS;
 }
 
 function isEventKind(value: unknown): value is EventKind {

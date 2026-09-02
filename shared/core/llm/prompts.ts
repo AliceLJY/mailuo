@@ -101,6 +101,17 @@ function buildTimeExtractionRules(now: Date): string {
   ].join('\n');
 }
 
+function buildVisualTimestampHints(timestampHints: readonly string[]): string | null {
+  if (timestampHints.length === 0) {
+    return null;
+  }
+
+  return [
+    `Local OCR detected these WeChat timestamp separators in top-to-bottom order: ${timestampHints.join(' -> ')}.`,
+    'Anchor relative day words (今天/明天/后天/昨天) of a message to the nearest separator ABOVE that message. If uncertain which separator a message belongs to, set time_iso to null and has_time_signal accordingly.',
+  ].join('\n');
+}
+
 export type EntityResolutionContactSummary = {
   id: number;
   canonical_name: string;
@@ -152,7 +163,12 @@ export type InsightPromptSummary = {
   generated_at: string;
 };
 
-export function buildPerceptionSystemPrompt(now: Date): string {
+export function buildPerceptionSystemPrompt(
+  now: Date,
+  timestampHints: readonly string[] = [],
+): string {
+  const visualTimestampHints = buildVisualTimestampHints(timestampHints);
+
   return [
     'You extract only evidence that is visible in the screenshot and optional user note.',
     'Never infer hidden context, unstated identities, or unstated relationships.',
@@ -162,6 +178,7 @@ export function buildPerceptionSystemPrompt(now: Date): string {
     buildParticipantRoleRules(),
     `Current datetime (Asia/Shanghai): ${formatShanghaiDateTime(now)}`,
     buildTimeExtractionRules(now),
+    ...(visualTimestampHints ? [visualTimestampHints] : []),
     'A meeting or appointment must be a mutually agreed time when both sides will meet, attend together, or talk on a call together.',
     'A one-sided delivery promise or task commitment such as "明天把方案发你" is not a meeting, even when it has a clear date or time. Extract it as kind="other".',
     'Explicit tasks, requirements, material checklists, and file-format instructions are kind="other" events, even when they have no time or participants. Use a concise evidence-only title and participant_names=[] when no person is explicitly tied to the item.',
