@@ -200,6 +200,208 @@ test("executeCard merges create_contact into an existing contact, appends aliase
   }
 });
 
+test("executeCard dedupes fact and preference content across screenshots while preserving earliest provenance", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const contact = db.createContact({
+      canonicalName: "王磊",
+      createdAt: "2026-08-26T00:00:00.000Z",
+      updatedAt: "2026-08-26T00:00:00.000Z",
+    });
+    const firstCard = createPendingCard({
+      db,
+      imagePath: "/tmp/fact-first.png",
+      rawExtraction: {
+        participants: [
+          {
+            name: "王磊",
+            company: "某集团",
+            notes: "偏好线下沟通",
+            confidence: "high",
+            source_quote: "王磊目前在某集团任职，也偏好线下沟通",
+          },
+        ],
+        events: [],
+        facts: [
+          {
+            subject_name: "王磊",
+            field: "company",
+            value: "某集团",
+            confidence: "high",
+            source_quote: "公司信息为某集团",
+          },
+          {
+            subject_name: "王磊",
+            field: "notes",
+            value: "偏好线下沟通",
+            confidence: "high",
+            source_quote: "王磊偏好线下沟通",
+          },
+        ],
+        quotes: [],
+      },
+      card: {
+        type: "record_interaction",
+        payload: {
+          contact_id: contact.id,
+          contact_name: "王磊",
+          summary: "讨论合作",
+        },
+        confidence: "high",
+        source_quote: "讨论合作",
+      },
+    });
+
+    executeCard({ db, cardId: firstCard.id });
+
+    const firstDetail = db.getContactDetail(contact.id);
+    assert.ok(firstDetail);
+    const firstFact = firstDetail.observations.find(
+      (item) => item.kind === "fact" && item.content === "公司: 某集团",
+    );
+    const firstPreference = firstDetail.observations.find(
+      (item) => item.kind === "preference" && item.content === "偏好线下沟通",
+    );
+    assert.ok(firstFact);
+    assert.ok(firstPreference);
+    assert.equal(firstFact.source_quote, "公司信息为某集团");
+    assert.equal(firstPreference.source_quote, "王磊偏好线下沟通");
+
+    const originalObservedAt = "2026-08-26T00:02:00.000Z";
+    db.getNativeDatabase()
+      .prepare("UPDATE observations SET observed_at = ? WHERE id IN (?, ?)")
+      .run(originalObservedAt, firstFact.id, firstPreference.id);
+
+    const secondCard = createPendingCard({
+      db,
+      imagePath: "/tmp/fact-second.png",
+      rawExtraction: {
+        participants: [
+          {
+            name: "王磊",
+            company: "某集团",
+            notes: "偏好线下沟通",
+            confidence: "high",
+            source_quote: "某集团。偏好线下沟通",
+          },
+        ],
+        events: [],
+        facts: [
+          {
+            subject_name: "王磊",
+            field: "company",
+            value: "某集团",
+            confidence: "high",
+            source_quote: "公司是某集团",
+          },
+          {
+            subject_name: "王磊",
+            field: "notes",
+            value: "偏好线下沟通",
+            confidence: "high",
+            source_quote: "明确偏好线下沟通",
+          },
+        ],
+        quotes: [],
+      },
+      card: {
+        type: "record_interaction",
+        payload: {
+          contact_id: contact.id,
+          contact_name: "王磊",
+          summary: "讨论合作",
+        },
+        confidence: "high",
+        source_quote: "讨论合作",
+      },
+    });
+
+    executeCard({ db, cardId: secondCard.id });
+
+    const detail = db.getContactDetail(contact.id);
+    assert.ok(detail);
+    const facts = detail.observations.filter(
+      (item) => item.kind === "fact" && item.content === "公司: 某集团",
+    );
+    const preferences = detail.observations.filter(
+      (item) => item.kind === "preference" && item.content === "偏好线下沟通",
+    );
+    const interactions = detail.observations.filter(
+      (item) => item.kind === "interaction" && item.content === "讨论合作",
+    );
+
+    assert.equal(facts.length, 1);
+    assert.equal(facts[0].id, firstFact.id);
+    assert.equal(facts[0].screenshot_id, firstCard.screenshot_id);
+    assert.equal(facts[0].observed_at, originalObservedAt);
+    assert.equal(facts[0].source_quote, "某集团");
+    assert.equal(preferences.length, 1);
+    assert.equal(preferences[0].id, firstPreference.id);
+    assert.equal(preferences[0].screenshot_id, firstCard.screenshot_id);
+    assert.equal(preferences[0].observed_at, originalObservedAt);
+    assert.equal(preferences[0].source_quote, "偏好线下沟通");
+    assert.equal(interactions.length, 2);
+    assert.deepEqual(
+      new Set(interactions.map((item) => item.screenshot_id)),
+      new Set([firstCard.screenshot_id, secondCard.screenshot_id]),
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("executeCard uses the shortest participant sentence that contains a field value and falls back to the full quote", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const contact = db.createContact({ canonicalName: "王磊" });
+    const sourceQuote = "开场说明。王磊在某集团任职。某集团。只介绍了近况";
+    const card = createPendingCard({
+      db,
+      rawExtraction: {
+        participants: [
+          {
+            name: "王磊",
+            company: "某集团",
+            title: "市场总监",
+            confidence: "high",
+            source_quote: sourceQuote,
+          },
+        ],
+        events: [],
+        facts: [],
+        quotes: [],
+      },
+      card: {
+        type: "record_interaction",
+        payload: {
+          contact_id: contact.id,
+          contact_name: "王磊",
+          summary: "介绍近况",
+        },
+        confidence: "high",
+        source_quote: "介绍近况",
+      },
+    });
+
+    executeCard({ db, cardId: card.id });
+
+    const detail = db.getContactDetail(contact.id);
+    assert.ok(detail);
+    assert.equal(
+      detail.observations.find((item) => item.content === "公司: 某集团")?.source_quote,
+      "某集团",
+    );
+    assert.equal(
+      detail.observations.find((item) => item.content === "职位: 市场总监")?.source_quote,
+      sourceQuote,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 test('executeCard rejects create_contact cards for the self name "我" and leaves the card pending', () => {
   const { db, cleanup } = withTempDb();
 

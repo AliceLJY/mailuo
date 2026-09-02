@@ -9,6 +9,13 @@ import {
   type RecordInteractionPayload,
   type UpdateContactPayload,
 } from '../../types.ts';
+import {
+  editDistance,
+  normalizeComparableText,
+  normalizeContactText,
+  normalizedEditSimilarity,
+  tokenize,
+} from '../text/compare.ts';
 
 import type { PerceptionResult } from './perceive.ts';
 import type {
@@ -69,42 +76,8 @@ function dedupeStrings(values: Array<string | undefined>): string[] {
   return deduped;
 }
 
-function normalizeComparableText(value: string): string {
-  return value.trim().toLocaleLowerCase();
-}
-
 function normalizeMeetingTitle(value: string): string {
-  return value
-    .normalize('NFKC')
-    .toLocaleLowerCase()
-    .replace(/[\p{P}\s]+/gu, '');
-}
-
-function normalizedEditSimilarity(left: string, right: string): number {
-  const leftCharacters = Array.from(left);
-  const rightCharacters = Array.from(right);
-
-  if (leftCharacters.length === 0 || rightCharacters.length === 0) {
-    return 0;
-  }
-
-  let previous = Array.from({ length: rightCharacters.length + 1 }, (_, index) => index);
-
-  for (const [leftIndex, leftCharacter] of leftCharacters.entries()) {
-    const current = [leftIndex + 1];
-
-    for (const [rightIndex, rightCharacter] of rightCharacters.entries()) {
-      current.push(Math.min(
-        current[rightIndex] + 1,
-        previous[rightIndex + 1] + 1,
-        previous[rightIndex] + (leftCharacter === rightCharacter ? 0 : 1),
-      ));
-    }
-
-    previous = current;
-  }
-
-  return 1 - previous[rightCharacters.length] / Math.max(leftCharacters.length, rightCharacters.length);
+  return normalizeContactText(value);
 }
 
 function calendarDay(value: string | null): string | null {
@@ -610,15 +583,10 @@ function buildCreateContactPayload(
     relatedFacts,
     (fact) => fact.field === 'alias',
   );
-  const aliases = aliasMerge.values;
 
   const payload: CreateContactPayload = {
     name: participant.name,
   };
-
-  if (aliases.length > 0) {
-    payload.aliases = aliases;
-  }
 
   const companyFact = participant.company ? undefined : firstFact(relatedFacts, 'company');
   const titleFact = participant.title ? undefined : firstFact(relatedFacts, 'title');
@@ -646,6 +614,23 @@ function buildCreateContactPayload(
 
   if (title) {
     payload.title = title;
+  }
+
+  const aliases = aliasMerge.values.filter((alias) =>
+    !isDerivedAlias(
+      alias,
+      {
+        canonical_name: participant.name,
+        aliases: [],
+        company: null,
+        title: null,
+      },
+      payload,
+    ),
+  );
+
+  if (aliases.length > 0) {
+    payload.aliases = aliases;
   }
 
   if (phone) {
@@ -843,17 +828,120 @@ function normalizeOptionalText(value: string | null | undefined): string | undef
   return trimmed ? trimmed : undefined;
 }
 
+function codePointLength(value: string): number {
+  return Array.from(value).length;
+}
+
+function isComposedOfTokens(value: string, tokens: string[]): boolean {
+  if (!value || tokens.length === 0) {
+    return false;
+  }
+
+  const reachableOffsets = new Set([0]);
+
+  for (let offset = 0; offset < value.length; offset += 1) {
+    if (!reachableOffsets.has(offset)) {
+      continue;
+    }
+
+    for (const token of tokens) {
+      if (value.startsWith(token, offset)) {
+        reachableOffsets.add(offset + token.length);
+      }
+    }
+  }
+
+  return reachableOffsets.has(value.length);
+}
+
+function isDerivedAlias(
+  alias: string,
+  contact: Pick<ResolvableContact, 'canonical_name' | 'aliases' | 'company' | 'title'>,
+  proposed: Pick<CreateContactPayload, 'company' | 'title'>,
+): boolean {
+  const normalizedAlias = normalizeContactText(alias);
+  const knownNames = [contact.canonical_name, ...contact.aliases]
+    .map(normalizeContactText)
+    .filter(Boolean);
+
+  if (!normalizedAlias || knownNames.includes(normalizedAlias)) {
+    return true;
+  }
+
+  const fieldTokens = Array.from(new Set(
+    [contact.company, contact.title, proposed.company, proposed.title]
+      .filter((value): value is string => Boolean(value))
+      .flatMap(tokenize)
+      .map(normalizeContactText)
+      .filter(Boolean),
+  ));
+
+  if (isComposedOfTokens(normalizedAlias, fieldTokens)) {
+    return true;
+  }
+
+  return knownNames.some((knownName) => {
+    let remainder: string | undefined;
+
+    if (normalizedAlias.startsWith(knownName)) {
+      remainder = normalizedAlias.slice(knownName.length);
+    } else if (normalizedAlias.endsWith(knownName)) {
+      remainder = normalizedAlias.slice(0, -knownName.length);
+    }
+
+    return (
+      remainder != null &&
+      codePointLength(remainder) >= 2 &&
+      isComposedOfTokens(remainder, fieldTokens)
+    );
+  });
+}
+
+function isRedundantFieldValue(current: string, next: string): boolean {
+  const normalizedCurrent = normalizeContactText(current);
+  const normalizedNext = normalizeContactText(next);
+
+  if (normalizedCurrent === normalizedNext) {
+    return true;
+  }
+
+  if (!normalizedCurrent || !normalizedNext) {
+    return false;
+  }
+
+  const currentLength = codePointLength(normalizedCurrent);
+  const nextLength = codePointLength(normalizedNext);
+
+  if (nextLength > currentLength && normalizedNext.includes(normalizedCurrent)) {
+    return false;
+  }
+
+  if (normalizedCurrent.includes(normalizedNext)) {
+    return true;
+  }
+
+  const currentTokens = new Set(tokenize(current));
+  const nextTokens = tokenize(next);
+
+  if (nextTokens.length > 0 && nextTokens.every((token) => currentTokens.has(token))) {
+    return true;
+  }
+
+  if (editDistance(normalizedCurrent, normalizedNext) !== 1 || nextLength < 3) {
+    return false;
+  }
+
+  return nextLength !== 3 || currentLength === nextLength;
+}
+
 function buildContactChanges(
   contact: ResolvableContact,
   payload: CreateContactPayload,
   aliasCandidates: string[],
 ): UpdateContactPayload['changes'] {
   const changes: UpdateContactPayload['changes'] = {};
-  const knownNames = new Set(
-    [contact.canonical_name, ...contact.aliases].map(normalizeComparableText),
-  );
   const aliasAdditions = dedupeStrings(aliasCandidates).filter(
-    (alias) => !knownNames.has(normalizeComparableText(alias)),
+    (alias) => !isDerivedAlias(alias, contact, payload),
   );
 
   if (aliasAdditions.length > 0) {
@@ -872,7 +960,14 @@ function buildContactChanges(
 
     const currentValue = normalizeOptionalText(contact[field]);
 
-    if (currentValue === nextValue) {
+    if (
+      currentValue === nextValue ||
+      (
+        currentValue &&
+        (field === 'company' || field === 'title') &&
+        isRedundantFieldValue(currentValue, nextValue)
+      )
+    ) {
       continue;
     }
 

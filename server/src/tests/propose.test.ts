@@ -32,6 +32,25 @@ function proposeCards(
   );
 }
 
+function singleParticipantExtraction(
+  overrides: Partial<PerceptionResult['participants'][number]> = {},
+): PerceptionResult {
+  return {
+    participants: [
+      {
+        name: '王磊',
+        is_self: false,
+        confidence: 'high',
+        source_quote: '王磊补充了联系人资料',
+        ...overrides,
+      },
+    ],
+    events: [],
+    facts: [],
+    quotes: [],
+  };
+}
+
 test('proposeCards creates contact and meeting cards from perception output', () => {
   const extraction: PerceptionResult = {
     participants: [
@@ -194,7 +213,7 @@ test('proposeCards creates update_contact, meeting contact ids, and one interact
       id: 1,
       canonical_name: '王磊',
       aliases: ['老王'],
-      company: '旧公司',
+      company: '远山工作室',
       title: '市场总监',
       phone: '13800001234',
       wechat_id: 'wl-old',
@@ -211,7 +230,7 @@ test('proposeCards creates update_contact, meeting contact ids, and one interact
       contact_id: 1,
       contact_name: '王磊',
       changes: {
-        company: { old: '旧公司', new: '新公司' },
+        company: { old: '远山工作室', new: '新公司' },
       },
     },
     confidence: 'high',
@@ -1309,6 +1328,232 @@ test('proposeCards skips no-op updates and dedupes interactions by resolved cont
       source_quote: '李姐，我们继续跟进那个合作\n\n李姐说下周再对一下细节',
     },
   ]);
+});
+
+test('proposeCards suppresses all four redundant company/title value shapes', () => {
+  const resolution: ParticipantResolution = {
+    participant_name: '王磊',
+    normalized_name: '王磊',
+    status: 'same_as',
+    contact_id: 20,
+    source: 'exact',
+  };
+  const baseContact: ResolvableContact = {
+    id: 20,
+    canonical_name: '王磊',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  };
+  const cases = [
+    {
+      label: 'normalizes punctuation and whitespace',
+      contact: { ...baseContact, company: '某集团市场部' },
+      participant: { company: '某集团 市场部' },
+    },
+    {
+      label: 'suppresses a truncated value contained by the current value',
+      contact: { ...baseContact, company: '某集团市场部' },
+      participant: { company: '市场部' },
+    },
+    {
+      label: 'suppresses a reordering made only from current tokens',
+      contact: { ...baseContact, company: '某集团 市场部' },
+      participant: { company: '市场部 某集团' },
+    },
+    {
+      label: 'suppresses a one-character title OCR substitution',
+      contact: { ...baseContact, title: '市场总监' },
+      participant: { title: '市场总坚' },
+    },
+  ];
+
+  for (const testCase of cases) {
+    const cards = proposeCards(
+      singleParticipantExtraction(testCase.participant),
+      [resolution],
+      [testCase.contact],
+    );
+
+    assert.equal(
+      cards.some((card) => card.type === 'update_contact'),
+      false,
+      testCase.label,
+    );
+  }
+});
+
+test('proposeCards keeps longer, more specific company completions as updates', () => {
+  const resolution: ParticipantResolution = {
+    participant_name: '王磊',
+    normalized_name: '王磊',
+    status: 'same_as',
+    contact_id: 21,
+    source: 'exact',
+  };
+  const contact: ResolvableContact = {
+    id: 21,
+    canonical_name: '王磊',
+    aliases: [],
+    company: '某集团市场部',
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  };
+
+  for (const nextCompany of ['某集团市场部组', '某集团市场部品牌组']) {
+    const cards = proposeCards(
+      singleParticipantExtraction({ company: nextCompany }),
+      [resolution],
+      [contact],
+    );
+    const updateCard = cards.find((card) => card.type === 'update_contact');
+
+    assert.equal(updateCard?.type, 'update_contact', nextCompany);
+    if (updateCard?.type !== 'update_contact') {
+      throw new Error(`expected update_contact for ${nextCompany}`);
+    }
+    assert.deepEqual(updateCard.payload.changes.company, {
+      old: '某集团市场部',
+      new: nextCompany,
+    });
+  }
+});
+
+test('proposeCards keeps phone, wechat_id, and notes comparisons exact after trimming', () => {
+  const resolution: ParticipantResolution = {
+    participant_name: '王磊',
+    normalized_name: '王磊',
+    status: 'same_as',
+    contact_id: 22,
+    source: 'exact',
+  };
+  const baseContact: ResolvableContact = {
+    id: 22,
+    canonical_name: '王磊',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  };
+  const trimmedPhoneCards = proposeCards(
+    singleParticipantExtraction({ phone: '13800001234' }),
+    [resolution],
+    [{ ...baseContact, phone: ' 13800001234 ' }],
+  );
+
+  assert.equal(
+    trimmedPhoneCards.some((card) => card.type === 'update_contact'),
+    false,
+  );
+
+  const cases: Array<{
+    field: 'phone' | 'wechat_id' | 'notes';
+    current: string;
+    next: string;
+  }> = [
+    { field: 'phone', current: '13800001234', next: '13800001235' },
+    { field: 'wechat_id', current: 'AliceWX', next: 'aliceWX' },
+    { field: 'notes', current: '重点客户', next: '重点客戶' },
+  ];
+
+  for (const testCase of cases) {
+    const cards = proposeCards(
+      singleParticipantExtraction({ [testCase.field]: testCase.next }),
+      [resolution],
+      [{ ...baseContact, [testCase.field]: testCase.current }],
+    );
+    const updateCard = cards.find((card) => card.type === 'update_contact');
+
+    assert.equal(updateCard?.type, 'update_contact', testCase.field);
+    if (updateCard?.type !== 'update_contact') {
+      throw new Error(`expected update_contact for ${testCase.field}`);
+    }
+    assert.deepEqual(updateCard.payload.changes[testCase.field], {
+      old: testCase.current,
+      new: testCase.next,
+    });
+  }
+});
+
+test('proposeCards filters derived aliases on create while preserving a one-character honorific', () => {
+  const cards = proposeCards(singleParticipantExtraction({
+    aliases: [
+      '王磊',
+      '王磊集团副总',
+      '集团副总王磊',
+      '某集团集团副总',
+      '王总',
+    ],
+    company: '某集团',
+    title: '集团副总',
+    source_quote: '王磊是某集团集团副总，大家也叫他王总',
+  }));
+
+  assert.deepEqual(cards, [
+    {
+      type: 'create_contact',
+      payload: {
+        name: '王磊',
+        aliases: ['王总'],
+        company: '某集团',
+        title: '集团副总',
+      },
+      confidence: 'high',
+      source_quote: '王磊是某集团集团副总，大家也叫他王总',
+    },
+  ]);
+});
+
+test('proposeCards filters derived aliases on update while preserving 王总', () => {
+  const extraction = singleParticipantExtraction({
+    aliases: [
+      '王磊集团副总',
+      '集团副总王磊',
+      '某集团集团副总',
+      '王总',
+    ],
+    company: '某集团',
+    title: '集团副总',
+    source_quote: '王磊是某集团集团副总，大家也叫他王总',
+  });
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '王磊',
+      normalized_name: '王磊',
+      status: 'same_as',
+      contact_id: 23,
+      source: 'exact',
+    },
+  ];
+  const contacts: ResolvableContact[] = [
+    {
+      id: 23,
+      canonical_name: '王磊',
+      aliases: [],
+      company: '某集团',
+      title: '集团副总',
+      phone: null,
+      wechat_id: null,
+      notes: null,
+    },
+  ];
+  const cards = proposeCards(extraction, resolutions, contacts);
+  const updateCard = cards.find((card) => card.type === 'update_contact');
+
+  assert.equal(updateCard?.type, 'update_contact');
+  if (updateCard?.type !== 'update_contact') {
+    throw new Error('expected an alias update');
+  }
+  assert.deepEqual(updateCard.payload.changes, {
+    aliases: { old: null, new: '王总' },
+  });
 });
 
 test('proposeCards keeps interaction source_quote aligned with every summary anchor, including quote source anchors', () => {

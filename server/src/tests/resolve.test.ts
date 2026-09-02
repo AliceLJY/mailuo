@@ -16,6 +16,13 @@ import {
   type ResolvableContact,
   type ResolvableMeeting,
 } from '../../../shared/core/agent/resolve.ts';
+import {
+  editDistance,
+  normalizeComparableText,
+  normalizeContactText,
+  normalizedEditSimilarity,
+  tokenize,
+} from '../../../shared/core/text/compare.ts';
 
 class FakeStructuredOutputProvider implements StructuredOutputProvider {
   readonly name = 'FakeProvider';
@@ -148,6 +155,16 @@ function emptyExtraction(): PerceptionResult {
     quotes: [],
   };
 }
+
+test('text comparison helpers preserve empty similarity and count Unicode code points', () => {
+  assert.equal(normalizeComparableText('  ALICE  '), 'alice');
+  assert.equal(editDistance('甲😀乙', '甲😃乙'), 1);
+  assert.equal(editDistance('', '😀'), 1);
+  assert.equal(normalizedEditSimilarity('', ''), 0);
+  assert.equal(normalizedEditSimilarity('王磊', '王磊'), 1);
+  assert.equal(normalizeContactText(' Ａ，王 '), 'a王');
+  assert.deepEqual(tokenize('某集团，市场部'), ['某集团', '市场部']);
+});
 
 test('resolveParticipants matches canonical names and aliases with trim + case-insensitive comparison', async () => {
   const contacts: ResolvableContact[] = [
@@ -341,6 +358,77 @@ test('resolveParticipants returns new when the provider says the participant is 
   ] satisfies ParticipantResolution[]);
 });
 
+test('resolveParticipants turns a provider new decision into near-match disambiguation', async () => {
+  const provider = new FakeStructuredOutputProvider([{ decision: 'new' }]);
+  const contacts: ResolvableContact[] = [
+    { id: 42, canonical_name: '王磊', aliases: ['老王'], company: '星火科技' },
+  ];
+
+  const resolutions = await resolveParticipants({
+    extraction: buildExtraction('王蕾'),
+    contacts,
+    provider,
+  });
+
+  assert.deepEqual(resolutions, [
+    {
+      participant_name: '王蕾',
+      normalized_name: '王蕾',
+      status: 'unsure',
+      candidate_ids: [42],
+      source: 'near_match',
+    },
+  ] satisfies ParticipantResolution[]);
+});
+
+test('resolveParticipants does not treat a two-character name deletion as a near match', async () => {
+  const provider = new FakeStructuredOutputProvider([{ decision: 'new' }]);
+  const contacts: ResolvableContact[] = [
+    { id: 43, canonical_name: '王', aliases: [], company: null },
+  ];
+
+  const resolutions = await resolveParticipants({
+    extraction: buildExtraction('王磊'),
+    contacts,
+    provider,
+  });
+
+  assert.deepEqual(resolutions, [
+    {
+      participant_name: '王磊',
+      normalized_name: '王磊',
+      status: 'new',
+      source: 'llm',
+    },
+  ] satisfies ParticipantResolution[]);
+});
+
+test('resolveParticipants leaves a provider same_as decision unchanged when near matches exist', async () => {
+  const provider = new FakeStructuredOutputProvider([
+    { decision: 'same_as', contact_id: 45 },
+  ]);
+  const contacts: ResolvableContact[] = [
+    { id: 44, canonical_name: '王磊', aliases: [], company: '星火科技' },
+    { id: 45, canonical_name: '陈希', aliases: ['小陈'], company: '远山工作室' },
+  ];
+
+  const resolutions = await resolveParticipants({
+    extraction: buildExtraction('王蕾'),
+    contacts,
+    provider,
+  });
+
+  assert.deepEqual(resolutions, [
+    {
+      participant_name: '王蕾',
+      normalized_name: '王蕾',
+      status: 'same_as',
+      contact_id: 45,
+      source: 'llm',
+    },
+  ] satisfies ParticipantResolution[]);
+});
+
 test('resolveParticipants returns unsure with candidate ids from the provider', async () => {
   const provider = new FakeStructuredOutputProvider([
     { decision: 'unsure', candidate_ids: [51, 52] },
@@ -362,6 +450,33 @@ test('resolveParticipants returns unsure with candidate ids from the provider', 
       normalized_name: '小李',
       status: 'unsure',
       candidate_ids: [51, 52],
+      source: 'llm',
+    },
+  ] satisfies ParticipantResolution[]);
+});
+
+test('resolveParticipants appends canonical and alias near matches to provider unsure candidates', async () => {
+  const provider = new FakeStructuredOutputProvider([
+    { decision: 'unsure', candidate_ids: [51, 52] },
+  ]);
+  const contacts: ResolvableContact[] = [
+    { id: 51, canonical_name: '魏敏', aliases: [], company: '远山工作室' },
+    { id: 52, canonical_name: '王磊', aliases: [], company: '星火科技' },
+    { id: 53, canonical_name: '陈希', aliases: ['王雷'], company: '青禾文化' },
+  ];
+
+  const resolutions = await resolveParticipants({
+    extraction: buildExtraction('王蕾'),
+    contacts,
+    provider,
+  });
+
+  assert.deepEqual(resolutions, [
+    {
+      participant_name: '王蕾',
+      normalized_name: '王蕾',
+      status: 'unsure',
+      candidate_ids: [51, 52, 53],
       source: 'llm',
     },
   ] satisfies ParticipantResolution[]);

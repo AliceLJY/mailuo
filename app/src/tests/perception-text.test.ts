@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
@@ -113,6 +114,9 @@ const AFTER_FIX2_INTERACTION_SUMMARY_RULES = [
   "- Summarize the interaction with that person, including any explicit progress signal or emotion. If the evidence contains only structured contact information and no actual interaction content, summarize the context in which that information was stated or observed. Do not list raw lines or invent details.",
 ].join("\n");
 
+const SHORTEST_SOURCE_QUOTE_RULE =
+  "source_quote should be the shortest span that supports the extracted fields.";
+
 type PerceptionPromptSnapshot = {
   sourceRevision: string;
   snapshotPhase: string;
@@ -128,8 +132,8 @@ function readPerceptionPromptSnapshot(fileName: string): PerceptionPromptSnapsho
   )) as PerceptionPromptSnapshot;
 }
 
-test("v3-M4-fix2 visual and text system prompts match the fixed after snapshot", () => {
-  const snapshot = readPerceptionPromptSnapshot("perception-prompts.after-v3-m4-fix2.json");
+test("v3-M4-fix3 visual and text system prompts match the fixed after snapshot", () => {
+  const snapshot = readPerceptionPromptSnapshot("perception-prompts.after-v3-m4-fix3.json");
   const now = new Date(snapshot.baselineNow);
 
   assert.equal(
@@ -140,6 +144,49 @@ test("v3-M4-fix2 visual and text system prompts match the fixed after snapshot",
     buildPerceptionTextSystemPrompt(now),
     snapshot.buildPerceptionTextSystemPrompt,
   );
+});
+
+test("v3-M4-fix3 prompt snapshots preserve fix2 bytes and add only the shortest source quote rule", () => {
+  const beforeUrl = new URL(
+    "../../../docs/perception-baseline/perception-prompts.before-v3-m4-fix3.json",
+    import.meta.url,
+  );
+  const previousUrl = new URL(
+    "../../../docs/perception-baseline/perception-prompts.after-v3-m4-fix2.json",
+    import.meta.url,
+  );
+  const afterUrl = new URL(
+    "../../../docs/perception-baseline/perception-prompts.after-v3-m4-fix3.json",
+    import.meta.url,
+  );
+  const beforeBytes = readFileSync(beforeUrl);
+  const previousBytes = readFileSync(previousUrl);
+  const afterText = readFileSync(afterUrl, "utf8");
+  const before = JSON.parse(beforeBytes.toString("utf8")) as PerceptionPromptSnapshot;
+  const after = JSON.parse(afterText) as PerceptionPromptSnapshot;
+  const promptKeys = [
+    "buildPerceptionSystemPrompt",
+    "buildPerceptionTextSystemPrompt",
+  ] as const;
+
+  assert.deepEqual(beforeBytes, previousBytes);
+  assert.equal(
+    createHash("sha256").update(beforeBytes).digest("hex").slice(0, 8),
+    "9c135c04",
+  );
+  assert.equal(after.sourceRevision, "599336c");
+  assert.equal(after.snapshotPhase, "after v3-M4-fix3 working-tree changes");
+  assert.equal(after.baselineNow, before.baselineNow);
+  assert.equal(afterText, `${JSON.stringify(after, null, 2)}\n`);
+
+  for (const promptKey of promptKeys) {
+    assert.equal(before[promptKey].split(SHORTEST_SOURCE_QUOTE_RULE).length, 1);
+    assert.equal(after[promptKey].split(SHORTEST_SOURCE_QUOTE_RULE).length, 2);
+    assert.equal(
+      after[promptKey].replace(`${SHORTEST_SOURCE_QUOTE_RULE}\n`, ""),
+      before[promptKey],
+    );
+  }
 });
 
 test("v3-M4-fix2 prompt snapshots differ only by the required interaction summary rules", () => {

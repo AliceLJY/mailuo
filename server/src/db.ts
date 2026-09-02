@@ -1087,30 +1087,70 @@ export class MailuoDb implements InsightGenerationDb, ExecuteStore {
     const sourceQuote = normalizeOptionalString(input.sourceQuote);
     const screenshotId = input.screenshotId ?? null;
 
-    const existingRow = this.db
-      .prepare(
-        `SELECT
-           id,
-           contact_id,
-           screenshot_id,
-           kind,
-           content,
-           source_quote,
-           observed_at
-         FROM observations
-         WHERE contact_id = ?
-           AND ((? IS NULL AND screenshot_id IS NULL) OR screenshot_id = ?)
-           AND kind = ?
-           AND content = ?
-           AND ((? IS NULL AND source_quote IS NULL) OR source_quote = ?)
-         LIMIT 1`,
-      )
-      .get(input.contactId, screenshotId, screenshotId, input.kind, content, sourceQuote, sourceQuote) as
-      | ObservationRow
-      | undefined;
+    const dedupeByContent = input.kind === "fact" || input.kind === "preference";
+    const existingRow = dedupeByContent
+      ? this.db
+          .prepare(
+            `SELECT
+               id,
+               contact_id,
+               screenshot_id,
+               kind,
+               content,
+               source_quote,
+               observed_at
+             FROM observations
+             WHERE contact_id = ?
+               AND kind = ?
+               AND content = ?
+             ORDER BY id ASC
+             LIMIT 1`,
+          )
+          .get(input.contactId, input.kind, content) as ObservationRow | undefined
+      : this.db
+          .prepare(
+            `SELECT
+               id,
+               contact_id,
+               screenshot_id,
+               kind,
+               content,
+               source_quote,
+               observed_at
+             FROM observations
+             WHERE contact_id = ?
+               AND ((? IS NULL AND screenshot_id IS NULL) OR screenshot_id = ?)
+               AND kind = ?
+               AND content = ?
+               AND ((? IS NULL AND source_quote IS NULL) OR source_quote = ?)
+             LIMIT 1`,
+          )
+          .get(
+            input.contactId,
+            screenshotId,
+            screenshotId,
+            input.kind,
+            content,
+            sourceQuote,
+            sourceQuote,
+          ) as ObservationRow | undefined;
 
     const existing = this.hydrateObservation(existingRow);
     if (existing) {
+      if (
+        dedupeByContent &&
+        sourceQuote &&
+        (existing.source_quote == null || sourceQuote.length < existing.source_quote.length)
+      ) {
+        this.db
+          .prepare("UPDATE observations SET source_quote = ? WHERE id = ?")
+          .run(sourceQuote, existing.id);
+        return {
+          ...existing,
+          source_quote: sourceQuote,
+        };
+      }
+
       return existing;
     }
 

@@ -238,6 +238,18 @@ function normalizeOptionalString(value: string | null | undefined): string | nul
   return trimmed ? trimmed : null;
 }
 
+function shortestSupportingQuote(sourceQuote: string, value: string): string {
+  const segments = sourceQuote
+    .split(/[。！？\n]+/u)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.includes(value));
+
+  return segments.reduce(
+    (shortest, segment) => segment.length < shortest.length ? segment : shortest,
+    sourceQuote,
+  );
+}
+
 function dedupeStrings(values: Array<string | null | undefined>): string[] {
   const seen = new Set<string>();
   const deduped: string[] = [];
@@ -681,8 +693,15 @@ function insertDerivedObservations(args: {
       return;
     }
 
-    const key = JSON.stringify([contactId, args.screenshotId, kind, normalizedContent, normalizedQuote]);
-    if (!pending.has(key)) {
+    const dedupeByContent = kind === "fact" || kind === "preference";
+    const key = JSON.stringify(
+      dedupeByContent
+        ? [contactId, kind, normalizedContent]
+        : [contactId, args.screenshotId, kind, normalizedContent, normalizedQuote],
+    );
+    const existing = pending.get(key);
+
+    if (!existing) {
       pending.set(key, {
         contactId,
         screenshotId: args.screenshotId,
@@ -690,6 +709,14 @@ function insertDerivedObservations(args: {
         content: normalizedContent,
         sourceQuote: normalizedQuote,
         observedAt: args.observedAt,
+      });
+    } else if (
+      dedupeByContent &&
+      normalizedQuote.length < (existing.sourceQuote?.length ?? Number.POSITIVE_INFINITY)
+    ) {
+      pending.set(key, {
+        ...existing,
+        sourceQuote: normalizedQuote,
       });
     }
   };
@@ -716,7 +743,13 @@ function insertDerivedObservations(args: {
         }
 
         const candidate = participantFieldToObservation(field, value, participant.source_quote);
-        addObservation(context.contactId, candidate.kind, candidate.content, participant.source_quote, candidate.field);
+        addObservation(
+          context.contactId,
+          candidate.kind,
+          candidate.content,
+          shortestSupportingQuote(participant.source_quote, value),
+          candidate.field,
+        );
       }
     }
   }

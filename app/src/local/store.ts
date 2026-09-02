@@ -666,24 +666,51 @@ export class ExpoSqliteLocalStore implements LocalStore {
 
     const screenshotId = input.screenshotId ?? null;
     const sourceQuote = normalizeOptionalString(input.sourceQuote);
-    const existing = this.db.getFirstSync<ObservationRow>(
-      `SELECT id, contact_id, screenshot_id, kind, content, source_quote, observed_at
-       FROM observations
-       WHERE contact_id = ?
-         AND ((? IS NULL AND screenshot_id IS NULL) OR screenshot_id = ?)
-         AND kind = ? AND content = ?
-         AND ((? IS NULL AND source_quote IS NULL) OR source_quote = ?)
-       LIMIT 1`,
-      input.contactId,
-      screenshotId,
-      screenshotId,
-      input.kind,
-      content,
-      sourceQuote,
-      sourceQuote,
-    );
+    const dedupeByContent = input.kind === "fact" || input.kind === "preference";
+    const existing = dedupeByContent
+      ? this.db.getFirstSync<ObservationRow>(
+          `SELECT id, contact_id, screenshot_id, kind, content, source_quote, observed_at
+           FROM observations
+           WHERE contact_id = ? AND kind = ? AND content = ?
+           ORDER BY id ASC LIMIT 1`,
+          input.contactId,
+          input.kind,
+          content,
+        )
+      : this.db.getFirstSync<ObservationRow>(
+          `SELECT id, contact_id, screenshot_id, kind, content, source_quote, observed_at
+           FROM observations
+           WHERE contact_id = ?
+             AND ((? IS NULL AND screenshot_id IS NULL) OR screenshot_id = ?)
+             AND kind = ? AND content = ?
+             AND ((? IS NULL AND source_quote IS NULL) OR source_quote = ?)
+           LIMIT 1`,
+          input.contactId,
+          screenshotId,
+          screenshotId,
+          input.kind,
+          content,
+          sourceQuote,
+          sourceQuote,
+        );
 
     if (existing) {
+      if (
+        dedupeByContent &&
+        sourceQuote &&
+        (existing.source_quote == null || sourceQuote.length < existing.source_quote.length)
+      ) {
+        this.db.runSync(
+          "UPDATE observations SET source_quote = ? WHERE id = ?",
+          sourceQuote,
+          existing.id,
+        );
+        return {
+          ...existing,
+          source_quote: sourceQuote,
+        };
+      }
+
       return existing;
     }
 

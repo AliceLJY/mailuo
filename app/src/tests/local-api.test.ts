@@ -359,18 +359,35 @@ class FakeLocalStore implements LocalStore {
   }
 
   insertObservationIfAbsent(input: ObservationInsertInput): ObservationRecord {
+    const content = input.content.trim();
+
+    if (!content) {
+      throw new TypeError("Observation content must be a non-empty string");
+    }
+
     const screenshotId = input.screenshotId ?? null;
-    const sourceQuote = input.sourceQuote ?? null;
+    const sourceQuote = input.sourceQuote?.trim() || null;
+    const dedupeByContent = input.kind === "fact" || input.kind === "preference";
     const existing = this.observations.find(
       (item) =>
         item.contact_id === input.contactId &&
-        item.screenshot_id === screenshotId &&
         item.kind === input.kind &&
-        item.content === input.content &&
-        item.source_quote === sourceQuote,
+        item.content === content &&
+        (
+          dedupeByContent ||
+          (item.screenshot_id === screenshotId && item.source_quote === sourceQuote)
+        ),
     );
 
     if (existing) {
+      if (
+        dedupeByContent &&
+        sourceQuote &&
+        (existing.source_quote == null || sourceQuote.length < existing.source_quote.length)
+      ) {
+        existing.source_quote = sourceQuote;
+      }
+
       return existing;
     }
 
@@ -379,7 +396,7 @@ class FakeLocalStore implements LocalStore {
       contact_id: input.contactId,
       screenshot_id: screenshotId,
       kind: input.kind,
-      content: input.content,
+      content,
       source_quote: sourceQuote,
       observed_at: input.observedAt ?? FIXED_NOW.toISOString(),
     };
@@ -479,6 +496,69 @@ class FakeLocalStore implements LocalStore {
     return this.insertInsights(entries);
   }
 }
+
+test("FakeLocalStore mirrors content-based fact/preference deduplication and interaction provenance", () => {
+  const store = new FakeLocalStore();
+  const firstObservedAt = "2026-08-26T00:01:00.000Z";
+  const firstFact = store.insertObservationIfAbsent({
+    contactId: 1,
+    screenshotId: 10,
+    kind: "fact",
+    content: "  公司: 某集团  ",
+    sourceQuote: "王磊目前在某集团任职",
+    observedAt: firstObservedAt,
+  });
+  const firstPreference = store.insertObservationIfAbsent({
+    contactId: 1,
+    screenshotId: 10,
+    kind: "preference",
+    content: "偏好线下沟通",
+    sourceQuote: null,
+    observedAt: firstObservedAt,
+  });
+  const shorterFact = store.insertObservationIfAbsent({
+    contactId: 1,
+    screenshotId: 11,
+    kind: "fact",
+    content: "公司: 某集团",
+    sourceQuote: "某集团",
+    observedAt: "2026-08-26T00:02:00.000Z",
+  });
+  const quotedPreference = store.insertObservationIfAbsent({
+    contactId: 1,
+    screenshotId: 11,
+    kind: "preference",
+    content: "偏好线下沟通",
+    sourceQuote: "偏好线下沟通",
+    observedAt: "2026-08-26T00:02:00.000Z",
+  });
+  const firstInteraction = store.insertObservationIfAbsent({
+    contactId: 1,
+    screenshotId: 10,
+    kind: "interaction",
+    content: "讨论合作",
+    sourceQuote: "讨论合作",
+    observedAt: firstObservedAt,
+  });
+  const secondInteraction = store.insertObservationIfAbsent({
+    contactId: 1,
+    screenshotId: 11,
+    kind: "interaction",
+    content: "讨论合作",
+    sourceQuote: "讨论合作",
+    observedAt: "2026-08-26T00:02:00.000Z",
+  });
+
+  assert.equal(shorterFact.id, firstFact.id);
+  assert.equal(shorterFact.screenshot_id, 10);
+  assert.equal(shorterFact.observed_at, firstObservedAt);
+  assert.equal(shorterFact.source_quote, "某集团");
+  assert.equal(quotedPreference.id, firstPreference.id);
+  assert.equal(quotedPreference.screenshot_id, 10);
+  assert.equal(quotedPreference.observed_at, firstObservedAt);
+  assert.equal(quotedPreference.source_quote, "偏好线下沟通");
+  assert.notEqual(secondInteraction.id, firstInteraction.id);
+});
 
 const fakeKeys: LocalLlmSecretStore = {
   async get(name) {

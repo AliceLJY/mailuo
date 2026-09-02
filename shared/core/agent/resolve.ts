@@ -5,6 +5,11 @@ import {
   buildMeetingProgressResolutionPrompt,
 } from '../llm/prompts.ts';
 import type { ChatMessage, StructuredOutputProvider } from '../llm/provider.ts';
+import {
+  editDistance,
+  normalizeComparableText,
+  normalizeContactText,
+} from '../text/compare.ts';
 import type { MeetingKind } from '../../types.ts';
 
 import { isSelfName, type PerceptionResult } from './perceive.ts';
@@ -51,7 +56,7 @@ export type ParticipantResolution =
       normalized_name: string;
       status: 'unsure';
       candidate_ids: number[];
-      source: 'exact_multiple' | 'llm';
+      source: 'exact_multiple' | 'llm' | 'near_match';
     };
 
 export type ResolveParticipantsOptions = {
@@ -101,10 +106,6 @@ const directProgressSignalPatterns = [
   /(?:总|导|老师|主任|经理|先生|女士|哥|姐|嘉宾|客户|领导|同事|团队)\s*(?:到了|到达了|抵达了)/u,
   /(?:完成|办妥|补齐|就位|准备好|改完|处理完|提交|发送|发出|交付|确认|批准|签署|签完|上线|开工|开始|结束|取消|延期|回复|联系)(?:了|啦|完毕)/u,
 ];
-
-function normalizeComparableText(value: string): string {
-  return value.trim().toLocaleLowerCase();
-}
 
 function dedupeNumbers(values: number[]): number[] {
   const seen = new Set<number>();
@@ -280,6 +281,31 @@ function findExactMatches(
 
   return matches.filter(
     (contact, index) => matches.findIndex((candidate) => candidate.id === contact.id) === index,
+  );
+}
+
+function findNearMatches(
+  participantName: string,
+  contacts: ResolvableContact[],
+): ResolvableContact[] {
+  const normalizedParticipantName = normalizeContactText(participantName);
+  const participantLength = Array.from(normalizedParticipantName).length;
+
+  if (participantLength < 2) {
+    return [];
+  }
+
+  return contacts.filter((contact) =>
+    [contact.canonical_name, ...contact.aliases].some((name) => {
+      const normalizedContactName = normalizeContactText(name);
+      const contactNameLength = Array.from(normalizedContactName).length;
+
+      if (participantLength === 2 && contactNameLength !== participantLength) {
+        return false;
+      }
+
+      return editDistance(normalizedParticipantName, normalizedContactName) === 1;
+    }),
   );
 }
 
@@ -557,6 +583,8 @@ export async function resolveParticipants({
         };
       }
 
+      const nearMatches = findNearMatches(participant.name, contacts);
+
       const contactSummaries: ContactSummary[] = contacts.map((contact) => ({
         id: contact.id,
         canonical_name: contact.canonical_name,
@@ -585,6 +613,16 @@ export async function resolveParticipants({
       }
 
       if (resolution.decision === 'new') {
+        if (nearMatches.length > 0) {
+          return {
+            participant_name: participant.name,
+            normalized_name: normalizedName,
+            status: 'unsure' as const,
+            candidate_ids: nearMatches.map((contact) => contact.id),
+            source: 'near_match' as const,
+          };
+        }
+
         return {
           participant_name: participant.name,
           normalized_name: normalizedName,
@@ -597,7 +635,10 @@ export async function resolveParticipants({
         participant_name: participant.name,
         normalized_name: normalizedName,
         status: 'unsure' as const,
-        candidate_ids: resolution.candidate_ids,
+        candidate_ids: dedupeNumbers([
+          ...resolution.candidate_ids,
+          ...nearMatches.map((contact) => contact.id),
+        ]),
         source: 'llm' as const,
       };
     }),
