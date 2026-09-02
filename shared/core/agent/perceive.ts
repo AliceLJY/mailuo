@@ -26,6 +26,7 @@ export function isSelfName(value: string): boolean {
 export const PerceptionParticipantSchema = z.object({
   name: z.string().min(1),
   is_self: z.boolean(),
+  role: z.enum(['speaker', 'mentioned']).optional(),
   aliases: z.array(z.string().min(1)).optional(),
   company: z.string().min(1).optional(),
   title: z.string().min(1).optional(),

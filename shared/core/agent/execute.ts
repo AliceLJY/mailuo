@@ -84,6 +84,9 @@ export interface ExecuteStore {
     id: number;
     raw_extraction: unknown;
   } | null;
+  getScreenshotDetail(screenshotId: number): {
+    cards: StoredActionCardRecord[];
+  } | null;
   getContactById(contactId: number): ContactRecord | null;
   appendContactAliases(
     contactId: number,
@@ -805,6 +808,40 @@ function findSiblingResolvedContactIdsForDisplayedName(args: {
   });
 }
 
+type SiblingCreateContactCard = {
+  name: string;
+  status: StoredActionCardRecord["status"];
+};
+
+function findSiblingCreateContactCardsForDisplayedName(args: {
+  db: ExecuteStore;
+  screenshotId: number;
+  extraction: PerceptionResult | null;
+  displayedName: string;
+}): SiblingCreateContactCard[] {
+  const relatedParticipants = collectRelatedParticipants(args.extraction, [args.displayedName]);
+  const displayedNames = new Set(
+    dedupeStrings([args.displayedName, ...relatedParticipants.names]).map(normalizeLookupValue),
+  );
+
+  return (args.db.getScreenshotDetail(args.screenshotId)?.cards ?? []).flatMap((card) => {
+    if (card.type !== "create_contact") {
+      return [];
+    }
+
+    const candidateNames = dedupeStrings([
+      card.payload.name,
+      ...(card.payload.aliases ?? []),
+    ]);
+
+    if (!candidateNames.some((name) => displayedNames.has(normalizeLookupValue(name)))) {
+      return [];
+    }
+
+    return [{ name: card.payload.name, status: card.status }];
+  });
+}
+
 function hydrateMeetingParticipants(args: {
   db: ExecuteStore;
   screenshotId: number;
@@ -1222,27 +1259,42 @@ export function executeCard({ db, cardId, payload, resolvedContactId }: ExecuteC
                 displayedName: typedPayload.contact_name,
               })
             : [];
+        const siblingCreateContactCards =
+          typedPayload.contact_id == null
+            ? findSiblingCreateContactCardsForDisplayedName({
+                db,
+                screenshotId: screenshot.id,
+                extraction,
+                displayedName: typedPayload.contact_name,
+              })
+            : [];
+
+        if (typedPayload.contact_id == null && matchedSiblingContactIds.length > 1) {
+          throw new ExecuteDependencyError(
+            `同名联系人有 ${matchedSiblingContactIds.length} 个，请在卡片上选择具体是谁`,
+            {
+              screenshot_id: screenshot.id,
+              matched_contact_ids: matchedSiblingContactIds,
+            },
+          );
+        }
+
+        if (typedPayload.contact_id == null && matchedSiblingContactIds.length === 0) {
+          const pendingSibling = siblingCreateContactCards.find((card) => card.status === "pending");
+          const rejectedSibling = siblingCreateContactCards.find((card) => card.status === "rejected");
+          const message = pendingSibling
+            ? `请先确认『新建联系人 ${pendingSibling.name}』那张卡`
+            : rejectedSibling
+              ? `这张互动依赖的『新建联系人 ${rejectedSibling.name}』已被跳过，请把这张也跳过，或先手动新建该联系人`
+              : "这张互动还没关联到任何联系人，请先在本批新建或选择对应的联系人";
+
+          throw new ExecuteDependencyError(message, {
+            screenshot_id: screenshot.id,
+            matched_contact_ids: matchedSiblingContactIds,
+          });
+        }
+
         const summaryContactId = typedPayload.contact_id ?? matchedSiblingContactIds[0];
-
-        if (!summaryContactId) {
-          throw new ExecuteDependencyError(
-            `record_interaction requires contact_id or exactly one confirmed sibling create_contact match for "${typedPayload.contact_name}"`,
-            {
-              screenshot_id: screenshot.id,
-              matched_contact_ids: matchedSiblingContactIds,
-            },
-          );
-        }
-
-        if (typedPayload.contact_id == null && matchedSiblingContactIds.length !== 1) {
-          throw new ExecuteDependencyError(
-            `record_interaction requires exactly one confirmed sibling create_contact match for "${typedPayload.contact_name}"`,
-            {
-              screenshot_id: screenshot.id,
-              matched_contact_ids: matchedSiblingContactIds,
-            },
-          );
-        }
 
         const contact = db.getContactById(summaryContactId);
 

@@ -60,6 +60,57 @@ function createPendingCard(args: {
   });
 }
 
+function createInteractionDependencyCards(db: MailuoDb) {
+  const screenshot = db.createScreenshot({
+    imagePath: "/tmp/interaction-dependency-shot.png",
+    uploadedAt: "2026-08-26T00:00:00.000Z",
+  });
+
+  db.getNativeDatabase()
+    .prepare("UPDATE screenshots SET raw_extraction = ? WHERE id = ?")
+    .run(
+      JSON.stringify({
+        participants: [
+          {
+            name: "王磊",
+            confidence: "high",
+            source_quote: "王磊说下周继续推进",
+          },
+        ],
+        events: [],
+        facts: [],
+        quotes: [],
+      }),
+      screenshot.id,
+    );
+
+  const contactCard = db.insertActionCard({
+    screenshotId: screenshot.id,
+    card: {
+      type: "create_contact",
+      payload: { name: "王磊", aliases: ["王总"] },
+      confidence: "high",
+      source_quote: "王磊说下周继续推进",
+    },
+    createdAt: "2026-08-26T00:01:00.000Z",
+  });
+  const interactionCard = db.insertActionCard({
+    screenshotId: screenshot.id,
+    card: {
+      type: "record_interaction",
+      payload: {
+        contact_name: "王磊",
+        summary: "对方确认下周继续推进",
+      },
+      confidence: "high",
+      source_quote: "下周继续推进",
+    },
+    createdAt: "2026-08-26T00:02:00.000Z",
+  });
+
+  return { contactCard, interactionCard, screenshot };
+}
+
 function countRows(db: MailuoDb, table: string) {
   const row = db
     .getNativeDatabase()
@@ -1596,7 +1647,7 @@ test("executeCard links meeting participants from a confirmed sibling create_con
   }
 });
 
-test("executeCard requires a confirmed sibling create_contact match for interactions without contact_id", () => {
+test("executeCard explains when an interaction has no matching sibling create_contact", () => {
   const { db, cleanup } = withTempDb();
   seedDb(db);
 
@@ -1606,7 +1657,7 @@ test("executeCard requires a confirmed sibling create_contact match for interact
       rawExtraction: {
         participants: [
           {
-            name: "陈老师",
+            name: "王磊",
             notes: "更喜欢线上沟通",
             confidence: "high",
             source_quote: "我更喜欢线上沟通",
@@ -1619,7 +1670,7 @@ test("executeCard requires a confirmed sibling create_contact match for interact
       card: {
         type: "record_interaction",
         payload: {
-          contact_name: "陈老师",
+          contact_name: "王磊",
           summary: "对方确认周五前发合作方案",
         },
         confidence: "high",
@@ -1634,7 +1685,51 @@ test("executeCard requires a confirmed sibling create_contact match for interact
         assert.equal(error.statusCode, 422);
         assert.equal(
           error.message,
-          'record_interaction requires contact_id or exactly one confirmed sibling create_contact match for "陈老师"',
+          "这张互动还没关联到任何联系人，请先在本批新建或选择对应的联系人",
+        );
+        return true;
+      },
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("executeCard asks for the matching pending sibling create_contact first", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const { interactionCard } = createInteractionDependencyCards(db);
+
+    assert.throws(
+      () => executeCard({ db, cardId: interactionCard.id }),
+      (error) => {
+        assert.ok(error instanceof ExecuteDependencyError);
+        assert.equal(error.statusCode, 422);
+        assert.equal(error.message, "请先确认『新建联系人 王磊』那张卡");
+        return true;
+      },
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("executeCard explains when the matching sibling create_contact was rejected", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const { contactCard, interactionCard } = createInteractionDependencyCards(db);
+    rejectCard({ db, cardId: contactCard.id });
+
+    assert.throws(
+      () => executeCard({ db, cardId: interactionCard.id }),
+      (error) => {
+        assert.ok(error instanceof ExecuteDependencyError);
+        assert.equal(error.statusCode, 422);
+        assert.equal(
+          error.message,
+          "这张互动依赖的『新建联系人 王磊』已被跳过，请把这张也跳过，或先手动新建该联系人",
         );
         return true;
       },
@@ -1916,7 +2011,7 @@ test("executeCard rejects interactions without a unique confirmed sibling create
         assert.equal(error.statusCode, 422);
         assert.equal(
           error.message,
-          'record_interaction requires exactly one confirmed sibling create_contact match for "陈老师"',
+          "同名联系人有 2 个，请在卡片上选择具体是谁",
         );
         assert.deepEqual(error.details, {
           screenshot_id: screenshot.id,

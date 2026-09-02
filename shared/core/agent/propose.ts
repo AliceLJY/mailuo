@@ -1073,6 +1073,20 @@ function buildContactChanges(
   return changes;
 }
 
+function cjkLetterRatio(value: string): number {
+  const letters = value.match(/\p{L}/gu) ?? [];
+
+  if (letters.length === 0) {
+    return 0;
+  }
+
+  const cjkLetters = letters.filter((letter) => (
+    /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(letter)
+  ));
+
+  return cjkLetters.length / letters.length;
+}
+
 function buildInteractionPayload(
   participantName: string,
   contact: ResolvableContact | undefined,
@@ -1082,12 +1096,15 @@ function buildInteractionPayload(
   relatedQuotes: PerceptionQuote[] | undefined,
 ): { payload: RecordInteractionPayload; sourceQuote: string } {
   const preferredSummary = dedupeStrings(interactionSummaries).join('；');
-  const summaryFragments = preferredSummary
-    ? [preferredSummary]
-    : dedupeStrings([
-        participantSourceQuotes.join('；'),
-        ...((relatedQuotes ?? []).map((quote) => quote.text)),
-      ]);
+  const fallbackFragments = dedupeStrings([
+    participantSourceQuotes.join('；'),
+    ...((relatedQuotes ?? []).map((quote) => quote.text)),
+  ]);
+  const useFallback = !preferredSummary || (
+    cjkLetterRatio(fallbackFragments.join('；')) >= 0.5 &&
+    cjkLetterRatio(preferredSummary) < 0.3
+  );
+  const summaryFragments = useFallback ? fallbackFragments : [preferredSummary];
 
   return {
     payload: {
@@ -1260,32 +1277,34 @@ export function proposeCards(
     const relatedQuotes =
       quotesBySpeaker.get(normalizeComparableText(participant.name)) ?? [];
     const draft = buildCreateContactPayload(participant, relatedFacts, libraryFieldValues);
-    const interactionKey =
-      resolution.status === 'same_as'
-        ? `contact:${resolution.contact_id}`
-        : `pending:${resolution.normalized_name}`;
+    if (participant.role !== 'mentioned') {
+      const interactionKey =
+        resolution.status === 'same_as'
+          ? `contact:${resolution.contact_id}`
+          : `pending:${resolution.normalized_name}`;
 
-    if (!interactionCandidates.has(interactionKey)) {
-      interactionCandidates.set(interactionKey, {
-        participantName: participant.name,
-        contact:
-          resolution.status === 'same_as'
-            ? contactsById.get(resolution.contact_id)
-            : undefined,
-        confidence: [participant.confidence],
-        relatedFacts: [...relatedFacts],
-        relatedQuotes: [...relatedQuotes],
-        participantSourceQuotes: [participant.source_quote],
-        interactionSummaries: dedupeStrings([participant.interaction_summary]),
-        requiresCreateCard: resolution.status !== 'same_as',
-      });
-    } else {
-      const existing = interactionCandidates.get(interactionKey)!;
-      existing.confidence.push(participant.confidence);
-      existing.relatedFacts.push(...relatedFacts);
-      existing.relatedQuotes.push(...relatedQuotes);
-      existing.participantSourceQuotes.push(participant.source_quote);
-      existing.interactionSummaries.push(...dedupeStrings([participant.interaction_summary]));
+      if (!interactionCandidates.has(interactionKey)) {
+        interactionCandidates.set(interactionKey, {
+          participantName: participant.name,
+          contact:
+            resolution.status === 'same_as'
+              ? contactsById.get(resolution.contact_id)
+              : undefined,
+          confidence: [participant.confidence],
+          relatedFacts: [...relatedFacts],
+          relatedQuotes: [...relatedQuotes],
+          participantSourceQuotes: [participant.source_quote],
+          interactionSummaries: dedupeStrings([participant.interaction_summary]),
+          requiresCreateCard: resolution.status !== 'same_as',
+        });
+      } else {
+        const existing = interactionCandidates.get(interactionKey)!;
+        existing.confidence.push(participant.confidence);
+        existing.relatedFacts.push(...relatedFacts);
+        existing.relatedQuotes.push(...relatedQuotes);
+        existing.participantSourceQuotes.push(participant.source_quote);
+        existing.interactionSummaries.push(...dedupeStrings([participant.interaction_summary]));
+      }
     }
 
     if (resolution.status === 'same_as') {

@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { theme } from "@/theme";
 import type {
+  ActionCardRecord,
   CreateContactPayload,
   CreateMeetingPayload,
   LocalBatchAnchorInfo,
@@ -11,20 +12,175 @@ import type {
   UpdateContactPayload,
 } from "@/types";
 
-const LocalBatchAnchorContext = createContext<LocalBatchAnchorInfo | null>(null);
+export type ReviewLocalBatchAnchorInfo = LocalBatchAnchorInfo & {
+  same_screenshot: boolean;
+};
+
+const LocalBatchAnchorContext = createContext<ReviewLocalBatchAnchorInfo | null>(null);
 
 export function LocalBatchAnchorProvider({
   children,
   value,
 }: {
   children: ReactNode;
-  value: LocalBatchAnchorInfo | null;
+  value: ReviewLocalBatchAnchorInfo | null;
 }) {
   return (
     <LocalBatchAnchorContext.Provider value={value}>
       {children}
     </LocalBatchAnchorContext.Provider>
   );
+}
+
+function normalizeContactName(value: string) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+export function resolveReviewLocalBatchAnchor(
+  card: ActionCardRecord,
+  orderedCards: ActionCardRecord[],
+  payload: RecordInteractionPayload | null,
+): ReviewLocalBatchAnchorInfo | null {
+  const hydratedAnchor = card.disambiguation?.local_batch_anchor;
+
+  if (hydratedAnchor) {
+    const liveAnchor = orderedCards.find(
+      (candidate) => candidate.id === hydratedAnchor.anchor_card_id,
+    );
+
+    if (!liveAnchor) {
+      return { ...hydratedAnchor, same_screenshot: false };
+    }
+
+    if (liveAnchor.type !== "create_contact") {
+      return {
+        anchor_card_id: hydratedAnchor.anchor_card_id,
+        name: null,
+        same_screenshot: liveAnchor.screenshot_id === card.screenshot_id,
+        status: "missing",
+      };
+    }
+
+    return {
+      anchor_card_id: liveAnchor.id,
+      name: liveAnchor.payload.name.trim() || null,
+      same_screenshot: liveAnchor.screenshot_id === card.screenshot_id,
+      status: liveAnchor.status,
+    };
+  }
+
+  if (
+    card.type !== "record_interaction" ||
+    !payload ||
+    payload.contact_id != null ||
+    card.disambiguation?.local_batch_deferred
+  ) {
+    return null;
+  }
+
+  const displayedName = normalizeContactName(payload.contact_name);
+  if (!displayedName) {
+    return null;
+  }
+
+  const matchingAnchors = orderedCards.flatMap((candidate) => {
+    if (
+      candidate.screenshot_id !== card.screenshot_id ||
+      candidate.type !== "create_contact"
+    ) {
+      return [];
+    }
+
+    const matches = [candidate.payload.name, ...(candidate.payload.aliases ?? [])]
+      .map(normalizeContactName)
+      .includes(displayedName);
+
+    return matches
+      ? [{
+          anchor_card_id: candidate.id,
+          name: candidate.payload.name.trim() || null,
+          resolved_contact_id: candidate.resolved_contact_id,
+          same_screenshot: true as const,
+          status: candidate.status,
+        }]
+      : [];
+  });
+
+  const confirmedByContactId = new Map<number, (typeof matchingAnchors)[number]>();
+  for (const anchor of matchingAnchors) {
+    if (anchor.status === "confirmed" && anchor.resolved_contact_id != null) {
+      confirmedByContactId.set(anchor.resolved_contact_id, anchor);
+    }
+  }
+
+  if (confirmedByContactId.size > 1) {
+    return null;
+  }
+
+  const confirmedAnchor = confirmedByContactId.values().next().value;
+  const anchor = confirmedAnchor
+    ?? matchingAnchors.find((candidate) => candidate.status === "pending")
+    ?? matchingAnchors.find((candidate) => candidate.status === "rejected");
+
+  if (!anchor) {
+    return null;
+  }
+
+  return {
+    anchor_card_id: anchor.anchor_card_id,
+    name: anchor.name,
+    same_screenshot: true,
+    status: anchor.status,
+  };
+}
+
+export function getInteractionDependencyMessage(
+  anchor: ReviewLocalBatchAnchorInfo | null,
+) {
+  if (!anchor?.same_screenshot || !anchor.name) {
+    return null;
+  }
+
+  if (anchor.status === "pending") {
+    return `请先确认『新建联系人 ${anchor.name}』那张卡`;
+  }
+
+  if (anchor.status === "rejected") {
+    return `这张互动依赖的『新建联系人 ${anchor.name}』已被跳过，请把这张也跳过，或先手动新建该联系人`;
+  }
+
+  return null;
+}
+
+export function formatInteractionOwnership(
+  payload: RecordInteractionPayload,
+  anchor: ReviewLocalBatchAnchorInfo | null,
+) {
+  if (anchor?.name) {
+    if (anchor.same_screenshot && anchor.status === "pending") {
+      return `将关联到本张新建的联系人：${anchor.name}（待确认）`;
+    }
+
+    if (anchor.same_screenshot && anchor.status === "rejected") {
+      return `将关联到本张新建的联系人：${anchor.name}（已被跳过）`;
+    }
+
+    if (anchor.same_screenshot && anchor.status === "confirmed") {
+      return `将关联到本张新建的联系人：${anchor.name}（已确认）`;
+    }
+
+    if (anchor.status === "pending") {
+      return `将关联到本批新建的联系人：${anchor.name}（待确认）`;
+    }
+
+    if (anchor.status === "rejected") {
+      return `依赖的『新建联系人 ${anchor.name}』已被跳过`;
+    }
+  }
+
+  return payload.contact_id
+    ? "已关联到已有联系人"
+    : "还没关联到已有联系人";
 }
 
 const FIELD_LABELS = {
@@ -317,13 +473,7 @@ export function InteractionFields({
   setPayload: (payload: ReviewCardDraft["payload"]) => void;
 }) {
   const localBatchAnchor = useContext(LocalBatchAnchorContext);
-  const ownership = localBatchAnchor?.status === "pending" && localBatchAnchor.name
-    ? `将关联到本批新建的联系人：${localBatchAnchor.name}（待确认）`
-    : localBatchAnchor?.status === "rejected" && localBatchAnchor.name
-      ? `依赖的『新建联系人 ${localBatchAnchor.name}』已被跳过`
-      : payload.contact_id
-        ? "已关联到已有联系人"
-        : "还没关联到已有联系人";
+  const ownership = formatInteractionOwnership(payload, localBatchAnchor);
 
   return (
     <View style={styles.section}>

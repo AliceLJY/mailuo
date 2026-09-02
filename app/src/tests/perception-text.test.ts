@@ -78,6 +78,15 @@ function extractAliasRules(prompt: string) {
   return match[0];
 }
 
+function extractParticipantRoleRules(prompt: string) {
+  const match = prompt.match(
+    /Participant role rules:[\s\S]+?(?=\nCurrent datetime)/u,
+  );
+
+  assert.ok(match);
+  return match[0];
+}
+
 function extractGeneratedContentRules(prompt: string) {
   const match = prompt.match(
     /Generated natural-language and item-detail rules:[\s\S]+?(?=\nIf an event contains no time wording)/u,
@@ -114,6 +123,18 @@ const AFTER_FIX2_INTERACTION_SUMMARY_RULES = [
   "- Summarize the interaction with that person, including any explicit progress signal or emotion. If the evidence contains only structured contact information and no actual interaction content, summarize the context in which that information was stated or observed. Do not list raw lines or invent details.",
 ].join("\n");
 
+const FIX5_PARTICIPANT_ROLE_RULES = [
+  "Participant role rules:",
+  "- Set role=\"speaker\" when the participant sent at least one message in this evidence.",
+  "- Set role=\"mentioned\" only when the participant appears in message body text, a notification, a roster, or an @mention list and did not send any message in this evidence.",
+].join("\n");
+
+const AFTER_FIX5_INTERACTION_SUMMARY_RULES = [
+  "Interaction summary rules:",
+  "- For every participant with is_self=false and role=\"speaker\", interaction_summary is required and must be exactly one non-empty natural-language sentence. A participant with role=\"mentioned\" may omit interaction_summary. Omit interaction_summary for the self participant.",
+  "- Summarize the interaction with that person, including any explicit progress signal or emotion. If the evidence contains only structured contact information and no actual interaction content, summarize the context in which that information was stated or observed. Do not list raw lines or invent details.",
+].join("\n");
+
 const SHORTEST_SOURCE_QUOTE_RULE =
   "source_quote should be the shortest span that supports the extracted fields.";
 
@@ -132,8 +153,8 @@ function readPerceptionPromptSnapshot(fileName: string): PerceptionPromptSnapsho
   )) as PerceptionPromptSnapshot;
 }
 
-test("v3-M4-fix3 visual and text system prompts match the fixed after snapshot", () => {
-  const snapshot = readPerceptionPromptSnapshot("perception-prompts.after-v3-m4-fix3.json");
+test("v3-M4-fix5 visual and text system prompts match the fixed after snapshot", () => {
+  const snapshot = readPerceptionPromptSnapshot("perception-prompts.after-v3-m4-fix5.json");
   const now = new Date(snapshot.baselineNow);
 
   assert.equal(
@@ -144,6 +165,67 @@ test("v3-M4-fix3 visual and text system prompts match the fixed after snapshot",
     buildPerceptionTextSystemPrompt(now),
     snapshot.buildPerceptionTextSystemPrompt,
   );
+});
+
+test("v3-M4-fix5 prompt snapshots preserve fix3 bytes and add only the participant role contract", () => {
+  const beforeUrl = new URL(
+    "../../../docs/perception-baseline/perception-prompts.before-v3-m4-fix5.json",
+    import.meta.url,
+  );
+  const previousUrl = new URL(
+    "../../../docs/perception-baseline/perception-prompts.after-v3-m4-fix3.json",
+    import.meta.url,
+  );
+  const afterUrl = new URL(
+    "../../../docs/perception-baseline/perception-prompts.after-v3-m4-fix5.json",
+    import.meta.url,
+  );
+  const beforeBytes = readFileSync(beforeUrl);
+  const previousBytes = readFileSync(previousUrl);
+  const afterText = readFileSync(afterUrl, "utf8");
+  const before = JSON.parse(beforeBytes.toString("utf8")) as PerceptionPromptSnapshot;
+  const after = JSON.parse(afterText) as PerceptionPromptSnapshot;
+  const promptKeys = [
+    "buildPerceptionSystemPrompt",
+    "buildPerceptionTextSystemPrompt",
+  ] as const;
+  const beforeSchemaLines = {
+    buildPerceptionSystemPrompt: "- participants: array of people explicitly shown or mentioned in the screenshot. Include name, is_self, optional aliases/company/title/phone/wechat_id/notes, required interaction_summary for every non-self participant, confidence, source_quote.",
+    buildPerceptionTextSystemPrompt: "- participants: array of people explicitly shown or mentioned in the provided OCR text. Include name, is_self, optional aliases/company/title/phone/wechat_id/notes, required interaction_summary for every non-self participant, confidence, source_quote.",
+  } as const;
+  const afterSchemaLines = {
+    buildPerceptionSystemPrompt: "- participants: array of people explicitly shown or mentioned in the screenshot. Include name, is_self, role (\"speaker\" or \"mentioned\"), optional aliases/company/title/phone/wechat_id/notes, interaction_summary required only for non-self role=\"speaker\" participants and optional for role=\"mentioned\" participants, confidence, source_quote. Omit interaction_summary for self.",
+    buildPerceptionTextSystemPrompt: "- participants: array of people explicitly shown or mentioned in the provided OCR text. Include name, is_self, role (\"speaker\" or \"mentioned\"), optional aliases/company/title/phone/wechat_id/notes, interaction_summary required only for non-self role=\"speaker\" participants and optional for role=\"mentioned\" participants, confidence, source_quote. Omit interaction_summary for self.",
+  } as const;
+
+  assert.deepEqual(beforeBytes, previousBytes);
+  assert.equal(
+    createHash("sha256").update(beforeBytes).digest("hex").slice(0, 8),
+    "1821b4e2",
+  );
+  assert.equal(after.sourceRevision, "2323180");
+  assert.equal(after.snapshotPhase, "after v3-M4-fix5 working-tree changes");
+  assert.equal(after.baselineNow, before.baselineNow);
+  assert.equal(afterText, `${JSON.stringify(after, null, 2)}\n`);
+
+  for (const promptKey of promptKeys) {
+    assert.doesNotMatch(before[promptKey], /Participant role rules:/u);
+    assert.equal(after[promptKey].split(FIX5_PARTICIPANT_ROLE_RULES).length, 2);
+    assert.equal(before[promptKey].split(AFTER_FIX2_INTERACTION_SUMMARY_RULES).length, 2);
+    assert.equal(after[promptKey].split(AFTER_FIX5_INTERACTION_SUMMARY_RULES).length, 2);
+    assert.equal(before[promptKey].split(beforeSchemaLines[promptKey]).length, 2);
+    assert.equal(after[promptKey].split(afterSchemaLines[promptKey]).length, 2);
+    assert.equal(
+      after[promptKey]
+        .replace(`${FIX5_PARTICIPANT_ROLE_RULES}\n`, "")
+        .replace(
+          AFTER_FIX5_INTERACTION_SUMMARY_RULES,
+          AFTER_FIX2_INTERACTION_SUMMARY_RULES,
+        )
+        .replace(afterSchemaLines[promptKey], beforeSchemaLines[promptKey]),
+      before[promptKey],
+    );
+  }
 });
 
 test("v3-M4-fix3 prompt snapshots preserve fix2 bytes and add only the shortest source quote rule", () => {
@@ -257,7 +339,16 @@ test("visual and text prompts share the exact required interaction summary rules
   const textRules = extractInteractionSummaryRules(buildPerceptionTextSystemPrompt(now));
 
   assert.equal(visualRules, textRules);
-  assert.equal(visualRules, AFTER_FIX2_INTERACTION_SUMMARY_RULES);
+  assert.equal(visualRules, AFTER_FIX5_INTERACTION_SUMMARY_RULES);
+});
+
+test("visual and text prompts share the exact participant role rules", () => {
+  const now = new Date("2026-08-29T08:00:00+08:00");
+  const visualRules = extractParticipantRoleRules(buildPerceptionSystemPrompt(now));
+  const textRules = extractParticipantRoleRules(buildPerceptionTextSystemPrompt(now));
+
+  assert.equal(visualRules, textRules);
+  assert.equal(visualRules, FIX5_PARTICIPANT_ROLE_RULES);
 });
 
 test("visual and text prompts share the exact timestamp-anchor time rules", () => {

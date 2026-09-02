@@ -29,6 +29,15 @@ function extractAliasRules(prompt: string): string {
   return match[0];
 }
 
+function extractParticipantRoleRules(prompt: string): string {
+  const match = prompt.match(
+    /Participant role rules:[\s\S]+?(?=\nCurrent datetime)/u,
+  );
+
+  assert.ok(match);
+  return match[0];
+}
+
 test('PerceptionParticipantSchema requires explicit is_self', () => {
   const result = PerceptionParticipantSchema.safeParse({
     name: '我',
@@ -38,6 +47,41 @@ test('PerceptionParticipantSchema requires explicit is_self', () => {
 
   assert.equal(result.success, false);
   assert.equal(result.error.issues[0]?.path.join('.'), 'is_self');
+});
+
+test('PerceptionParticipantSchema accepts speaker and mentioned roles, rejects invalid roles, and does not default a missing role', () => {
+  const participant = {
+    name: '王磊',
+    is_self: false,
+    confidence: 'high',
+    source_quote: '会议通知：王磊参加',
+  } as const;
+  const speaker = PerceptionParticipantSchema.parse({
+    ...participant,
+    role: 'speaker',
+    interaction_summary: '王磊确认会参加会议。',
+  });
+  const speakerWithoutSummary = PerceptionParticipantSchema.parse({
+    ...participant,
+    role: 'speaker',
+  });
+  const mentioned = PerceptionParticipantSchema.parse({
+    ...participant,
+    role: 'mentioned',
+  });
+  const invalid = PerceptionParticipantSchema.safeParse({
+    ...participant,
+    role: 'observer',
+  });
+  const missing = PerceptionParticipantSchema.parse(participant);
+
+  assert.equal(speaker.role, 'speaker');
+  assert.equal(speakerWithoutSummary.interaction_summary, undefined);
+  assert.equal(mentioned.role, 'mentioned');
+  assert.equal(invalid.success, false);
+  assert.equal(invalid.error.issues[0]?.path.join('.'), 'role');
+  assert.equal(missing.role, undefined);
+  assert.equal(Object.hasOwn(missing, 'role'), false);
 });
 
 test('PerceptionParticipantSchema trims non-empty interaction_summary and rejects blank values', () => {
@@ -183,7 +227,11 @@ test('visual and text perception prompts share the timestamp-anchor time rules',
   for (const perceptionPrompt of [prompt, textPrompt]) {
     assert.match(
       perceptionPrompt,
-      /For every participant with is_self=false, interaction_summary is required and must be exactly one non-empty natural-language sentence\. Omit interaction_summary for the self participant\./,
+      /For every participant with is_self=false and role="speaker", interaction_summary is required and must be exactly one non-empty natural-language sentence\./,
+    );
+    assert.match(
+      perceptionPrompt,
+      /A participant with role="mentioned" may omit interaction_summary\. Omit interaction_summary for the self participant\./,
     );
     assert.match(
       perceptionPrompt,
@@ -191,7 +239,7 @@ test('visual and text perception prompts share the timestamp-anchor time rules',
     );
     assert.match(
       perceptionPrompt,
-      /required interaction_summary for every non-self participant/,
+      /interaction_summary required only for non-self role="speaker" participants and optional for role="mentioned" participants/,
     );
     assert.doesNotMatch(
       perceptionPrompt,
@@ -201,6 +249,22 @@ test('visual and text perception prompts share the timestamp-anchor time rules',
   assert.match(
     prompt,
     /Keep source_quote verbatim from the screenshot\. The summarization rule applies only to those freeform descriptive fields, not to source_quote\./,
+  );
+});
+
+test('visual and text perception prompts share the exact participant role rules', () => {
+  const now = new Date('2026-12-27T10:15:30+08:00');
+  const visualRules = extractParticipantRoleRules(buildPerceptionSystemPrompt(now));
+  const textRules = extractParticipantRoleRules(buildPerceptionTextSystemPrompt(now));
+
+  assert.equal(visualRules, textRules);
+  assert.match(
+    visualRules,
+    /role="speaker" when the participant sent at least one message in this evidence/u,
+  );
+  assert.match(
+    visualRules,
+    /role="mentioned" only when the participant appears in message body text, a notification, a roster, or an @mention list and did not send any message in this evidence/u,
   );
 });
 
@@ -266,6 +330,8 @@ test('parseStoredPerceptionResult restores legacy missing booleans without dropp
   assert.equal(result.participants[0]?.aliases?.[0], 'Alice');
   assert.equal(result.participants[0]?.notes, '更喜欢语音');
   assert.equal(result.participants[1]?.is_self, false);
+  assert.equal(result.participants[1]?.role, undefined);
+  assert.equal(Object.hasOwn(result.participants[1] ?? {}, 'role'), false);
   assert.equal(result.events[0]?.has_time_signal, false);
   assert.equal(result.events[1]?.has_time_signal, true);
 });

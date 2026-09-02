@@ -737,6 +737,219 @@ test('proposeCards falls back to raw quote content when interaction_summary is m
   );
 });
 
+test('proposeCards keeps participant and fact fields for a mentioned new contact without recording an interaction', () => {
+  const extraction: PerceptionResult = {
+    participants: [
+      {
+        name: '王磊',
+        is_self: false,
+        role: 'mentioned',
+        company: '某集团 市场部',
+        confidence: 'high',
+        source_quote: '参会名单：王磊（某集团 市场部）',
+      },
+    ],
+    events: [],
+    facts: [
+      {
+        subject_name: '王磊',
+        field: 'title',
+        value: '市场负责人',
+        confidence: 'high',
+        source_quote: '王磊（市场负责人）',
+      },
+    ],
+    quotes: [],
+  };
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '王磊',
+      normalized_name: '王磊',
+      status: 'new',
+      source: 'empty_db',
+    },
+  ];
+
+  assert.deepEqual(proposeCards(extraction, resolutions), [
+    {
+      type: 'create_contact',
+      payload: {
+        name: '王磊',
+        company: '某集团 市场部',
+        title: '市场负责人',
+      },
+      confidence: 'high',
+      source_quote: '参会名单：王磊（某集团 市场部）\n\n王磊（市场负责人）',
+    },
+  ]);
+});
+
+test('proposeCards keeps a fact-backed same_as update for a mentioned contact without recording an interaction', () => {
+  const extraction: PerceptionResult = {
+    participants: [
+      {
+        name: '王磊',
+        is_self: false,
+        role: 'mentioned',
+        confidence: 'high',
+        source_quote: '通知抄送：王磊',
+      },
+    ],
+    events: [],
+    facts: [
+      {
+        subject_name: '王磊',
+        field: 'title',
+        value: '市场负责人',
+        confidence: 'high',
+        source_quote: '王磊（市场负责人）',
+      },
+    ],
+    quotes: [],
+  };
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '王磊',
+      normalized_name: '王磊',
+      status: 'same_as',
+      contact_id: 8,
+      source: 'exact',
+    },
+  ];
+  const contacts: ResolvableContact[] = [
+    {
+      id: 8,
+      canonical_name: '王磊',
+      aliases: [],
+      company: '某集团 市场部',
+      title: '市场专员',
+      phone: null,
+      wechat_id: null,
+      notes: null,
+    },
+  ];
+
+  assert.deepEqual(proposeCards(extraction, resolutions, contacts), [
+    {
+      type: 'update_contact',
+      payload: {
+        contact_id: 8,
+        contact_name: '王磊',
+        changes: {
+          title: { old: '市场专员', new: '市场负责人' },
+        },
+      },
+      confidence: 'high',
+      source_quote: '通知抄送：王磊\n\n王磊（市场负责人）',
+    },
+  ]);
+});
+
+test('proposeCards treats a legacy participant with no role as a speaker', () => {
+  const extraction = singleParticipantExtraction({
+    interaction_summary: '王磊确认方案按计划推进。',
+    source_quote: '王磊：方案按计划推进',
+  });
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '王磊',
+      normalized_name: '王磊',
+      status: 'same_as',
+      contact_id: 9,
+      source: 'exact',
+    },
+  ];
+  const contacts: ResolvableContact[] = [
+    {
+      id: 9,
+      canonical_name: '王磊',
+      aliases: [],
+      company: null,
+      title: null,
+      phone: null,
+      wechat_id: null,
+      notes: null,
+    },
+  ];
+  const cards = proposeCards(extraction, resolutions, contacts);
+
+  assert.deepEqual(cards.map((card) => card.type), ['record_interaction']);
+  assert.equal(
+    cards[0]?.type === 'record_interaction' ? cards[0].payload.summary : null,
+    '王磊确认方案按计划推进。',
+  );
+});
+
+const interactionLanguageScenarios = [
+  {
+    name: 'falls back to Chinese evidence for an English summary',
+    participantSourceQuote: '王磊：项目已经推进到评审阶段',
+    quoteText: '周五前给你反馈',
+    quoteSourceQuote: '王磊说：周五前给你反馈',
+    preferredSummary: 'We discussed project progress and next steps.',
+    expectedSummary: '王磊：项目已经推进到评审阶段；周五前给你反馈',
+  },
+  {
+    name: 'keeps a Chinese summary for Chinese evidence',
+    participantSourceQuote: '王磊：项目已经推进到评审阶段',
+    quoteText: '周五前给你反馈',
+    quoteSourceQuote: '王磊说：周五前给你反馈',
+    preferredSummary: '我们讨论了项目进度，对方会在周五前反馈。',
+    expectedSummary: '我们讨论了项目进度，对方会在周五前反馈。',
+  },
+  {
+    name: 'keeps an English summary for English evidence',
+    participantSourceQuote: 'The project is ready for review.',
+    quoteText: 'I will send feedback by Friday.',
+    quoteSourceQuote: 'Wang Lei: I will send feedback by Friday.',
+    preferredSummary: 'We discussed project progress and next steps.',
+    expectedSummary: 'We discussed project progress and next steps.',
+  },
+] as const;
+
+for (const scenario of interactionLanguageScenarios) {
+  test(`proposeCards ${scenario.name}`, () => {
+    const extraction = singleParticipantExtraction({
+      role: 'speaker',
+      interaction_summary: scenario.preferredSummary,
+      source_quote: scenario.participantSourceQuote,
+    });
+    extraction.quotes = [
+      {
+        speaker_name: '王磊',
+        text: scenario.quoteText,
+        source_quote: scenario.quoteSourceQuote,
+      },
+    ];
+    const resolutions: ParticipantResolution[] = [
+      {
+        participant_name: '王磊',
+        normalized_name: '王磊',
+        status: 'same_as',
+        contact_id: 10,
+        source: 'exact',
+      },
+    ];
+    const contacts: ResolvableContact[] = [
+      {
+        id: 10,
+        canonical_name: '王磊',
+        aliases: [],
+        company: null,
+        title: null,
+        phone: null,
+        wechat_id: null,
+        notes: null,
+      },
+    ];
+    const cards = proposeCards(extraction, resolutions, contacts);
+    const interactionCard = cards.find((card) => card.type === 'record_interaction');
+
+    assert.ok(interactionCard);
+    assert.equal(interactionCard.payload.summary, scenario.expectedSummary);
+  });
+}
+
 test('proposeCards filters self participants out of cards and keeps self in meeting payload without contact_id', () => {
   const extraction = {
     participants: [

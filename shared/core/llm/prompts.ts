@@ -61,6 +61,14 @@ function buildParticipantAliasRules(): string {
   ].join('\n');
 }
 
+function buildParticipantRoleRules(): string {
+  return [
+    'Participant role rules:',
+    '- Set role="speaker" when the participant sent at least one message in this evidence.',
+    '- Set role="mentioned" only when the participant appears in message body text, a notification, a roster, or an @mention list and did not send any message in this evidence.',
+  ].join('\n');
+}
+
 function buildGeneratedContentRules(): string {
   return [
     'Generated natural-language and item-detail rules:',
@@ -73,7 +81,7 @@ function buildGeneratedContentRules(): string {
 function buildInteractionSummaryRules(): string {
   return [
     'Interaction summary rules:',
-    '- For every participant with is_self=false, interaction_summary is required and must be exactly one non-empty natural-language sentence. Omit interaction_summary for the self participant.',
+    '- For every participant with is_self=false and role="speaker", interaction_summary is required and must be exactly one non-empty natural-language sentence. A participant with role="mentioned" may omit interaction_summary. Omit interaction_summary for the self participant.',
     '- Summarize the interaction with that person, including any explicit progress signal or emotion. If the evidence contains only structured contact information and no actual interaction content, summarize the context in which that information was stated or observed. Do not list raw lines or invent details.',
   ].join('\n');
 }
@@ -151,6 +159,7 @@ export function buildPerceptionSystemPrompt(now: Date): string {
     buildParticipantAliasRules(),
     'In a chat screenshot, the device owner is the self side of the conversation: messages shown as "我" or the right-side bubbles. Mark that participant with is_self=true. Mark everyone else with is_self=false.',
     'Do not turn another person into the device owner unless the screenshot itself shows that self-side evidence.',
+    buildParticipantRoleRules(),
     `Current datetime (Asia/Shanghai): ${formatShanghaiDateTime(now)}`,
     buildTimeExtractionRules(now),
     'A meeting or appointment must be a mutually agreed time when both sides will meet, attend together, or talk on a call together.',
@@ -171,7 +180,7 @@ export function buildPerceptionSystemPrompt(now: Date): string {
     'confidence must be one of: high, medium, low.',
     'Return JSON only.',
     'Schema requirements:',
-    '- participants: array of people explicitly shown or mentioned in the screenshot. Include name, is_self, optional aliases/company/title/phone/wechat_id/notes, required interaction_summary for every non-self participant, confidence, source_quote.',
+    '- participants: array of people explicitly shown or mentioned in the screenshot. Include name, is_self, role ("speaker" or "mentioned"), optional aliases/company/title/phone/wechat_id/notes, interaction_summary required only for non-self role="speaker" participants and optional for role="mentioned" participants, confidence, source_quote. Omit interaction_summary for self.',
     '- events: array of explicit meetings, appointments, or other follow-up commitments shown in the screenshot. meeting/appointment only apply to mutually attended or call-together time points; one-sided promises belong to kind="other". Include kind, title, time_text, time_iso or null, has_time_signal, optional location/agenda, participant_names, confidence, source_quote.',
     '- facts: array of explicit facts with subject_name, field, value, confidence, source_quote.',
     '- quotes: array of notable exact quotes with speaker_name or null, text, source_quote.',
@@ -188,6 +197,7 @@ export function buildPerceptionTextSystemPrompt(now: Date): string {
     'A time_anchor=absolute-date marker is OCR metadata added only when local OCR recognized a WeChat timestamp separator with an explicit calendar date. Use the timestamp text as evidence, but never copy the marker into source_quote or any other evidence field.',
     'For a side=null line, determine is_self or speaker_name only from explicit text such as "我". Otherwise do not guess, and use speaker_name=null when applicable.',
     'Do not turn another person into the device owner unless a side=me marker or the provided OCR text explicitly shows that self-side evidence.',
+    buildParticipantRoleRules(),
     `Current datetime (Asia/Shanghai): ${formatShanghaiDateTime(now)}`,
     buildTimeExtractionRules(now),
     'A meeting or appointment must be a mutually agreed time when both sides will meet, attend together, or talk on a call together.',
@@ -208,7 +218,7 @@ export function buildPerceptionTextSystemPrompt(now: Date): string {
     'confidence must be one of: high, medium, low.',
     'Return JSON only.',
     'Schema requirements:',
-    '- participants: array of people explicitly shown or mentioned in the provided OCR text. Include name, is_self, optional aliases/company/title/phone/wechat_id/notes, required interaction_summary for every non-self participant, confidence, source_quote.',
+    '- participants: array of people explicitly shown or mentioned in the provided OCR text. Include name, is_self, role ("speaker" or "mentioned"), optional aliases/company/title/phone/wechat_id/notes, interaction_summary required only for non-self role="speaker" participants and optional for role="mentioned" participants, confidence, source_quote. Omit interaction_summary for self.',
     '- events: array of explicit meetings, appointments, or other follow-up commitments shown in the provided OCR text. meeting/appointment only apply to mutually attended or call-together time points; one-sided promises belong to kind="other". Include kind, title, time_text, time_iso or null, has_time_signal, optional location/agenda, participant_names, confidence, source_quote.',
     '- facts: array of explicit facts with subject_name, field, value, confidence, source_quote.',
     '- quotes: array of notable exact quotes with speaker_name or null, text, source_quote.',

@@ -15,7 +15,11 @@ import {
 import { AppButton } from "@/components/button";
 import { EmptyHint, Page, SectionCard } from "@/components/page";
 import { ReviewCard } from "@/components/review/review-card";
-import { LocalBatchAnchorProvider } from "@/components/review/review-fields";
+import {
+  getInteractionDependencyMessage,
+  LocalBatchAnchorProvider,
+  resolveReviewLocalBatchAnchor,
+} from "@/components/review/review-fields";
 import { useConnection } from "@/connection/context";
 import { setCrashContext } from "@/diagnostics/crash-record";
 import { useFlow, type FlowBatchItem } from "@/flow-context";
@@ -27,7 +31,7 @@ import { theme } from "@/theme";
 import { useToast } from "@/toast-context";
 import type {
   ActionCardRecord,
-  LocalBatchAnchorInfo,
+  RecordInteractionPayload,
   ReviewCardDraft,
 } from "@/types";
 import {
@@ -61,39 +65,6 @@ function syncDrafts(current: Record<number, ReviewCardDraft>, cards: ActionCardR
   }
 
   return next;
-}
-
-function resolveLiveLocalBatchAnchor(
-  card: ActionCardRecord,
-  orderedCards: ActionCardRecord[],
-): LocalBatchAnchorInfo | null {
-  const hydratedAnchor = card.disambiguation?.local_batch_anchor;
-
-  if (!hydratedAnchor) {
-    return null;
-  }
-
-  const liveAnchor = orderedCards.find(
-    (candidate) => candidate.id === hydratedAnchor.anchor_card_id,
-  );
-
-  if (!liveAnchor) {
-    return hydratedAnchor;
-  }
-
-  if (liveAnchor.type !== "create_contact") {
-    return {
-      anchor_card_id: hydratedAnchor.anchor_card_id,
-      name: null,
-      status: "missing",
-    };
-  }
-
-  return {
-    anchor_card_id: liveAnchor.id,
-    name: liveAnchor.payload.name.trim() || null,
-    status: liveAnchor.status,
-  };
 }
 
 function canCommitReviewAsync(
@@ -418,6 +389,21 @@ export default function ReviewScreen() {
       return;
     }
 
+    const draft = drafts[card.id] ?? cloneDraft(card);
+    const localBatchAnchor = resolveReviewLocalBatchAnchor(
+      card,
+      orderedCards,
+      card.type === "record_interaction"
+        ? (draft.payload as RecordInteractionPayload)
+        : null,
+    );
+    const dependencyMessage = getInteractionDependencyMessage(localBatchAnchor);
+    if (dependencyMessage) {
+      setActionError(dependencyMessage);
+      showToast(dependencyMessage, "error");
+      return;
+    }
+
     actionRunningRef.current = true;
     const requestGeneration = flowGeneration;
     const runToken = actionRunTokenRef.current + 1;
@@ -426,7 +412,6 @@ export default function ReviewScreen() {
     try {
       setLoadingCardId(card.id);
       setActionError(null);
-      const draft = drafts[card.id] ?? cloneDraft(card);
       const result = await confirmCard(card.id, {
         payload: draft.payload,
         ...(draft.resolved_contact_id != null
@@ -744,7 +729,14 @@ export default function ReviewScreen() {
                 : !targetMismatch && currentPendingCard?.id === card.id
                   ? "current"
                   : "upcoming";
-            const localBatchAnchor = resolveLiveLocalBatchAnchor(card, orderedCards);
+            const draft = drafts[card.id] ?? cloneDraft(card);
+            const localBatchAnchor = resolveReviewLocalBatchAnchor(
+              card,
+              orderedCards,
+              card.type === "record_interaction"
+                ? (draft.payload as RecordInteractionPayload)
+                : null,
+            );
 
             return (
               <LocalBatchAnchorProvider
@@ -754,7 +746,7 @@ export default function ReviewScreen() {
                 <ReviewCard
                   busy={loadingCardId === card.id}
                   card={card}
-                  draft={drafts[card.id] ?? cloneDraft(card)}
+                  draft={draft}
                   errorText={stage === "current" ? actionError : null}
                   onConfirm={() => void handleConfirm(card)}
                   onDraftChange={(draft) =>
