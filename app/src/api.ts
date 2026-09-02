@@ -212,6 +212,12 @@ function createServerApi(serverUrl?: string): RoutedApi {
     uploadText: (input) => uploadTextFromServer(input, serverUrl),
     confirmCard: (cardId, body = {}) => confirmCardFromServer(cardId, body, serverUrl),
     rejectCard: (cardId) => rejectCardFromServer(cardId, serverUrl),
+    async countPendingLocalBatchInteractionCards() {
+      return 0;
+    },
+    async clearAllData() {
+      throw new ApiError("服务器模式暂不支持清空全部数据。", 501, "NOT_SUPPORTED");
+    },
     getContacts: () => getContactsFromServer(serverUrl),
     getContactDetail: (contactId) => getContactDetailFromServer(contactId, serverUrl),
     getMeetings: () => getMeetingsFromServer(serverUrl),
@@ -243,6 +249,9 @@ export const uploadScreenshot = apiDispatcher.uploadScreenshot;
 export const uploadText = apiDispatcher.uploadText;
 export const confirmCard = apiDispatcher.confirmCard;
 export const rejectCard = apiDispatcher.rejectCard;
+export const countPendingLocalBatchInteractionCards =
+  apiDispatcher.countPendingLocalBatchInteractionCards;
+export const clearAllData = apiDispatcher.clearAllData;
 export const getContacts = apiDispatcher.getContacts;
 export const getContactDetail = apiDispatcher.getContactDetail;
 export const getMeetings = apiDispatcher.getMeetings;

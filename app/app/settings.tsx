@@ -1,7 +1,8 @@
 import { router } from "expo-router";
-import { useState } from "react";
-import { Platform, StyleSheet, Switch, Text, View } from "react-native";
+import { useRef, useState } from "react";
+import { Alert, Platform, StyleSheet, Switch, Text, View } from "react-native";
 
+import { clearAllData } from "@/api";
 import { AppButton } from "@/components/button";
 import { FormNotice } from "@/components/connection-fields";
 import { Page, SectionCard } from "@/components/page";
@@ -13,12 +14,16 @@ import { theme } from "@/theme";
 export default function SettingsScreen() {
   const { clearConfig, config, saveConfig } = useConnection();
   const { batchItems, resetFlow } = useFlow();
+  const [clearingData, setClearingData] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [savingPreference, setSavingPreference] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const isLocal = config?.mode === "local";
   const localProcessing = getLocalProcessingSettings(config);
   const hasInProgressUpload = hasInProgressFlowItems(batchItems);
+  const clearingDataRef = useRef(false);
+  const hasInProgressUploadRef = useRef(hasInProgressUpload);
+  hasInProgressUploadRef.current = hasInProgressUpload;
 
   async function saveLocalProcessing(patch: Partial<LocalProcessingSettings>) {
     if (!config || config.mode !== "local") {
@@ -59,6 +64,60 @@ export default function SettingsScreen() {
       setMessage("暂时没有切换成功，请再试一次。");
       setSwitching(false);
     }
+  }
+
+  async function clearLocalData() {
+    if (clearingDataRef.current) {
+      return;
+    }
+
+    if (hasInProgressUploadRef.current) {
+      setMessage("当前内容仍在整理，请完成后再清空全部数据。");
+      return;
+    }
+
+    clearingDataRef.current = true;
+    setClearingData(true);
+    setMessage(null);
+
+    try {
+      await clearAllData();
+      resetFlow();
+      Alert.alert(
+        "已清空全部数据",
+        "联系人、截图、卡片等本地数据已清空。API Key 与设置已保留。",
+      );
+    } catch {
+      setMessage("暂时没有清空成功，请再试一次。API Key 与设置未受影响。");
+    } finally {
+      clearingDataRef.current = false;
+      setClearingData(false);
+    }
+  }
+
+  function confirmClearAllData() {
+    if (clearingDataRef.current) {
+      return;
+    }
+
+    if (hasInProgressUploadRef.current) {
+      setMessage("当前内容仍在整理，请完成后再清空全部数据。");
+      return;
+    }
+
+    setMessage(null);
+    Alert.alert(
+      "确认清空全部数据？",
+      "这会永久清空这台设备上的全部联系人、截图、卡片、会面、观察和洞察等本地数据。API Key 与设置会保留。此操作无法撤销。",
+      [
+        { text: "取消", style: "cancel" },
+        {
+          text: "清空全部数据",
+          style: "destructive",
+          onPress: () => void clearLocalData(),
+        },
+      ],
+    );
   }
 
   return (
@@ -126,6 +185,26 @@ export default function SettingsScreen() {
           tone="secondary"
         />
       </SectionCard>
+
+      {Platform.OS !== "web" && config?.mode === "local" ? (
+        <SectionCard title="清空全部数据">
+          <Text style={styles.description}>
+            清空这台设备上的全部联系人、截图、卡片、会面、观察和洞察等本地数据。API Key 与设置会保留。
+          </Text>
+          <AppButton
+            disabled={clearingData || hasInProgressUpload}
+            label={
+              clearingData
+                ? "正在清空..."
+                : hasInProgressUpload
+                  ? "整理完成后可清空"
+                  : "清空全部数据"
+            }
+            onPress={confirmClearAllData}
+            tone="danger"
+          />
+        </SectionCard>
+      ) : null}
 
       {message ? <FormNotice message={message} tone="error" /> : null}
     </Page>

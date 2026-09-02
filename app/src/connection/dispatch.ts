@@ -38,6 +38,8 @@ export interface RoutedApi {
   uploadText: UploadTextFn;
   confirmCard(cardId: number, body?: ConfirmCardRequest): Promise<ConfirmCardResponse>;
   rejectCard(cardId: number): Promise<RejectCardResponse>;
+  countPendingLocalBatchInteractionCards(anchorCardId: number): Promise<number>;
+  clearAllData(): Promise<void>;
   getContacts(): Promise<ContactListItem[]>;
   getContactDetail(contactId: number): Promise<ContactDetail>;
   getMeetings(): Promise<MeetingRecord[]>;
@@ -130,6 +132,12 @@ export function createApiDispatcher(options: ApiDispatcherOptions): RoutedApi {
     },
     async rejectCard(cardId) {
       return (await selectedApi()).rejectCard(cardId);
+    },
+    async countPendingLocalBatchInteractionCards(anchorCardId) {
+      return (await selectedApi()).countPendingLocalBatchInteractionCards(anchorCardId);
+    },
+    async clearAllData() {
+      return (await selectedApi()).clearAllData();
     },
     async getContacts() {
       return (await selectedApi()).getContacts();

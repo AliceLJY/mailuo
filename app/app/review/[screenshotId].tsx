@@ -1,9 +1,10 @@
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Platform, StyleSheet, Text, View } from "react-native";
+import { Alert, Platform, StyleSheet, Text, View } from "react-native";
 
 import {
   confirmCard,
+  countPendingLocalBatchInteractionCards,
   getContactDetail,
   getConfiguredApiUrl,
   getErrorMessage,
@@ -14,7 +15,9 @@ import {
 import { AppButton } from "@/components/button";
 import { EmptyHint, Page, SectionCard } from "@/components/page";
 import { ReviewCard } from "@/components/review/review-card";
+import { LocalBatchAnchorProvider } from "@/components/review/review-fields";
 import { useConnection } from "@/connection/context";
+import { setCrashContext } from "@/diagnostics/crash-record";
 import { useFlow, type FlowBatchItem } from "@/flow-context";
 import {
   buildOrderedReviewGroups,
@@ -22,7 +25,11 @@ import {
 } from "@/review-order";
 import { theme } from "@/theme";
 import { useToast } from "@/toast-context";
-import type { ActionCardRecord, ReviewCardDraft } from "@/types";
+import type {
+  ActionCardRecord,
+  LocalBatchAnchorInfo,
+  ReviewCardDraft,
+} from "@/types";
 import {
   normalizeUploadServerUrl,
   uploadBatchTargetMatches,
@@ -54,6 +61,39 @@ function syncDrafts(current: Record<number, ReviewCardDraft>, cards: ActionCardR
   }
 
   return next;
+}
+
+function resolveLiveLocalBatchAnchor(
+  card: ActionCardRecord,
+  orderedCards: ActionCardRecord[],
+): LocalBatchAnchorInfo | null {
+  const hydratedAnchor = card.disambiguation?.local_batch_anchor;
+
+  if (!hydratedAnchor) {
+    return null;
+  }
+
+  const liveAnchor = orderedCards.find(
+    (candidate) => candidate.id === hydratedAnchor.anchor_card_id,
+  );
+
+  if (!liveAnchor) {
+    return hydratedAnchor;
+  }
+
+  if (liveAnchor.type !== "create_contact") {
+    return {
+      anchor_card_id: hydratedAnchor.anchor_card_id,
+      name: null,
+      status: "missing",
+    };
+  }
+
+  return {
+    anchor_card_id: liveAnchor.id,
+    name: liveAnchor.payload.name.trim() || null,
+    status: liveAnchor.status,
+  };
 }
 
 function canCommitReviewAsync(
@@ -124,6 +164,33 @@ export default function ReviewScreen() {
     ),
     [orderedGroups],
   );
+  const reviewBatchProgress = useMemo(() => {
+    if (batchItems.length === 0) {
+      return null;
+    }
+
+    const activeGroup = currentPendingCard
+      ? orderedGroups.find((group) =>
+          group.cards.some((card) => card.id === currentPendingCard.id),
+        )
+      : orderedGroups.find((group) => group.item.screenshotId === screenshotId);
+    if (!activeGroup) {
+      return null;
+    }
+
+    const batchPosition = batchItems.findIndex(
+      (item) => item.index === activeGroup.item.index,
+    );
+    if (batchPosition < 0) {
+      return null;
+    }
+
+    return {
+      position: batchPosition + 1,
+      totalCount: batchItems.length,
+      status: activeGroup.item.status,
+    };
+  }, [batchItems, currentPendingCard, orderedGroups, screenshotId]);
   const successfulScreenshotIds = useMemo(
     () => new Set(batchItems.flatMap((item) =>
       item.status === "success" && item.screenshotId != null ? [item.screenshotId] : [],
@@ -136,6 +203,9 @@ export default function ReviewScreen() {
   );
   const isValidId = Number.isSafeInteger(id) && id > 0;
 
+  // A render error happens before effects; publish review progress before rendering cards.
+  setCrashContext({ batchProgress: reviewBatchProgress });
+
   useEffect(() => {
     mountedRef.current = true;
 
@@ -146,6 +216,8 @@ export default function ReviewScreen() {
       actionRunningRef.current = false;
     };
   }, []);
+
+  useEffect(() => () => setCrashContext({ batchProgress: null }), []);
 
   useEffect(() => {
     actionRunTokenRef.current += 1;
@@ -432,7 +504,10 @@ export default function ReviewScreen() {
     }
   }
 
-  async function handleReject(card: ActionCardRecord) {
+  async function handleReject(
+    card: ActionCardRecord,
+    dependencyWarningAccepted = false,
+  ) {
     if (
       actionRunningRef.current ||
       targetMismatch ||
@@ -449,6 +524,41 @@ export default function ReviewScreen() {
     try {
       setLoadingCardId(card.id);
       setActionError(null);
+      if (
+        !dependencyWarningAccepted &&
+        currentMode === "local" &&
+        card.type === "create_contact"
+      ) {
+        const dependentCount = await countPendingLocalBatchInteractionCards(card.id);
+        if (
+          !canCommitReviewAsync(
+            mountedRef,
+            actionRunTokenRef,
+            runToken,
+            requestGeneration,
+            isFlowGenerationCurrent,
+          )
+        ) {
+          return;
+        }
+
+        if (dependentCount > 0) {
+          Alert.alert(
+            "确认跳过这位联系人？",
+            `后面还有 ${dependentCount} 张互动依赖这位联系人，跳过后它们也需要跳过或改为手动关联`,
+            [
+              { text: "取消", style: "cancel" },
+              {
+                text: "仍然跳过",
+                style: "destructive",
+                onPress: () => void handleReject(card, true),
+              },
+            ],
+          );
+          return;
+        }
+      }
+
       const result = await rejectCard(card.id);
       if (
         !canCommitReviewAsync(
@@ -634,25 +744,30 @@ export default function ReviewScreen() {
                 : !targetMismatch && currentPendingCard?.id === card.id
                   ? "current"
                   : "upcoming";
+            const localBatchAnchor = resolveLiveLocalBatchAnchor(card, orderedCards);
 
             return (
-              <ReviewCard
+              <LocalBatchAnchorProvider
                 key={card.id}
-                busy={loadingCardId === card.id}
-                card={card}
-                draft={drafts[card.id] ?? cloneDraft(card)}
-                errorText={stage === "current" ? actionError : null}
-                onConfirm={() => void handleConfirm(card)}
-                onDraftChange={(draft) =>
-                  setDrafts((current) => ({
-                    ...current,
-                    [card.id]: draft,
-                  }))
-                }
-                onReject={() => void handleReject(card)}
-                sourceLabels={cardSourceLabelsById[card.id] ?? [item.label]}
-                stage={stage}
-              />
+                value={localBatchAnchor}
+              >
+                <ReviewCard
+                  busy={loadingCardId === card.id}
+                  card={card}
+                  draft={drafts[card.id] ?? cloneDraft(card)}
+                  errorText={stage === "current" ? actionError : null}
+                  onConfirm={() => void handleConfirm(card)}
+                  onDraftChange={(draft) =>
+                    setDrafts((current) => ({
+                      ...current,
+                      [card.id]: draft,
+                    }))
+                  }
+                  onReject={() => void handleReject(card)}
+                  sourceLabels={cardSourceLabelsById[card.id] ?? [item.label]}
+                  stage={stage}
+                />
+              </LocalBatchAnchorProvider>
             );
           })}
         </SectionCard>

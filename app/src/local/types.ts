@@ -36,6 +36,8 @@ export interface LocalStore extends ExecuteStore, InsightGenerationDb {
     sourceQuote?: string;
     disambiguation?: ActionCardDisambiguation | null;
   }): ActionCardRecord | null;
+  countPendingLocalBatchInteractionCards(anchorCardId: number): number;
+  clearAllData(): void;
   deleteScreenshotUploadArtifacts(screenshotId: number): void;
   listContacts(): ContactListItem[];
   getContactDetail(contactId: number): ContactDetail | null;

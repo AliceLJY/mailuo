@@ -67,6 +67,12 @@ export type LocalBatchDeferredMarker = {
   dependencies: LocalBatchDeferredDependency[];
 };
 
+export type LocalBatchAnchorInfo = {
+  anchor_card_id: number;
+  name: string | null;
+  status: ActionCardStatus | "missing";
+};
+
 export type ActionCardDisambiguation = {
   candidates: Array<{
     contact_id: number;
@@ -74,6 +80,7 @@ export type ActionCardDisambiguation = {
     company?: string | null;
   }>;
   local_batch_deferred?: LocalBatchDeferredMarker;
+  local_batch_anchor?: LocalBatchAnchorInfo;
 };
 
 type ActionCardBase<TType extends ActionCardType, TPayload> = {

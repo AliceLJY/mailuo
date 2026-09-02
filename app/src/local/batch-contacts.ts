@@ -13,6 +13,7 @@ import type {
 import type {
   ActionCardDisambiguation,
   ActionCardRecord,
+  LocalBatchAnchorInfo,
   LocalBatchContactEvidence,
   LocalBatchContactMerge,
   LocalBatchDeferredDependency,
@@ -95,9 +96,19 @@ export type LocalBatchConfirmation = {
 };
 
 export class LocalBatchContactMappingError extends Error {
-  constructor(contactReference: number | string) {
-    super(`Missing real contact mapping for local batch contact ${contactReference}`);
+  readonly anchorCardId: number | null;
+  readonly anchorCardName: string | null;
+  readonly anchorCardStatus: LocalBatchAnchorInfo["status"] | null;
+
+  constructor(
+    contactReference: number | string,
+    options: { message?: string; anchor?: LocalBatchAnchorInfo } = {},
+  ) {
+    super(options.message ?? `Missing real contact mapping for local batch contact ${contactReference}`);
     this.name = "LocalBatchContactMappingError";
+    this.anchorCardId = options.anchor?.anchor_card_id ?? null;
+    this.anchorCardName = options.anchor?.name ?? null;
+    this.anchorCardStatus = options.anchor?.status ?? null;
   }
 }
 
@@ -381,6 +392,57 @@ function isPositiveSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
+function localBatchAnchorInfo(
+  anchorCardId: number,
+  anchor: ActionCardRecord | null,
+): LocalBatchAnchorInfo {
+  if (!anchor || anchor.type !== "create_contact") {
+    return {
+      anchor_card_id: anchorCardId,
+      name: null,
+      status: "missing",
+    };
+  }
+
+  return {
+    anchor_card_id: anchorCardId,
+    name: anchor.payload.name.trim() || null,
+    status: anchor.status,
+  };
+}
+
+function anchorMappingErrorMessage(
+  anchor: LocalBatchAnchorInfo,
+  dependencyKind: LocalBatchDeferredDependency["kind"],
+): string {
+  const subject = dependencyKind === "record_interaction" ? "这张互动" : "这张卡";
+
+  if (anchor.status === "rejected") {
+    return anchor.name
+      ? `${subject}依赖的『新建联系人 ${anchor.name}』已被跳过，请把这张也跳过，或先手动新建该联系人`
+      : `${subject}依赖的新建联系人卡片已被跳过，请把这张也跳过，或先手动新建该联系人`;
+  }
+
+  if (anchor.status === "pending") {
+    return anchor.name
+      ? `请先确认『新建联系人 ${anchor.name}』那张卡`
+      : "请先确认依赖的新建联系人卡片";
+  }
+
+  return `${subject}依赖的新建联系人卡片已不存在，请跳过这张`;
+}
+
+function withoutLocalBatchAnchor(
+  disambiguation: ActionCardDisambiguation | null | undefined,
+): ActionCardDisambiguation | null | undefined {
+  if (!disambiguation) {
+    return disambiguation;
+  }
+
+  const { local_batch_anchor: _responseOnlyAnchor, ...persisted } = disambiguation;
+  return persisted;
+}
+
 function readDeferredMarker(
   disambiguation: ActionCardDisambiguation | null | undefined,
 ): LocalBatchDeferredMarker | null {
@@ -467,18 +529,22 @@ function readDeferredMarker(
 function confirmedAnchorContactId(
   anchorCardId: number,
   getAnchorCard: AnchorCardLookup,
+  dependencyKind: LocalBatchDeferredDependency["kind"],
 ): number {
   const anchor = getAnchorCard(anchorCardId);
   if (
-    !anchor ||
-    anchor.type !== "create_contact" ||
-    anchor.status !== "confirmed" ||
-    !isPositiveSafeInteger(anchor.resolved_contact_id)
+    anchor?.type === "create_contact" &&
+    anchor.status === "confirmed" &&
+    isPositiveSafeInteger(anchor.resolved_contact_id)
   ) {
-    throw new LocalBatchContactMappingError(anchorCardId);
+    return anchor.resolved_contact_id;
   }
 
-  return anchor.resolved_contact_id;
+  const anchorInfo = localBatchAnchorInfo(anchorCardId, anchor);
+  throw new LocalBatchContactMappingError(anchorCardId, {
+    anchor: anchorInfo,
+    message: anchorMappingErrorMessage(anchorInfo, dependencyKind),
+  });
 }
 
 function appendCandidate(
@@ -500,7 +566,7 @@ export function preparePersistedLocalBatchConfirmation(input: {
   const marker = readDeferredMarker(input.card.disambiguation);
   const payload = clonePayload(input.payload);
   let resolvedContactId = input.resolvedContactId;
-  let disambiguation = input.card.disambiguation;
+  let disambiguation = withoutLocalBatchAnchor(input.card.disambiguation);
   let disambiguationChanged = false;
 
   if (marker) {
@@ -519,6 +585,7 @@ export function preparePersistedLocalBatchConfirmation(input: {
           contact_id: confirmedAnchorContactId(
             dependency.anchor_card_id,
             input.getAnchorCard,
+            dependency.kind,
           ),
         };
         continue;
@@ -531,6 +598,7 @@ export function preparePersistedLocalBatchConfirmation(input: {
         (payload as RecordInteractionPayload).contact_id = confirmedAnchorContactId(
           dependency.anchor_card_id,
           input.getAnchorCard,
+          dependency.kind,
         );
       }
     }
@@ -558,6 +626,7 @@ export function preparePersistedLocalBatchConfirmation(input: {
       resolvedContactId = confirmedAnchorContactId(
         dependency.anchor_card_id,
         input.getAnchorCard,
+        dependency.kind,
       );
       disambiguation = appendCandidate(storedDisambiguation, {
         ...dependency.candidate,
@@ -609,10 +678,24 @@ export function hydrateLocalBatchCardForResponse(
     return card;
   }
 
-  let disambiguation: ActionCardDisambiguation = card.disambiguation ?? {
+  let disambiguation: ActionCardDisambiguation = withoutLocalBatchAnchor(card.disambiguation) ?? {
     candidates: [],
     local_batch_deferred: marker,
   };
+
+  const interactionDependency = marker.dependencies.find(
+    (dependency) => dependency.kind === "record_interaction",
+  );
+  if (interactionDependency) {
+    disambiguation = {
+      ...disambiguation,
+      local_batch_anchor: localBatchAnchorInfo(
+        interactionDependency.anchor_card_id,
+        getAnchorCard(interactionDependency.anchor_card_id),
+      ),
+    };
+  }
+
   for (const dependency of marker.dependencies) {
     if (dependency.kind !== "disambiguation_candidate") {
       continue;
@@ -992,8 +1075,18 @@ export class LocalBatchContactSession {
             contact_id: -anchor.id,
           };
         });
+      const interactionDependency = dependencies.find(
+        (dependency): dependency is Extract<CardDependency, { kind: "record_interaction" }> =>
+          dependency.kind === "record_interaction",
+      );
+      const interactionAnchor = interactionDependency
+        ? this.pendingByTemporaryId.get(interactionDependency.temporaryId)?.anchorCard ?? null
+        : null;
+      const responseAnchor = interactionAnchor
+        ? localBatchAnchorInfo(interactionAnchor.id, interactionAnchor)
+        : null;
 
-      if (temporaryCandidates.length === 0) {
+      if (temporaryCandidates.length === 0 && !responseAnchor) {
         return card;
       }
 
@@ -1005,6 +1098,7 @@ export class LocalBatchContactSession {
             ...(card.disambiguation?.candidates ?? []),
             ...temporaryCandidates,
           ],
+          ...(responseAnchor ? { local_batch_anchor: responseAnchor } : {}),
         },
       } as ActionCardRecord;
     });

@@ -35,6 +35,13 @@ function fakeApi(label: string, calls: string[]): RoutedApi {
     async rejectCard() {
       throw new Error("unused");
     },
+    async countPendingLocalBatchInteractionCards() {
+      calls.push(`${label}:dependent-count`);
+      return 0;
+    },
+    async clearAllData() {
+      calls.push(`${label}:clear`);
+    },
     async getContacts() {
       calls.push(label);
       return [];
@@ -78,6 +85,23 @@ test("native local config dispatches to local API while web remains server-only"
   await webApi.getMeetings();
 
   assert.deepEqual(calls, ["local", "web-server"]);
+});
+
+test("clear-all and local dependency counts route through the selected API", async () => {
+  const calls: string[] = [];
+  const api = createApiDispatcher({
+    configStore: configStore({ mode: "local" }),
+    platform: "ios",
+    createServerApi: () => fakeApi("server", calls),
+    async getLocalApi() {
+      return fakeApi("local", calls);
+    },
+  });
+
+  assert.equal(await api.countPendingLocalBatchInteractionCards(42), 0);
+  await api.clearAllData();
+
+  assert.deepEqual(calls, ["local:dependent-count", "local:clear"]);
 });
 
 test("text uploads route through native local, native server, and web server targets", async () => {

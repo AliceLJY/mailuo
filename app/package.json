@@ -10,7 +10,7 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test src/tests/**/*.test.ts",
-    "postinstall": "node scripts/patch-mlkit-confidence.mjs"
+    "postinstall": "node scripts/patch-mlkit-confidence.mjs && node scripts/patch-mlkit-close.mjs"
   },
   "dependencies": {
     "@react-native-ml-kit/text-recognition": "2.0.0",

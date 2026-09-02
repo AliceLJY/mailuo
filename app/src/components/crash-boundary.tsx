@@ -1,0 +1,221 @@
+import { Component, type PropsWithChildren } from "react";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+import { AppButton } from "@/components/button";
+import {
+  clearCrashRecord,
+  createCrashRecord,
+  readCrashRecord,
+  writeCrashRecord,
+  type CrashRecord,
+  type SyncCrashStorage,
+} from "@/diagnostics/crash-record";
+import { theme } from "@/theme";
+
+type Props = PropsWithChildren<{
+  storage: SyncCrashStorage;
+  onReturnHome: () => void;
+}>;
+
+type State = {
+  activeError: Error | null;
+  activeRecord: CrashRecord | null;
+  previousRecord: CrashRecord | null;
+};
+
+export class CrashBoundary extends Component<Props, State> {
+  state: State = {
+    activeError: null,
+    activeRecord: null,
+    previousRecord: readCrashRecord(this.props.storage),
+  };
+
+  static getDerivedStateFromError(error: Error): Partial<State> {
+    return { activeError: error, activeRecord: null };
+  }
+
+  componentDidCatch(error: Error) {
+    const activeRecord = writeCrashRecord(this.props.storage, error, false);
+    this.setState({ activeRecord });
+  }
+
+  private acknowledgePrevious = () => {
+    clearCrashRecord(this.props.storage);
+    this.setState({ previousRecord: null });
+  };
+
+  private returnHome = () => {
+    this.props.onReturnHome();
+    this.setState({ activeError: null, activeRecord: null });
+  };
+
+  render() {
+    if (this.state.activeError) {
+      const record = this.state.activeRecord ?? createCrashRecord(
+        this.state.activeError,
+        false,
+      );
+      return (
+        <CrashPanel
+          actionLabel="回到首页"
+          heading="页面发生异常"
+          onAction={this.returnHome}
+          record={record}
+        />
+      );
+    }
+
+    if (this.state.previousRecord) {
+      return (
+        <CrashPanel
+          actionLabel="知道了"
+          heading="上次异常退出"
+          onAction={this.acknowledgePrevious}
+          record={this.state.previousRecord}
+        />
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+function CrashPanel({
+  actionLabel,
+  heading,
+  onAction,
+  record,
+}: {
+  actionLabel: string;
+  heading: string;
+  onAction: () => void;
+  record: CrashRecord;
+}) {
+  const hermesEntries = Object.entries(record.hermesStats);
+
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.header}>
+          <Text style={styles.heading}>{heading}</Text>
+          <Text style={styles.intro}>
+            以下诊断信息已保存在本机。可以先截图，再继续使用。
+          </Text>
+        </View>
+
+        <View style={styles.card}>
+          <DiagnosticLine label="时间" value={record.timestamp} />
+          <DiagnosticLine label="错误" value={record.name} />
+          <DiagnosticLine label="消息" value={record.message} />
+          <DiagnosticLine label="致命异常" value={record.isFatal ? "是" : "否"} />
+          <DiagnosticLine label="应用版本" value={record.appVersion} />
+          <DiagnosticLine label="当前路由" value={record.currentRoute} />
+          <DiagnosticLine
+            label="批次进度"
+            value={formatBatchProgress(record)}
+          />
+          <DiagnosticLine
+            label="导出 OCR"
+            value={record.exportOcrResults ? "开启" : "关闭"}
+          />
+
+          <View style={styles.section}>
+            <Text style={styles.label}>Hermes 数值</Text>
+            <Text selectable style={styles.mono}>
+              {hermesEntries.length > 0
+                ? hermesEntries.map(([key, value]) => `${key}: ${value}`).join("\n")
+                : "无可用数值"}
+            </Text>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.label}>堆栈（前 8 帧）</Text>
+            <Text selectable style={styles.mono}>
+              {record.stackFrames.length > 0
+                ? record.stackFrames.join("\n")
+                : "无可用堆栈"}
+            </Text>
+          </View>
+        </View>
+
+        <AppButton label={actionLabel} onPress={onAction} />
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+function DiagnosticLine({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.line}>
+      <Text style={styles.label}>{label}</Text>
+      <Text selectable style={styles.value}>{value}</Text>
+    </View>
+  );
+}
+
+function formatBatchProgress(record: CrashRecord) {
+  if (!record.batchProgress) {
+    return "无进行中批次";
+  }
+
+  const { position, status, totalCount } = record.batchProgress;
+  return `第 ${position} 张 / 共 ${totalCount} 张 · ${status}`;
+}
+
+const styles = StyleSheet.create({
+  safeArea: {
+    backgroundColor: theme.colors.background,
+    flex: 1,
+  },
+  content: {
+    gap: 18,
+    padding: 20,
+  },
+  header: {
+    gap: 8,
+  },
+  heading: {
+    color: theme.colors.danger,
+    fontSize: 28,
+    fontWeight: "800",
+  },
+  intro: {
+    color: theme.colors.textSecondary,
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  card: {
+    backgroundColor: theme.colors.surface,
+    borderColor: "#F3C8C8",
+    borderRadius: 20,
+    borderWidth: 1,
+    gap: 14,
+    padding: 18,
+  },
+  line: {
+    gap: 4,
+  },
+  section: {
+    borderTopColor: theme.colors.border,
+    borderTopWidth: 1,
+    gap: 6,
+    paddingTop: 12,
+  },
+  label: {
+    color: theme.colors.textSecondary,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  value: {
+    color: theme.colors.textPrimary,
+    fontSize: 15,
+    lineHeight: 21,
+  },
+  mono: {
+    color: theme.colors.textPrimary,
+    fontFamily: "monospace",
+    fontSize: 12,
+    lineHeight: 18,
+  },
+});

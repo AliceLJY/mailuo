@@ -17,6 +17,7 @@ import { AppButton } from "@/components/button";
 import { EmptyHint, MetaLine, Page, SectionCard } from "@/components/page";
 import { useConnection } from "@/connection/context";
 import { humanizeLocalProviderError } from "@/connection/presentation";
+import { setCrashContext } from "@/diagnostics/crash-record";
 import {
   findCompletedPastedTextItem,
   useFlow,
@@ -197,6 +198,13 @@ export default function UploadScreen() {
 
     clearLoadingTimer(loadingTimerRef.current);
     loadingTimerRef.current = null;
+    setCrashContext({
+      batchProgress: {
+        position: progress.position,
+        totalCount: progress.totalCount,
+        status: progress.status,
+      },
+    });
 
     if (progress.status === "processing") {
       markBatchItemProcessing(progress.index);
@@ -237,6 +245,7 @@ export default function UploadScreen() {
     const submitToken = submitTokenRef.current + 1;
     submitTokenRef.current = submitToken;
     const focusEpoch = focusEpochRef.current;
+    const totalCount = "assets" in source ? source.assets.length : source.items.length;
     const mode: UploadBatchMode = previousResult?.mode ?? (isLocal ? "local" : "server");
     const serverUrl = previousResult
       ? previousResult.serverUrl
@@ -262,6 +271,9 @@ export default function UploadScreen() {
       clearLoadingTimer(loadingTimerRef.current);
       setLoading(true);
       setLoadingText("正在准备截图…");
+      setCrashContext({
+        batchProgress: { position: 1, totalCount, status: "pending" },
+      });
       const session = localBatchSessionRef.current;
       const batchNoteForRun = previousResult ? batchNote : note;
       const result = await uploadScreenshotBatch({
@@ -330,6 +342,7 @@ export default function UploadScreen() {
       showError(error, "这批截图暂时没有处理完成。");
     } finally {
       runningRef.current = false;
+      setCrashContext({ batchProgress: null });
       clearLoadingTimer(loadingTimerRef.current);
       loadingTimerRef.current = null;
       if (mountedRef.current) {
@@ -412,6 +425,9 @@ export default function UploadScreen() {
       clearLoadingTimer(loadingTimerRef.current);
       setLoading(true);
       setLoadingText("正在整理粘贴文本…");
+      setCrashContext({
+        batchProgress: { position: 1, totalCount: 1, status: "processing" },
+      });
       const response = await uploadText({
         text,
         note: note.trim() || undefined,
@@ -457,6 +473,7 @@ export default function UploadScreen() {
       recordBatchItemFailure(0, "这段文本暂时没有处理完成。");
     } finally {
       runningRef.current = false;
+      setCrashContext({ batchProgress: null });
       clearLoadingTimer(loadingTimerRef.current);
       loadingTimerRef.current = null;
       if (mountedRef.current) {

@@ -380,6 +380,35 @@ export class ExpoSqliteLocalStore implements LocalStore {
     );
   }
 
+  countPendingLocalBatchInteractionCards(anchorCardId: number): number {
+    const normalizedAnchorCardId = assertSafeInteger(anchorCardId, "anchorCardId");
+    const rows = this.db.getAllSync<{ disambiguation: string }>(
+      `SELECT disambiguation
+       FROM action_cards
+       WHERE type = 'record_interaction'
+         AND status = 'pending'
+         AND disambiguation IS NOT NULL`,
+    );
+
+    return rows.reduce((count, row) => {
+      try {
+        const parsed = JSON.parse(row.disambiguation) as {
+          local_batch_deferred?: {
+            dependencies?: Array<{ kind?: unknown; anchor_card_id?: unknown }>;
+          };
+        };
+        const dependsOnAnchor = parsed.local_batch_deferred?.dependencies?.some(
+          (dependency) =>
+            dependency.kind === "record_interaction" &&
+            dependency.anchor_card_id === normalizedAnchorCardId,
+        );
+        return count + (dependsOnAnchor ? 1 : 0);
+      } catch {
+        return count;
+      }
+    }, 0);
+  }
+
   private listStoredActionCardsByScreenshotId(screenshotId: number): ActionCardRecord[] {
     return this.db
       .getAllSync<ActionCardRow>(
@@ -986,6 +1015,17 @@ export class ExpoSqliteLocalStore implements LocalStore {
     this.withTransaction(() => {
       this.db.runSync("DELETE FROM action_cards WHERE screenshot_id = ?", screenshotId);
       this.db.runSync("DELETE FROM screenshots WHERE id = ?", screenshotId);
+    });
+  }
+
+  clearAllData(): void {
+    this.withTransaction(() => {
+      this.db.runSync("DELETE FROM insights");
+      this.db.runSync("DELETE FROM observations");
+      this.db.runSync("DELETE FROM meetings");
+      this.db.runSync("DELETE FROM action_cards");
+      this.db.runSync("DELETE FROM screenshots");
+      this.db.runSync("DELETE FROM contacts");
     });
   }
 

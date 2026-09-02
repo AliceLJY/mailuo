@@ -103,6 +103,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
       const textProvider = await providerFactory.createTextProvider(options.keys);
       const note = input.note?.trim() || undefined;
       const timestamp = now();
+      // The local image loader preserves this URI; defer it so healthy OCR never creates base64.
       const screenshot = options.store.createScreenshot({
         imagePath: createPastedTextSourceUri(text),
         userNote: note ?? null,
@@ -161,8 +162,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
       batchSession?.reconcilePendingContacts((cardId) =>
         options.store.getStoredActionCardById(cardId),
       );
-      const [loadedImage, textProvider, processing] = await Promise.all([
-        options.loadImage(input.asset),
+      const [textProvider, processing] = await Promise.all([
         providerFactory.createTextProvider(options.keys),
         options.getProcessingSettings?.() ?? Promise.resolve({
           perceptionPath: "cloud" as const,
@@ -172,7 +172,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
       const note = input.note?.trim() || undefined;
       const timestamp = now();
       const screenshot = options.store.createScreenshot({
-        imagePath: loadedImage.imagePath,
+        imagePath: input.asset.uri,
         userNote: note ?? null,
         uploadedAt: timestamp.toISOString(),
       });
@@ -181,6 +181,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
         let qwenProviderPromise: ReturnType<LocalProviderFactory["createQwenProvider"]> | null = null;
         const notices: string[] = [];
         const perceiveVisually = async () => {
+          const loadedImage = await options.loadImage(input.asset);
           qwenProviderPromise ??= providerFactory.createQwenProvider(options.keys);
           return perceiveScreenshot({
             image: loadedImage.image,
@@ -200,7 +201,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           let ocrRuntimeFailureNotice: string | null = null;
 
           try {
-            ocr = await options.perceiveOcr(loadedImage.imagePath);
+            ocr = await options.perceiveOcr(input.asset.uri);
           } catch (error) {
             ocrRuntimeFailureNotice = formatOcrRuntimeFailureNotice(error);
           }
@@ -414,6 +415,13 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
       return {
         card,
       };
+    },
+    async countPendingLocalBatchInteractionCards(anchorCardId) {
+      return options.store.countPendingLocalBatchInteractionCards(anchorCardId);
+    },
+    async clearAllData() {
+      options.store.clearAllData();
+      batchSessionByCardId.clear();
     },
     async getContacts() {
       return options.store.listContacts();

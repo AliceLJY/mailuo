@@ -63,6 +63,12 @@ function apiWithUpload(
     async rejectCard() {
       throw new Error("unused");
     },
+    async countPendingLocalBatchInteractionCards() {
+      return 0;
+    },
+    async clearAllData() {
+      throw new Error("unused");
+    },
     async getContacts() {
       throw new Error("unused");
     },

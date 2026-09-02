@@ -27,9 +27,15 @@ import type {
 } from "../types";
 import { createLocalApi } from "../local/api";
 import {
+  createConnectionConfigStore,
+  getLocalProcessingSettings,
+  type TextStorage,
+} from "../connection/config";
+import {
   hydrateLocalBatchCardForResponse,
   LocalBatchContactMappingError,
   LocalBatchContactSession,
+  preparePersistedLocalBatchConfirmation,
 } from "../local/batch-contacts";
 import { perceiveScreenshotWithOcr, type OcrPerceptionResult } from "../local/perceive-ocr";
 import type { LocalStore } from "../local/types";
@@ -183,6 +189,38 @@ class FakeLocalStore implements LocalStore {
 
   getStoredActionCardById(cardId: number): StoredActionCardRecord | null {
     return this.cards.get(cardId) ?? null;
+  }
+
+  countPendingLocalBatchInteractionCards(anchorCardId: number): number {
+    return [...this.cards.values()].filter((card) =>
+      card.type === "record_interaction" &&
+      card.status === "pending" &&
+      card.disambiguation?.local_batch_deferred?.dependencies.some(
+        (dependency) =>
+          dependency.kind === "record_interaction" &&
+          dependency.anchor_card_id === anchorCardId,
+      ),
+    ).length;
+  }
+
+  clearAllData(): void {
+    this.insights.length = 0;
+    this.observations.length = 0;
+    this.meetings.length = 0;
+    this.cards.clear();
+    this.screenshots.clear();
+    this.contacts.clear();
+  }
+
+  tableCounts() {
+    return {
+      insights: this.insights.length,
+      observations: this.observations.length,
+      meetings: this.meetings.length,
+      action_cards: this.cards.size,
+      screenshots: this.screenshots.size,
+      contacts: this.contacts.size,
+    };
   }
 
   findResolvedContactIdsForConfirmedSiblingCreateCards(args: {
@@ -558,6 +596,123 @@ test("FakeLocalStore mirrors content-based fact/preference deduplication and int
   assert.equal(quotedPreference.observed_at, firstObservedAt);
   assert.equal(quotedPreference.source_quote, "偏好线下沟通");
   assert.notEqual(secondInteraction.id, firstInteraction.id);
+});
+
+test("clearAllData removes all six local data tables while retaining keys and settings", async () => {
+  const store = new FakeLocalStore();
+  const screenshot = store.createScreenshot({ imagePath: "file:///clear-all.png" });
+  const [card] = store.saveScreenshotAnalysis({
+    screenshotId: screenshot.id,
+    rawExtraction: { participants: [], events: [], facts: [], quotes: [] },
+    cards: [{
+      type: "create_contact",
+      payload: { name: "保留前的联系人卡" },
+      confidence: "high",
+      source_quote: "测试清空",
+    }],
+  });
+  assert.ok(card);
+  const contact = store.createContact({ canonicalName: "王总" });
+  const observation = store.insertObservationIfAbsent({
+    contactId: contact.id,
+    screenshotId: screenshot.id,
+    kind: "fact",
+    content: "一条事实",
+  });
+  store.insertMeeting({
+    kind: "meeting",
+    title: "测试会议",
+    timeIso: null,
+    timeText: "待定",
+    participants: [{ contact_id: contact.id, name: "王总" }],
+    sourceScreenshotId: screenshot.id,
+  });
+  store.insertInsights([{
+    contact_id: contact.id,
+    kind: "relationship_read",
+    content: "一条洞察",
+    based_on: [observation.id],
+    generated_at: FIXED_NOW.toISOString(),
+  }]);
+
+  const retainedSecrets = new Map([["DASHSCOPE_API_KEY", "retained-key"]]);
+  let secretClearCalls = 0;
+  const retainedKeys: LocalLlmSecretStore = {
+    async get(name) {
+      return retainedSecrets.get(name) ?? null;
+    },
+    async set(name, value) {
+      retainedSecrets.set(name, value);
+    },
+    async clear(name) {
+      secretClearCalls += 1;
+      retainedSecrets.delete(name);
+    },
+    async clearAll() {
+      secretClearCalls += 1;
+      retainedSecrets.clear();
+    },
+  };
+  let storedConfig: string | null = null;
+  let configRemoveCalls = 0;
+  const configStorage: TextStorage = {
+    async getItem() {
+      return storedConfig;
+    },
+    async setItem(_key, value) {
+      storedConfig = value;
+    },
+    async removeItem() {
+      configRemoveCalls += 1;
+      storedConfig = null;
+    },
+  };
+  const retainedConfigStore = createConnectionConfigStore(configStorage);
+  await retainedConfigStore.set({
+    mode: "local",
+    perceptionPath: "cloud",
+    exportOcrResults: true,
+  });
+  const api = createLocalApi({
+    store,
+    keys: retainedKeys,
+    async loadImage() {
+      throw new Error("clearAllData must not load an image");
+    },
+    async getProcessingSettings() {
+      return getLocalProcessingSettings(await retainedConfigStore.get());
+    },
+  });
+
+  assert.deepEqual(store.tableCounts(), {
+    insights: 1,
+    observations: 1,
+    meetings: 1,
+    action_cards: 1,
+    screenshots: 1,
+    contacts: 1,
+  });
+
+  await api.clearAllData();
+
+  assert.deepEqual(store.tableCounts(), {
+    insights: 0,
+    observations: 0,
+    meetings: 0,
+    action_cards: 0,
+    screenshots: 0,
+    contacts: 0,
+  });
+  await assert.rejects(api.confirmCard(card.id), /Action card .* not found/u);
+  await assert.rejects(api.getScreenshotDetail(screenshot.id), /Screenshot .* not found/u);
+  assert.equal(await retainedKeys.get("DASHSCOPE_API_KEY"), "retained-key");
+  assert.equal(secretClearCalls, 0);
+  assert.deepEqual(await retainedConfigStore.get(), {
+    mode: "local",
+    perceptionPath: "cloud",
+    exportOcrResults: true,
+  });
+  assert.equal(configRemoveCalls, 0);
 });
 
 const fakeKeys: LocalLlmSecretStore = {
@@ -1129,6 +1284,125 @@ test("rejecting a local batch anchor removes stale pending contacts across API r
   await runCase(true);
 });
 
+test("a persisted dependent interaction reports its named pending, rejected, and missing anchor", async () => {
+  const store = new FakeLocalStore();
+  const extractions: PerceptionResult[] = [
+    {
+      participants: [{
+        name: "王总",
+        is_self: false,
+        confidence: "high",
+        source_quote: "王总：你好",
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+    {
+      participants: [{
+        name: "王总",
+        is_self: false,
+        interaction_summary: "讨论了下一步合作",
+        confidence: "high",
+        source_quote: "王总：下一步我们继续合作",
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+  ];
+  const qwen = new FakeStructuredOutputProvider(() => {
+    const extraction = extractions.shift();
+    if (!extraction) {
+      throw new Error("unexpected perception call");
+    }
+    return extraction;
+  });
+  const text = new FakeStructuredOutputProvider(() => ({ insights: [] }));
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async (asset) => ({
+      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+      imagePath: asset.uri,
+    }),
+    providers: {
+      async createQwenProvider() {
+        return qwen;
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+  const session = new LocalBatchContactSession();
+  const anchorUpload = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/wang-anchor-1.png", mimeType: "image/png" },
+    localBatch: { session, index: 0 },
+  });
+  const anchor = anchorUpload.cards.find((card) => card.type === "create_contact");
+  assert.ok(anchor);
+  const upload = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/wang-anchor-2.png", mimeType: "image/png" },
+    localBatch: { session, index: 1 },
+  });
+  const interaction = upload.cards.find((card) => card.type === "record_interaction");
+  assert.ok(interaction);
+  assert.deepEqual(interaction.disambiguation?.local_batch_anchor, {
+    anchor_card_id: anchor.id,
+    name: "王总",
+    status: "pending",
+  });
+  assert.equal(await api.countPendingLocalBatchInteractionCards(anchor.id), 1);
+
+  await assert.rejects(api.confirmCard(interaction.id), (error: unknown) => {
+    assert.ok(error instanceof LocalBatchContactMappingError);
+    assert.equal(error.message, "请先确认『新建联系人 王总』那张卡");
+    assert.equal(error.anchorCardId, anchor.id);
+    assert.equal(error.anchorCardName, "王总");
+    assert.equal(error.anchorCardStatus, "pending");
+    return true;
+  });
+
+  await api.rejectCard(anchor.id);
+  const detailAfterReject = await api.getScreenshotDetail(upload.screenshot_id);
+  const rejectedInteraction = detailAfterReject.cards.find((card) => card.id === interaction.id);
+  assert.deepEqual(rejectedInteraction?.disambiguation?.local_batch_anchor, {
+    anchor_card_id: anchor.id,
+    name: "王总",
+    status: "rejected",
+  });
+  await assert.rejects(api.confirmCard(interaction.id), (error: unknown) => {
+    assert.ok(error instanceof LocalBatchContactMappingError);
+    assert.equal(
+      error.message,
+      "这张互动依赖的『新建联系人 王总』已被跳过，请把这张也跳过，或先手动新建该联系人",
+    );
+    assert.equal(error.anchorCardId, anchor.id);
+    assert.equal(error.anchorCardName, "王总");
+    assert.equal(error.anchorCardStatus, "rejected");
+    return true;
+  });
+
+  assert.throws(
+    () => preparePersistedLocalBatchConfirmation({
+      card: interaction,
+      payload: interaction.payload,
+      getAnchorCard: () => null,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof LocalBatchContactMappingError);
+      assert.equal(
+        error.message,
+        "这张互动依赖的新建联系人卡片已不存在，请跳过这张",
+      );
+      assert.equal(error.anchorCardStatus, "missing");
+      return true;
+    },
+  );
+});
+
 test("local orchestration reaches terminal contacts, observations, meetings, and insights", async () => {
   const store = new FakeLocalStore();
   const qwen = new FakeStructuredOutputProvider(() => ({
@@ -1446,14 +1720,18 @@ async function runOcrFallbackCase(
   const store = new FakeLocalStore();
   const qwen = new FakeStructuredOutputProvider(() => emptyExtraction);
   const text = new FakeStructuredOutputProvider(() => emptyExtraction);
+  let imageLoads = 0;
   let textPerceptionCalls = 0;
   const api = createLocalApi({
     store,
     keys: fakeKeys,
-    loadImage: async (asset) => ({
-      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
-      imagePath: asset.uri,
-    }),
+    loadImage: async (asset) => {
+      imageLoads += 1;
+      return {
+        image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+        imagePath: asset.uri,
+      };
+    },
     providers: {
       async createQwenProvider() {
         return qwen;
@@ -1478,6 +1756,7 @@ async function runOcrFallbackCase(
   });
 
   assert.equal(qwen.calls, 1);
+  assert.equal(imageLoads, 1);
   assert.equal(textPerceptionCalls, expectedTextPerceptionCalls);
   assert.match(upload.processing_notice ?? "", /已用云端模型重新处理/u);
   assert.ok(await api.getScreenshotDetail(upload.screenshot_id));
@@ -1488,15 +1767,19 @@ async function runOcrFallbackCase(
 async function runOcrTextOnlyCase(ocr: OcrPerceptionResult) {
   const store = new FakeLocalStore();
   const text = new FakeStructuredOutputProvider(() => emptyExtraction);
+  let imageLoads = 0;
   let qwenProviderCreations = 0;
   let textPerceptionCalls = 0;
   const api = createLocalApi({
     store,
     keys: fakeKeys,
-    loadImage: async (asset) => ({
-      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
-      imagePath: asset.uri,
-    }),
+    loadImage: async (asset) => {
+      imageLoads += 1;
+      return {
+        image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+        imagePath: asset.uri,
+      };
+    },
     providers: {
       async createQwenProvider() {
         qwenProviderCreations += 1;
@@ -1524,6 +1807,7 @@ async function runOcrTextOnlyCase(ocr: OcrPerceptionResult) {
   });
 
   assert.equal(textPerceptionCalls, 1);
+  assert.equal(imageLoads, 0);
   assert.equal(qwenProviderCreations, 0);
   assert.match(upload.processing_notice ?? "", /发言人未能确定/u);
   assert.doesNotMatch(upload.processing_notice ?? "", /云端模型重新处理/u);
@@ -1681,14 +1965,18 @@ test("healthy OCR stays on the text path and does not create a Qwen-VL provider"
   const store = new FakeLocalStore();
   const qwen = new FakeStructuredOutputProvider(() => emptyExtraction);
   const text = new FakeStructuredOutputProvider(() => emptyExtraction);
+  let imageLoads = 0;
   let textPerceptionCalls = 0;
   const api = createLocalApi({
     store,
     keys: fakeKeys,
-    loadImage: async (asset) => ({
-      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
-      imagePath: asset.uri,
-    }),
+    loadImage: async (asset) => {
+      imageLoads += 1;
+      return {
+        image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+        imagePath: asset.uri,
+      };
+    },
     providers: {
       async createQwenProvider() {
         return qwen;
@@ -1727,6 +2015,7 @@ test("healthy OCR stays on the text path and does not create a Qwen-VL provider"
   });
 
   assert.equal(textPerceptionCalls, 1);
+  assert.equal(imageLoads, 0);
   assert.equal(qwen.calls, 0);
   assert.equal(upload.processing_notice, undefined);
 });
@@ -1735,15 +2024,19 @@ test("forced cloud path does not invoke OCR or OCR text interpretation", async (
   const store = new FakeLocalStore();
   const qwen = new FakeStructuredOutputProvider(() => emptyExtraction);
   const text = new FakeStructuredOutputProvider(() => emptyExtraction);
+  let imageLoads = 0;
   let ocrCalls = 0;
   let textPerceptionCalls = 0;
   const api = createLocalApi({
     store,
     keys: fakeKeys,
-    loadImage: async (asset) => ({
-      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
-      imagePath: asset.uri,
-    }),
+    loadImage: async (asset) => {
+      imageLoads += 1;
+      return {
+        image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+        imagePath: asset.uri,
+      };
+    },
     providers: {
       async createQwenProvider() {
         return qwen;
@@ -1771,6 +2064,7 @@ test("forced cloud path does not invoke OCR or OCR text interpretation", async (
   });
 
   assert.equal(qwen.calls, 1);
+  assert.equal(imageLoads, 1);
   assert.equal(ocrCalls, 0);
   assert.equal(textPerceptionCalls, 0);
   assert.equal(store.listMeetingCalls, 1);

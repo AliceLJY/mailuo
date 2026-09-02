@@ -1,13 +1,31 @@
+import { createContext, type ReactNode, useContext } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { theme } from "@/theme";
 import type {
   CreateContactPayload,
   CreateMeetingPayload,
+  LocalBatchAnchorInfo,
   RecordInteractionPayload,
   ReviewCardDraft,
   UpdateContactPayload,
 } from "@/types";
+
+const LocalBatchAnchorContext = createContext<LocalBatchAnchorInfo | null>(null);
+
+export function LocalBatchAnchorProvider({
+  children,
+  value,
+}: {
+  children: ReactNode;
+  value: LocalBatchAnchorInfo | null;
+}) {
+  return (
+    <LocalBatchAnchorContext.Provider value={value}>
+      {children}
+    </LocalBatchAnchorContext.Provider>
+  );
+}
 
 const FIELD_LABELS = {
   company: "公司",
@@ -255,10 +273,19 @@ export function InteractionFields({
   payload: RecordInteractionPayload;
   setPayload: (payload: ReviewCardDraft["payload"]) => void;
 }) {
+  const localBatchAnchor = useContext(LocalBatchAnchorContext);
+  const ownership = localBatchAnchor?.status === "pending" && localBatchAnchor.name
+    ? `将关联到本批新建的联系人：${localBatchAnchor.name}（待确认）`
+    : localBatchAnchor?.status === "rejected" && localBatchAnchor.name
+      ? `依赖的『新建联系人 ${localBatchAnchor.name}』已被跳过`
+      : payload.contact_id
+        ? "已关联到已有联系人"
+        : "还没关联到已有联系人";
+
   return (
     <View style={styles.section}>
       <FieldInput editable={editable} label="对方称呼" value={payload.contact_name} onChangeText={(contact_name) => setPayload({ ...payload, contact_name })} />
-      <StaticLine label="当前归属" value={payload.contact_id ? "已关联到已有联系人" : "还没关联到已有联系人"} />
+      <StaticLine label="当前归属" value={ownership} />
       <FieldInput editable={editable} label="这次互动摘要" multiline value={payload.summary} onChangeText={(summary) => setPayload({ ...payload, summary })} />
     </View>
   );
