@@ -34,6 +34,12 @@ export function isMeetingKind(value: unknown): value is MeetingKind {
   return MEETING_KINDS.includes(value as MeetingKind);
 }
 
+export type ContactCandidate = {
+  contact_id: number;
+  name: string;
+  company?: string | null;
+};
+
 export type CreateMeetingPayload = {
   // Cards saved before schema v1 have no kind; validation upgrades them to meeting on confirmation.
   kind?: MeetingKind;
@@ -41,7 +47,11 @@ export type CreateMeetingPayload = {
   time_iso: string | null;
   time_text: string;
   location?: string;
-  participants: Array<{ contact_id?: number; name: string }>;
+  participants: Array<{
+    contact_id?: number;
+    name: string;
+    candidates?: ContactCandidate[];
+  }>;
   agenda?: string;
   // Goal 3 progress cards carry the append delta separately so confirmation can
   // rebase it onto the latest agenda instead of overwriting another pending update.
@@ -65,11 +75,7 @@ export type ActionCardType =
   | "record_interaction";
 
 export type ActionCardDisambiguation = {
-  candidates: Array<{
-    contact_id: number;
-    name: string;
-    company?: string | null;
-  }>;
+  candidates: ContactCandidate[];
 };
 
 type ActionCardBase<TType extends ActionCardType, TPayload> = {

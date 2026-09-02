@@ -912,6 +912,466 @@ test("local batch merges pending contacts and maps every deferred contact id bef
   assert.deepEqual(session.listPendingContacts(), []);
 });
 
+test("a selected pending participant candidate maps to the confirmed anchor contact", async () => {
+  const store = new FakeLocalStore();
+  const extractions = [
+    {
+      participants: [{
+        name: "荀导",
+        is_self: false,
+        interaction_summary: "沟通舞台方案",
+        confidence: "high" as const,
+        source_quote: "荀导负责舞台方案",
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+    {
+      participants: [{
+        name: "荀到",
+        is_self: false,
+        interaction_summary: "继续跟进舞台方案",
+        confidence: "medium" as const,
+        source_quote: "事项由荀到继续跟进",
+      }],
+      events: [{
+        kind: "other" as const,
+        title: "跟进舞台方案",
+        time_text: "",
+        time_iso: null,
+        has_time_signal: false,
+        participant_names: ["荀到"],
+        confidence: "medium" as const,
+        source_quote: "事项由荀到继续跟进",
+      }],
+      facts: [],
+      quotes: [],
+    },
+  ];
+  const qwen = new FakeStructuredOutputProvider(() => {
+    const extraction = extractions.shift();
+    if (!extraction) {
+      throw new Error("unexpected perception call");
+    }
+    return extraction;
+  });
+  const text = new FakeStructuredOutputProvider(() => ({ decision: "new" }));
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async (asset) => ({
+      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+      imagePath: asset.uri,
+    }),
+    providers: {
+      async createQwenProvider() {
+        return qwen;
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+  const session = new LocalBatchContactSession();
+
+  const first = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/liu-dao.png", mimeType: "image/png" },
+    localBatch: { session, index: 0 },
+  });
+  const anchor = first.cards.find((card) =>
+    card.type === "create_contact" && card.payload.name === "荀导");
+  assert.ok(anchor);
+
+  const second = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/liu-dao-ocr.png", mimeType: "image/png" },
+    localBatch: { session, index: 1 },
+  });
+  const meeting = second.cards.find((card) => card.type === "create_meeting");
+  assert.ok(meeting);
+  if (meeting.type !== "create_meeting") {
+    throw new Error("expected a create_meeting card");
+  }
+  const candidateId = meeting.payload.participants[0]?.candidates?.[0]?.contact_id;
+  assert.equal(candidateId, -anchor.id);
+  assert.equal(meeting.payload.participants[0]?.contact_id, undefined);
+
+  const storedMeeting = store.getStoredActionCardById(meeting.id) as ActionCardRecord | null;
+  assert.equal(storedMeeting?.type, "create_meeting");
+  if (storedMeeting?.type !== "create_meeting") {
+    throw new Error("expected a stored create_meeting card");
+  }
+  assert.deepEqual(storedMeeting.payload.participants, [{ name: "荀到" }]);
+  assert.deepEqual(storedMeeting.disambiguation?.local_batch_deferred?.dependencies, [
+    {
+      kind: "meeting_participant_candidate",
+      anchor_card_id: anchor.id,
+      participant_index: 0,
+      candidate_index: 0,
+      candidate: { name: "荀导", company: null },
+    },
+  ]);
+  assert.ok(collectContactIds(storedMeeting).every((contactId) => contactId >= 0));
+  const unselected = preparePersistedLocalBatchConfirmation({
+    card: storedMeeting,
+    payload: meeting.payload,
+    getAnchorCard: () => ({ ...anchor, status: "rejected" }),
+  });
+  assert.deepEqual(
+    (unselected.payload as typeof meeting.payload).participants,
+    [{ name: "荀到" }],
+  );
+
+  const reloadedMeeting = (await api.getScreenshotDetail(second.screenshot_id)).cards
+    .find((card) => card.id === meeting.id);
+  assert.equal(
+    reloadedMeeting?.type === "create_meeting"
+      ? reloadedMeeting.payload.participants[0]?.candidates?.[0]?.contact_id
+      : null,
+    -anchor.id,
+  );
+
+  const selectedPayload = {
+    ...meeting.payload,
+    participants: meeting.payload.participants.map((participant, index) => {
+      if (index !== 0) {
+        return participant;
+      }
+      const { candidates: _candidates, ...selected } = participant;
+      return { ...selected, contact_id: candidateId! };
+    }),
+  };
+  await assert.rejects(
+    api.confirmCard(meeting.id, { payload: selectedPayload }),
+    (error: unknown) => {
+      assert.ok(error instanceof LocalBatchContactMappingError);
+      assert.equal(error.message, "请先确认『新建联系人 荀导』那张卡");
+      return true;
+    },
+  );
+  assert.throws(
+    () => preparePersistedLocalBatchConfirmation({
+      card: storedMeeting,
+      payload: selectedPayload,
+      getAnchorCard: () => ({ ...anchor, status: "rejected" }),
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof LocalBatchContactMappingError);
+      assert.equal(
+        error.message,
+        "这张卡依赖的『新建联系人 荀导』已被跳过，请把这张也跳过，或先手动新建该联系人",
+      );
+      return true;
+    },
+  );
+
+  const anchorResult = await api.confirmCard(anchor.id);
+  const realContactId = anchorResult.card.resolved_contact_id;
+  assert.ok(realContactId && realContactId > 0);
+  const meetingResult = await api.confirmCard(meeting.id, { payload: selectedPayload });
+  assert.equal(meetingResult.card.type, "create_meeting");
+  if (meetingResult.card.type !== "create_meeting") {
+    throw new Error("expected a confirmed create_meeting card");
+  }
+  assert.equal(meetingResult.card.payload.participants[0]?.contact_id, realContactId);
+  assert.equal((await api.getMeetings())[0]?.participants[0]?.contact_id, realContactId);
+});
+
+test("local batch only merges aliases approved by update cards", () => {
+  const session = new LocalBatchContactSession();
+  const firstPlan = session.prepareScreenshot({
+    screenshotId: 1,
+    batchIndex: 0,
+    extraction: {
+      participants: [{
+        name: "王磊",
+        is_self: false,
+        company: "某集团市场部",
+        confidence: "high",
+        source_quote: "王磊在某集团市场部",
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+    resolutions: [{
+      participant_name: "王磊",
+      normalized_name: "王磊",
+      status: "new",
+      source: "empty_db",
+    }],
+    cards: [{
+      type: "create_contact",
+      payload: { name: "王磊", company: "某集团市场部" },
+      confidence: "high",
+      source_quote: "王磊在某集团市场部",
+    }],
+  });
+  const anchor = {
+    ...firstPlan.cards[0],
+    id: 31,
+    screenshot_id: 1,
+    disambiguation: null,
+    status: "pending" as const,
+    resolved_contact_id: null,
+    created_at: FIXED_NOW.toISOString(),
+    resolved_at: null,
+  } as ActionCardRecord;
+  session.commitScreenshot({
+    plan: firstPlan,
+    savedCards: [anchor],
+    updatedAnchorCards: new Map(),
+  });
+
+  const filteredPlan = session.prepareScreenshot({
+    screenshotId: 2,
+    batchIndex: 1,
+    extraction: {
+      participants: [{
+        name: "王磊",
+        aliases: ["某集团市扬部 王磊"],
+        is_self: false,
+        confidence: "medium",
+        source_quote: "某集团市扬部 王磊",
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+    resolutions: [{
+      participant_name: "王磊",
+      normalized_name: "王磊",
+      status: "same_as",
+      contact_id: -1,
+      source: "exact",
+    }],
+    cards: [],
+  });
+  assert.deepEqual(filteredPlan.pendingCardUpdates[0]?.payload.aliases, undefined);
+
+  const acceptedPlan = session.prepareScreenshot({
+    screenshotId: 3,
+    batchIndex: 2,
+    extraction: {
+      participants: [{
+        name: "王总",
+        is_self: false,
+        confidence: "medium",
+        source_quote: "王总已确认",
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+    resolutions: [{
+      participant_name: "王总",
+      normalized_name: "王总",
+      status: "same_as",
+      contact_id: -1,
+      source: "llm",
+    }],
+    cards: [{
+      type: "update_contact",
+      payload: {
+        contact_id: -1,
+        contact_name: "王磊",
+        changes: { aliases: { old: null, new: "王总" } },
+      },
+      confidence: "medium",
+      source_quote: "王总已确认",
+    }],
+  });
+  assert.deepEqual(acceptedPlan.pendingCardUpdates[0]?.payload.aliases, ["王总"]);
+});
+
+test("local batch preserves mixed participant candidate order", () => {
+  const session = new LocalBatchContactSession();
+  const firstPlan = session.prepareScreenshot({
+    screenshotId: 1,
+    batchIndex: 0,
+    extraction: {
+      participants: [{
+        name: "荀导",
+        is_self: false,
+        confidence: "high",
+        source_quote: "荀导负责舞台方案",
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+    resolutions: [{
+      participant_name: "荀导",
+      normalized_name: "荀导",
+      status: "new",
+      source: "empty_db",
+    }],
+    cards: [{
+      type: "create_contact",
+      payload: { name: "荀导" },
+      confidence: "high",
+      source_quote: "荀导负责舞台方案",
+    }],
+  });
+  const anchor = {
+    ...firstPlan.cards[0],
+    id: 41,
+    screenshot_id: 1,
+    disambiguation: null,
+    status: "pending" as const,
+    resolved_contact_id: null,
+    created_at: FIXED_NOW.toISOString(),
+    resolved_at: null,
+  } as ActionCardRecord;
+  session.commitScreenshot({
+    plan: firstPlan,
+    savedCards: [anchor],
+    updatedAnchorCards: new Map(),
+  });
+
+  const secondPlan = session.prepareScreenshot({
+    screenshotId: 2,
+    batchIndex: 1,
+    extraction: {
+      participants: [{
+        name: "荀到",
+        is_self: false,
+        confidence: "medium",
+        source_quote: "事项由荀到跟进",
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+    resolutions: [{
+      participant_name: "荀到",
+      normalized_name: "荀到",
+      status: "unsure",
+      candidate_ids: [-1, 99],
+      source: "near_match",
+    }],
+    cards: [{
+      type: "create_meeting",
+      payload: {
+        kind: "other",
+        title: "跟进舞台方案",
+        time_text: "",
+        time_iso: null,
+        participants: [{
+          name: "荀到",
+          candidates: [
+            { contact_id: -1, name: "荀导" },
+            { contact_id: 99, name: "荀道" },
+          ],
+        }],
+      },
+      confidence: "medium",
+      source_quote: "事项由荀到跟进",
+    }],
+  });
+  const preparedDisambiguation = secondPlan.cards[0]?.disambiguation as
+    ActionCardRecord["disambiguation"];
+  assert.deepEqual(
+    preparedDisambiguation?.local_batch_deferred?.dependencies,
+    [{
+      kind: "meeting_participant_candidate",
+      anchor_card_id: anchor.id,
+      participant_index: 0,
+      candidate_index: 0,
+      candidate: { name: "荀导" },
+    }],
+  );
+  const storedMeeting = {
+    ...secondPlan.cards[0],
+    id: 42,
+    screenshot_id: 2,
+    disambiguation: secondPlan.cards[0]?.disambiguation ?? null,
+    status: "pending" as const,
+    resolved_contact_id: null,
+    created_at: FIXED_NOW.toISOString(),
+    resolved_at: null,
+  } as ActionCardRecord;
+  const committed = session.commitScreenshot({
+    plan: secondPlan,
+    savedCards: [storedMeeting],
+    updatedAnchorCards: new Map(),
+  });
+  const candidateIds = (card: ActionCardRecord | undefined) =>
+    card?.type === "create_meeting"
+      ? card.payload.participants[0]?.candidates?.map((candidate) => candidate.contact_id)
+      : undefined;
+
+  assert.deepEqual(candidateIds(committed.cards[0]), [-anchor.id, 99]);
+  assert.deepEqual(
+    candidateIds(hydrateLocalBatchCardForResponse(storedMeeting, () => anchor)),
+    [-anchor.id, 99],
+  );
+
+  const mixedStoredMeeting = {
+    ...storedMeeting,
+    payload: {
+      ...storedMeeting.payload,
+      participants: [{
+        name: "荀到",
+        candidates: [
+          { contact_id: 1, name: "荀老师" },
+          { contact_id: 2, name: "荀主任" },
+        ],
+      }],
+    },
+    disambiguation: {
+      candidates: [],
+      local_batch_deferred: {
+        version: 1 as const,
+        dependencies: [
+          {
+            kind: "meeting_participant_candidate" as const,
+            anchor_card_id: 51,
+            participant_index: 0,
+            candidate_index: 1,
+            candidate: { name: "荀导甲" },
+          },
+          {
+            kind: "meeting_participant_candidate" as const,
+            anchor_card_id: 52,
+            participant_index: 0,
+            candidate_index: 2,
+            candidate: { name: "荀导乙" },
+          },
+        ],
+      },
+    },
+  } as ActionCardRecord;
+  const mixedHydrated = hydrateLocalBatchCardForResponse(
+    mixedStoredMeeting,
+    (anchorCardId) => ({
+      ...anchor,
+      id: anchorCardId,
+      status: anchorCardId === 51 ? "rejected" : "pending",
+    }),
+  );
+  assert.deepEqual(candidateIds(mixedHydrated), [1, -52, 2]);
+
+  const invalidIndexMeeting = {
+    ...mixedStoredMeeting,
+    disambiguation: {
+      ...mixedStoredMeeting.disambiguation,
+      local_batch_deferred: {
+        version: 1,
+        dependencies: [{
+          ...mixedStoredMeeting.disambiguation!.local_batch_deferred!.dependencies[0],
+          candidate_index: "bad",
+        }],
+      },
+    },
+  } as unknown as ActionCardRecord;
+  assert.throws(
+    () => hydrateLocalBatchCardForResponse(invalidIndexMeeting, () => anchor),
+    /invalid meeting participant candidate index/u,
+  );
+});
+
 test("local batch keeps temporary disambiguation candidates out of storage and maps a selected one", () => {
   const session = new LocalBatchContactSession();
   const firstExtraction = {

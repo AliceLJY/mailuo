@@ -837,6 +837,118 @@ test('proposeCards filters self participants out of cards and keeps self in meet
   ]);
 });
 
+test('proposeCards adds unsure participant candidates to an item without linking by default', () => {
+  const extraction = {
+    participants: [
+      {
+        name: '荀到',
+        is_self: false,
+        confidence: 'medium',
+        source_quote: '事项由荀到跟进',
+      },
+    ],
+    events: [
+      {
+        kind: 'other',
+        title: '跟进舞台方案',
+        time_text: '',
+        time_iso: null,
+        has_time_signal: false,
+        participant_names: ['荀到'],
+        confidence: 'medium',
+        source_quote: '事项由荀到跟进',
+      },
+    ],
+    facts: [],
+    quotes: [],
+  } satisfies PerceptionResult;
+  const resolutions: ParticipantResolution[] = [
+    {
+      participant_name: '荀到',
+      normalized_name: '荀到',
+      status: 'unsure',
+      candidate_ids: [-1],
+      source: 'near_match',
+    },
+  ];
+  const contacts: ResolvableContact[] = [
+    {
+      id: -1,
+      canonical_name: '荀导',
+      aliases: [],
+      company: null,
+      title: null,
+    },
+  ];
+
+  const cards = proposeCards(extraction, resolutions, contacts);
+  const item = cards.find((card) => card.type === 'create_meeting');
+
+  assert.equal(item?.type, 'create_meeting');
+  if (item?.type !== 'create_meeting') {
+    throw new Error('expected a create_meeting card');
+  }
+  assert.equal(item.payload.participants[0]?.contact_id, undefined);
+  assert.deepEqual(item.payload.participants, [
+    {
+      name: '荀到',
+      candidates: [
+        { contact_id: -1, name: '荀导', company: null },
+      ],
+    },
+  ]);
+
+  const reorderedExtraction = {
+    ...extraction,
+    participants: [
+      extraction.participants[0],
+      {
+        ...extraction.participants[0],
+        source_quote: '荀到继续负责舞台方案',
+      },
+    ],
+  } satisfies PerceptionResult;
+  const reorderedCards = proposeCards(
+    reorderedExtraction,
+    [
+      {
+        participant_name: '荀到',
+        normalized_name: '荀到',
+        status: 'unsure',
+        candidate_ids: [-1, 8],
+        source: 'near_match',
+      },
+      {
+        participant_name: '荀到',
+        normalized_name: '荀到',
+        status: 'unsure',
+        candidate_ids: [8, -1],
+        source: 'near_match',
+      },
+    ],
+    [
+      ...contacts,
+      {
+        id: 8,
+        canonical_name: '荀老师',
+        aliases: [],
+        company: '某剧院',
+        title: null,
+      },
+    ],
+  );
+  const reorderedItem = reorderedCards.find((card) => card.type === 'create_meeting');
+
+  assert.equal(reorderedItem?.type, 'create_meeting');
+  if (reorderedItem?.type !== 'create_meeting') {
+    throw new Error('expected a create_meeting card for reordered candidates');
+  }
+  assert.deepEqual(reorderedItem.payload.participants[0]?.candidates, [
+    { contact_id: -1, name: '荀导', company: null },
+    { contact_id: 8, name: '荀老师', company: '某剧院' },
+  ]);
+});
+
 test('proposeCards keeps duplicated structured facts out of notes updates for same_as contacts', () => {
   const extraction: PerceptionResult = {
     participants: [
@@ -1511,6 +1623,81 @@ test('proposeCards filters derived aliases on create while preserving a one-char
   ]);
 });
 
+test('proposeCards filters OCR-derived aliases against proposed and library fields', () => {
+  const resolution: ParticipantResolution = {
+    participant_name: '王磊',
+    normalized_name: '王磊',
+    status: 'new',
+    source: 'llm',
+  };
+  const contacts: ResolvableContact[] = [
+    {
+      id: 24,
+      canonical_name: '李梅',
+      aliases: [],
+      company: null,
+      title: '集团副总',
+      phone: null,
+      wechat_id: null,
+      notes: null,
+    },
+  ];
+  const cases = [
+    { alias: '某集团市扬部 王磊', expectedAliases: undefined },
+    { alias: '部 王磊', expectedAliases: undefined },
+    { alias: '集团副总王磊', expectedAliases: undefined },
+    { alias: '某集团市场部 王磊', expectedAliases: undefined },
+    { alias: '王总', expectedAliases: ['王总'] },
+    { alias: 'Amy王磊', expectedAliases: ['Amy王磊'] },
+  ];
+
+  for (const testCase of cases) {
+    const cards = proposeCards(
+      singleParticipantExtraction({
+        aliases: [testCase.alias],
+        company: '某集团市场部',
+      }),
+      [resolution],
+      contacts,
+    );
+    const createCard = cards.find((card) => card.type === 'create_contact');
+
+    assert.equal(createCard?.type, 'create_contact', testCase.alias);
+    if (createCard?.type !== 'create_contact') {
+      throw new Error(`expected create_contact for ${testCase.alias}`);
+    }
+    assert.deepEqual(createCard.payload.aliases, testCase.expectedAliases, testCase.alias);
+  }
+
+  const honorificCards = proposeCards(
+    singleParticipantExtraction({ aliases: ['王总'] }),
+    [resolution],
+    [{ ...contacts[0], company: '王总', title: null }],
+  );
+  const honorificCreateCard = honorificCards.find((card) => card.type === 'create_contact');
+
+  assert.equal(honorificCreateCard?.type, 'create_contact');
+  if (honorificCreateCard?.type !== 'create_contact') {
+    throw new Error('expected create_contact for 王总');
+  }
+  assert.deepEqual(honorificCreateCard.payload.aliases, ['王总']);
+
+  const shortRemainderCards = proposeCards(
+    singleParticipantExtraction({ aliases: ['副总王磊'] }),
+    [resolution],
+    [{ ...contacts[0], title: '总' }],
+  );
+  const shortRemainderCreateCard = shortRemainderCards.find(
+    (card) => card.type === 'create_contact',
+  );
+
+  assert.equal(shortRemainderCreateCard?.type, 'create_contact');
+  if (shortRemainderCreateCard?.type !== 'create_contact') {
+    throw new Error('expected create_contact for 副总王磊');
+  }
+  assert.equal(shortRemainderCreateCard.payload.aliases, undefined);
+});
+
 test('proposeCards filters derived aliases on update while preserving 王总', () => {
   const extraction = singleParticipantExtraction({
     aliases: [
@@ -1553,6 +1740,36 @@ test('proposeCards filters derived aliases on update while preserving 王总', (
   }
   assert.deepEqual(updateCard.payload.changes, {
     aliases: { old: null, new: '王总' },
+  });
+
+  const historicalShortAliasCards = proposeCards(
+    singleParticipantExtraction({ aliases: ['王总'] }),
+    resolutions,
+    [
+      { ...contacts[0], aliases: ['王'], company: null, title: null },
+      {
+        id: 24,
+        canonical_name: '李梅',
+        aliases: [],
+        company: '王总',
+        title: null,
+        phone: null,
+        wechat_id: null,
+        notes: null,
+      },
+    ],
+  );
+  const historicalShortAliasCard = historicalShortAliasCards.find(
+    (card) => card.type === 'update_contact',
+  );
+
+  assert.equal(historicalShortAliasCard?.type, 'update_contact');
+  if (historicalShortAliasCard?.type !== 'update_contact') {
+    throw new Error('expected 王总 to survive an unrelated historical short alias');
+  }
+  assert.deepEqual(historicalShortAliasCard.payload.changes.aliases, {
+    old: '王',
+    new: '王总',
   });
 });
 

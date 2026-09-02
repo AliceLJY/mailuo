@@ -9,6 +9,7 @@ import {
   findCompletedPastedTextItem,
   getCardSourceLabels,
   hasInProgressFlowItems,
+  hasPendingFlowCards,
   isPastedTextSourcePath,
   shouldPreserveBatchOnReset,
   type FlowBatchItem,
@@ -89,6 +90,23 @@ test("connection changes preserve both active and completed batch results", () =
   assert.equal(
     shouldPreserveBatchOnReset([{ status: "success" }], true),
     false,
+  );
+});
+
+test("the upload page only offers review while this batch still has pending cards", () => {
+  assert.equal(
+    hasPendingFlowCards([
+      { status: "confirmed" },
+      { status: "rejected" },
+    ]),
+    false,
+  );
+  assert.equal(
+    hasPendingFlowCards([
+      { status: "confirmed" },
+      { status: "pending" },
+    ]),
+    true,
   );
 });
 

@@ -1,4 +1,8 @@
-import type { MeetingChanges, MeetingKind } from "../../shared/types.ts";
+import type {
+  ContactCandidate,
+  MeetingChanges,
+  MeetingKind,
+} from "../../shared/types.ts";
 
 export type ActionCardConfidence = "high" | "medium" | "low";
 export type ActionCardStatus = "pending" | "confirmed" | "rejected";
@@ -30,7 +34,11 @@ export type CreateMeetingPayload = {
   time_iso: string | null;
   time_text: string;
   location?: string;
-  participants: Array<{ contact_id?: number; name: string }>;
+  participants: Array<{
+    contact_id?: number;
+    name: string;
+    candidates?: ContactCandidate[];
+  }>;
   agenda?: string;
   agenda_append?: string;
   duplicate_of_meeting_id?: number;
@@ -60,6 +68,16 @@ export type LocalBatchDeferredDependency =
         name: string;
         company?: string | null;
       };
+    }
+  | {
+      kind: "meeting_participant_candidate";
+      anchor_card_id: number;
+      participant_index: number;
+      candidate_index?: number;
+      candidate: {
+        name: string;
+        company?: string | null;
+      };
     };
 
 export type LocalBatchDeferredMarker = {
@@ -74,11 +92,7 @@ export type LocalBatchAnchorInfo = {
 };
 
 export type ActionCardDisambiguation = {
-  candidates: Array<{
-    contact_id: number;
-    name: string;
-    company?: string | null;
-  }>;
+  candidates: ContactCandidate[];
   local_batch_deferred?: LocalBatchDeferredMarker;
   local_batch_anchor?: LocalBatchAnchorInfo;
 };

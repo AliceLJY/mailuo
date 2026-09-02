@@ -1,6 +1,7 @@
 import {
   MEETING_CHANGE_FIELDS,
   type ActionCard,
+  type ContactCandidate,
   type CreateContactPayload,
   type CreateMeetingPayload,
   type MeetingChangeField,
@@ -572,6 +573,7 @@ function collectFreeformNotes(
 function buildCreateContactPayload(
   participant: ProposeParticipant,
   relatedFacts: PerceptionFact[] | undefined,
+  libraryFieldValues: string[] = [],
 ): {
   payload: CreateContactPayload;
   sourceQuote: string;
@@ -626,6 +628,7 @@ function buildCreateContactPayload(
         title: null,
       },
       payload,
+      libraryFieldValues,
     ),
   );
 
@@ -666,6 +669,7 @@ function buildCreateContactPayload(
 function buildMeetingCard(
   event: ProposeEvent,
   sameAsParticipantsByName: Map<string, number | null>,
+  unsureCandidatesByName: Map<string, ContactCandidate[] | null>,
   selfParticipantNames: Set<string>,
   existingMeetings: ExistingMeeting[],
 ): ProposedCard {
@@ -685,7 +689,13 @@ function buildMeetingCard(
 
       const resolvedContactId = sameAsParticipantsByName.get(normalizedName);
 
-      return resolvedContactId ? { contact_id: resolvedContactId, name } : { name };
+      if (resolvedContactId) {
+        return { contact_id: resolvedContactId, name };
+      }
+
+      const candidates = unsureCandidatesByName.get(normalizedName);
+
+      return candidates?.length ? { name, candidates } : { name };
     }),
   };
 
@@ -793,6 +803,48 @@ function buildSameAsParticipantsByName(
   return mapping;
 }
 
+function buildUnsureCandidatesByName(
+  resolutions: ParticipantResolution[],
+  contactsById: Map<number, ResolvableContact>,
+): Map<string, ContactCandidate[] | null> {
+  const mapping = new Map<string, ContactCandidate[] | null>();
+
+  for (const resolution of resolutions) {
+    const candidates = resolution.status === 'unsure'
+      ? resolution.candidate_ids
+        .map((candidateId) => contactsById.get(candidateId))
+        .filter((contact): contact is ResolvableContact => Boolean(contact))
+        .map((contact) => ({
+          contact_id: contact.id,
+          name: contact.canonical_name,
+          company: contact.company ?? null,
+        }))
+      : null;
+
+    if (!mapping.has(resolution.normalized_name)) {
+      mapping.set(resolution.normalized_name, candidates);
+      continue;
+    }
+
+    const current = mapping.get(resolution.normalized_name);
+    if (current == null || candidates == null) {
+      mapping.set(resolution.normalized_name, null);
+      continue;
+    }
+
+    const currentIds = new Set(current.map((candidate) => candidate.contact_id));
+    const candidateIds = new Set(candidates.map((candidate) => candidate.contact_id));
+    if (
+      currentIds.size !== candidateIds.size ||
+      Array.from(currentIds).some((candidateId) => !candidateIds.has(candidateId))
+    ) {
+      mapping.set(resolution.normalized_name, null);
+    }
+  }
+
+  return mapping;
+}
+
 function alignParticipantResolutions(
   participants: ProposeParticipant[],
   resolutions: ParticipantResolution[],
@@ -858,6 +910,7 @@ function isDerivedAlias(
   alias: string,
   contact: Pick<ResolvableContact, 'canonical_name' | 'aliases' | 'company' | 'title'>,
   proposed: Pick<CreateContactPayload, 'company' | 'title'>,
+  libraryFieldValues: string[] = [],
 ): boolean {
   const normalizedAlias = normalizeContactText(alias);
   const knownNames = [contact.canonical_name, ...contact.aliases]
@@ -868,9 +921,28 @@ function isDerivedAlias(
     return true;
   }
 
+  const canonicalName = normalizeContactText(contact.canonical_name);
+  if (
+    codePointLength(normalizedAlias) === 2 &&
+    !normalizedAlias.includes(canonicalName)
+  ) {
+    return false;
+  }
+
+  const rawFieldValues = [
+    contact.company,
+    contact.title,
+    proposed.company,
+    proposed.title,
+    ...libraryFieldValues,
+  ].filter((value): value is string => Boolean(value));
+  const fieldValues = Array.from(new Set(
+    rawFieldValues
+      .map(normalizeContactText)
+      .filter(Boolean),
+  ));
   const fieldTokens = Array.from(new Set(
-    [contact.company, contact.title, proposed.company, proposed.title]
-      .filter((value): value is string => Boolean(value))
+    rawFieldValues
       .flatMap(tokenize)
       .map(normalizeContactText)
       .filter(Boolean),
@@ -889,10 +961,30 @@ function isDerivedAlias(
       remainder = normalizedAlias.slice(0, -knownName.length);
     }
 
+    if (remainder == null) {
+      return false;
+    }
+
+    const remainderLength = codePointLength(remainder);
+
+    if (remainderLength === 0) {
+      return false;
+    }
+
     return (
-      remainder != null &&
-      codePointLength(remainder) >= 2 &&
-      isComposedOfTokens(remainder, fieldTokens)
+      isComposedOfTokens(remainder, fieldTokens) ||
+      fieldValues.some((fieldValue) => {
+        const fieldValueLength = codePointLength(fieldValue);
+
+        return (
+          fieldValue.includes(remainder) ||
+          (remainderLength >= 3 && editDistance(remainder, fieldValue) === 1) ||
+          (
+            remainder.includes(fieldValue) &&
+            remainderLength - fieldValueLength === 1
+          )
+        );
+      })
     );
   });
 }
@@ -938,10 +1030,11 @@ function buildContactChanges(
   contact: ResolvableContact,
   payload: CreateContactPayload,
   aliasCandidates: string[],
+  libraryFieldValues: string[] = [],
 ): UpdateContactPayload['changes'] {
   const changes: UpdateContactPayload['changes'] = {};
   const aliasAdditions = dedupeStrings(aliasCandidates).filter(
-    (alias) => !isDerivedAlias(alias, contact, payload),
+    (alias) => !isDerivedAlias(alias, contact, payload, libraryFieldValues),
   );
 
   if (aliasAdditions.length > 0) {
@@ -1032,6 +1125,10 @@ export function proposeCards(
 ): ProposedCard[] {
   const cards: ProposedCard[] = [];
   const participants = extraction.participants as ProposeParticipant[];
+  const libraryFieldValues = dedupeStrings(contacts.flatMap((contact) => [
+    contact.company ?? undefined,
+    contact.title ?? undefined,
+  ]));
   // Only an explicit month/day permits deterministic local resolution. Relative-only text stays with the model value, which the prompt requires to be null.
   const events = (extraction.events as ProposeEvent[]).map((event) => {
     const timeText = normalizeOptionalText(event.time_text);
@@ -1107,7 +1204,7 @@ export function proposeCards(
       }
 
       const relatedFacts = factsBySubject.get(normalizeComparableText(participant.name));
-      const draft = buildCreateContactPayload(participant, relatedFacts);
+      const draft = buildCreateContactPayload(participant, relatedFacts, libraryFieldValues);
 
       cards.push({
         type: 'create_contact',
@@ -1118,7 +1215,7 @@ export function proposeCards(
     }
 
     for (const event of events) {
-      cards.push(buildMeetingCard(event, new Map(), selfParticipantNames, existingMeetings));
+      cards.push(buildMeetingCard(event, new Map(), new Map(), selfParticipantNames, existingMeetings));
     }
 
     cards.push(...buildMeetingProgressCards(existingMeetings, meetingProgressResolutions));
@@ -1132,6 +1229,7 @@ export function proposeCards(
   );
   const alignedResolutions = alignParticipantResolutions(participants, resolutions);
   const sameAsParticipantsByName = buildSameAsParticipantsByName(resolutions);
+  const unsureCandidatesByName = buildUnsureCandidatesByName(resolutions, contactsById);
   const interactionCandidates = new Map<
     string,
     {
@@ -1161,7 +1259,7 @@ export function proposeCards(
       factsBySubject.get(normalizeComparableText(participant.name)) ?? [];
     const relatedQuotes =
       quotesBySpeaker.get(normalizeComparableText(participant.name)) ?? [];
-    const draft = buildCreateContactPayload(participant, relatedFacts);
+    const draft = buildCreateContactPayload(participant, relatedFacts, libraryFieldValues);
     const interactionKey =
       resolution.status === 'same_as'
         ? `contact:${resolution.contact_id}`
@@ -1201,6 +1299,7 @@ export function proposeCards(
         contact,
         draft.payload,
         [participant.name, ...(participant.aliases ?? [])],
+        libraryFieldValues,
       );
 
       if (Object.keys(changes).length === 0) {
@@ -1245,7 +1344,13 @@ export function proposeCards(
 
   for (const event of events) {
     cards.push(
-      buildMeetingCard(event, sameAsParticipantsByName, selfParticipantNames, existingMeetings),
+      buildMeetingCard(
+        event,
+        sameAsParticipantsByName,
+        unsureCandidatesByName,
+        selfParticipantNames,
+        existingMeetings,
+      ),
     );
   }
 

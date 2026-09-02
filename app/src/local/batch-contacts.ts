@@ -51,6 +51,13 @@ type CardDependency =
       kind: "disambiguation_candidate";
       temporaryId: number;
       candidate: ActionCardDisambiguation["candidates"][number];
+    }
+  | {
+      kind: "meeting_participant_candidate";
+      participantIndex: number;
+      candidateIndex: number;
+      temporaryId: number;
+      candidate: ActionCardDisambiguation["candidates"][number];
     };
 
 type PendingContactUpdate = {
@@ -260,17 +267,6 @@ function mergeParticipantIntoPending(
     return;
   }
 
-  const aliases = dedupeStrings([
-    ...(pending.payload.aliases ?? []),
-    participant.name === pending.payload.name ? undefined : participant.name,
-    ...(participant.aliases ?? []),
-  ]).filter((alias) => alias !== pending.payload.name);
-
-  if (aliases.length > 0) {
-    pending.payload.aliases = aliases;
-    pending.contact.aliases = [...aliases];
-  }
-
   for (const field of CONTACT_FIELDS) {
     const value = participant[field]?.trim();
     if (!value) {
@@ -295,6 +291,19 @@ function applyUpdateCard(
   screenshotId: number,
   batchIndex: number,
 ) {
+  const aliasChange = card.payload.changes.aliases;
+  if (aliasChange) {
+    const aliases = dedupeStrings([
+      ...(pending.payload.aliases ?? []),
+      ...aliasChange.new.split(/[,\n，、]/u),
+    ]).filter((alias) => alias !== pending.payload.name);
+
+    if (aliases.length > 0) {
+      pending.payload.aliases = aliases;
+      pending.contact.aliases = [...aliases];
+    }
+  }
+
   for (const [field, change] of Object.entries(card.payload.changes)) {
     if (!CONTACT_FIELDS.includes(field as ContactField)) {
       continue;
@@ -363,6 +372,14 @@ function assertNoNegativeContactIds(card: ActionCard) {
     card.payload.participants.some((participant) => (participant.contact_id ?? 0) < 0)
   ) {
     throw new TypeError("create_meeting contains a temporary contact id");
+  }
+
+  if (
+    card.type === "create_meeting" &&
+    card.payload.participants.some((participant) =>
+      participant.candidates?.some((candidate) => candidate.contact_id < 0))
+  ) {
+    throw new TypeError("create_meeting candidates contain a temporary contact id");
   }
 
   if (card.type === "record_interaction" && (card.payload.contact_id ?? 0) < 0) {
@@ -520,6 +537,52 @@ function readDeferredMarker(
       continue;
     }
 
+    if (value.kind === "meeting_participant_candidate") {
+      const candidate = value.candidate;
+      if (
+        typeof value.participant_index !== "number" ||
+        !Number.isSafeInteger(value.participant_index) ||
+        value.participant_index < 0
+      ) {
+        throw new LocalBatchContactMappingError("invalid meeting participant index");
+      }
+      if (
+        value.candidate_index !== undefined &&
+        (
+          typeof value.candidate_index !== "number" ||
+          !Number.isSafeInteger(value.candidate_index) ||
+          value.candidate_index < 0
+        )
+      ) {
+        throw new LocalBatchContactMappingError("invalid meeting participant candidate index");
+      }
+      if (
+        typeof candidate !== "object" ||
+        candidate === null ||
+        typeof (candidate as { name?: unknown }).name !== "string" ||
+        !(candidate as { name: string }).name.trim()
+      ) {
+        throw new LocalBatchContactMappingError("invalid deferred candidate");
+      }
+      const company = (candidate as { company?: unknown }).company;
+      if (company !== undefined && company !== null && typeof company !== "string") {
+        throw new LocalBatchContactMappingError("invalid deferred candidate company");
+      }
+      dependencies.push({
+        kind: value.kind,
+        anchor_card_id: value.anchor_card_id,
+        participant_index: value.participant_index,
+        ...(value.candidate_index !== undefined
+          ? { candidate_index: value.candidate_index as number }
+          : {}),
+        candidate: {
+          name: (candidate as { name: string }).name,
+          ...(company !== undefined ? { company: company as string | null } : {}),
+        },
+      });
+      continue;
+    }
+
     throw new LocalBatchContactMappingError("unknown deferred dependency");
   }
 
@@ -557,6 +620,25 @@ function appendCandidate(
   return { ...disambiguation, candidates };
 }
 
+function insertCandidate(
+  candidates: ActionCardDisambiguation["candidates"],
+  candidate: ActionCardDisambiguation["candidates"][number],
+  candidateIndex?: number,
+): ActionCardDisambiguation["candidates"] {
+  const uniqueCandidates = candidates.filter(
+    (entry) => entry.contact_id !== candidate.contact_id,
+  );
+  const index = candidateIndex == null
+    ? uniqueCandidates.length
+    : Math.min(candidateIndex, uniqueCandidates.length);
+
+  return [
+    ...uniqueCandidates.slice(0, index),
+    candidate,
+    ...uniqueCandidates.slice(index),
+  ];
+}
+
 export function preparePersistedLocalBatchConfirmation(input: {
   card: ActionCardRecord;
   payload: ActionCard["payload"];
@@ -587,6 +669,33 @@ export function preparePersistedLocalBatchConfirmation(input: {
             input.getAnchorCard,
             dependency.kind,
           ),
+        };
+        continue;
+      }
+
+      if (dependency.kind === "meeting_participant_candidate") {
+        if (input.card.type !== "create_meeting") {
+          throw new LocalBatchContactMappingError(dependency.anchor_card_id);
+        }
+        const meeting = payload as CreateMeetingPayload;
+        const participant = meeting.participants[dependency.participant_index];
+        if (!participant) {
+          throw new TypeError(`Missing meeting participant ${dependency.participant_index}`);
+        }
+        const { candidates, ...participantWithoutCandidates } = participant;
+        const persistedCandidates = candidates?.filter((candidate) => candidate.contact_id > 0);
+        meeting.participants[dependency.participant_index] = {
+          ...participantWithoutCandidates,
+          ...(participant.contact_id === -dependency.anchor_card_id
+            ? {
+                contact_id: confirmedAnchorContactId(
+                  dependency.anchor_card_id,
+                  input.getAnchorCard,
+                  dependency.kind,
+                ),
+              }
+            : {}),
+          ...(persistedCandidates?.length ? { candidates: persistedCandidates } : {}),
         };
         continue;
       }
@@ -682,6 +791,7 @@ export function hydrateLocalBatchCardForResponse(
     candidates: [],
     local_batch_deferred: marker,
   };
+  let payload = card.payload;
 
   const interactionDependency = marker.dependencies.find(
     (dependency) => dependency.kind === "record_interaction",
@@ -694,6 +804,58 @@ export function hydrateLocalBatchCardForResponse(
         getAnchorCard(interactionDependency.anchor_card_id),
       ),
     };
+  }
+
+  const meetingCandidateDependencies = marker.dependencies
+    .filter((dependency): dependency is Extract<LocalBatchDeferredDependency, {
+      kind: "meeting_participant_candidate";
+    }> => dependency.kind === "meeting_participant_candidate")
+    .map((dependency) => {
+      const anchor = getAnchorCard(dependency.anchor_card_id);
+      const contactId = anchor?.type === "create_contact" && anchor.status === "confirmed" &&
+        isPositiveSafeInteger(anchor.resolved_contact_id)
+        ? anchor.resolved_contact_id
+        : anchor?.type === "create_contact" && anchor.status === "pending"
+          ? -dependency.anchor_card_id
+          : null;
+      return { dependency, contactId };
+    })
+    .sort((left, right) =>
+      (left.dependency.candidate_index ?? Number.MAX_SAFE_INTEGER) -
+      (right.dependency.candidate_index ?? Number.MAX_SAFE_INTEGER));
+
+  for (const { dependency, contactId } of meetingCandidateDependencies) {
+    if (card.type !== "create_meeting") {
+      throw new LocalBatchContactMappingError(dependency.anchor_card_id);
+    }
+    if (contactId == null) {
+      continue;
+    }
+
+    if (payload === card.payload) {
+      payload = clonePayload(card.payload);
+    }
+    const meeting = payload as CreateMeetingPayload;
+    const participant = meeting.participants[dependency.participant_index];
+    if (!participant) {
+      throw new TypeError(`Missing meeting participant ${dependency.participant_index}`);
+    }
+    const skippedEarlierSlots = dependency.candidate_index == null
+      ? 0
+      : meetingCandidateDependencies.filter((entry) =>
+          entry.dependency.participant_index === dependency.participant_index &&
+          entry.dependency.candidate_index != null &&
+          entry.dependency.candidate_index < dependency.candidate_index! &&
+          entry.contactId == null).length;
+    const candidateIndex = dependency.candidate_index == null
+      ? undefined
+      : dependency.candidate_index - skippedEarlierSlots;
+    const candidates = insertCandidate(
+      participant.candidates ?? [],
+      { ...dependency.candidate, contact_id: contactId },
+      candidateIndex,
+    );
+    meeting.participants[dependency.participant_index] = { ...participant, candidates };
   }
 
   for (const dependency of marker.dependencies) {
@@ -721,7 +883,7 @@ export function hydrateLocalBatchCardForResponse(
     });
   }
 
-  return { ...card, disambiguation } as ActionCardRecord;
+  return { ...card, payload, disambiguation } as ActionCardRecord;
 }
 
 export class LocalBatchContactSession {
@@ -837,6 +999,20 @@ export class LocalBatchContactSession {
               anchor_card_id: anchor.id,
             };
           }
+          if (dependency.kind === "meeting_participant_candidate") {
+            return {
+              kind: dependency.kind,
+              anchor_card_id: anchor.id,
+              participant_index: dependency.participantIndex,
+              candidate_index: dependency.candidateIndex,
+              candidate: {
+                name: dependency.candidate.name,
+                ...(dependency.candidate.company !== undefined
+                  ? { company: dependency.candidate.company }
+                  : {}),
+              },
+            };
+          }
           return {
             kind: dependency.kind,
             anchor_card_id: anchor.id,
@@ -884,17 +1060,44 @@ export class LocalBatchContactSession {
         const dependencies: CardDependency[] = [];
         const payload = clonePayload(proposedCard.payload);
         payload.participants = payload.participants.map((participant, participantIndex) => {
-          if (participant.contact_id == null || participant.contact_id >= 0) {
-            return participant;
+          let preparedParticipant = participant;
+
+          if ((participant.contact_id ?? 0) < 0) {
+            const temporaryId = assertTemporaryId(participant.contact_id!);
+            if (!workingPending.has(temporaryId)) {
+              throw new LocalBatchContactMappingError(temporaryId);
+            }
+
+            dependencies.push({ kind: "meeting_participant", participantIndex, temporaryId });
+            const { contact_id: _temporaryContactId, ...withoutTemporaryId } = preparedParticipant;
+            preparedParticipant = withoutTemporaryId;
           }
 
-          const temporaryId = assertTemporaryId(participant.contact_id);
-          if (!workingPending.has(temporaryId)) {
-            throw new LocalBatchContactMappingError(temporaryId);
-          }
+          const persistedCandidates = (participant.candidates ?? []).filter((candidate, candidateIndex) => {
+            if (candidate.contact_id > 0) {
+              return true;
+            }
 
-          dependencies.push({ kind: "meeting_participant", participantIndex, temporaryId });
-          return { name: participant.name };
+            const temporaryId = assertTemporaryId(candidate.contact_id);
+            if (!workingPending.has(temporaryId)) {
+              throw new LocalBatchContactMappingError(temporaryId);
+            }
+
+            dependencies.push({
+              kind: "meeting_participant_candidate",
+              participantIndex,
+              candidateIndex,
+              temporaryId,
+              candidate: { ...candidate },
+            });
+            return false;
+          });
+          const { candidates: _temporaryCandidates, ...withoutTemporaryCandidates } =
+            preparedParticipant;
+
+          return persistedCandidates.length > 0
+            ? { ...withoutTemporaryCandidates, candidates: persistedCandidates }
+            : withoutTemporaryCandidates;
         });
         pushCard({ ...proposedCard, payload }, dependencies);
         continue;
@@ -1075,6 +1278,35 @@ export class LocalBatchContactSession {
             contact_id: -anchor.id,
           };
         });
+      let payload = card.payload;
+      for (const dependency of dependencies) {
+        if (dependency.kind !== "meeting_participant_candidate") {
+          continue;
+        }
+        if (card.type !== "create_meeting") {
+          throw new LocalBatchContactMappingError(dependency.temporaryId);
+        }
+
+        const anchor = this.pendingByTemporaryId.get(dependency.temporaryId)?.anchorCard;
+        if (!anchor) {
+          throw new LocalBatchContactMappingError(dependency.temporaryId);
+        }
+        if (payload === card.payload) {
+          payload = clonePayload(card.payload);
+        }
+        const meeting = payload as CreateMeetingPayload;
+        const participant = meeting.participants[dependency.participantIndex];
+        if (!participant) {
+          throw new TypeError(`Missing meeting participant ${dependency.participantIndex}`);
+        }
+        const candidate = { ...dependency.candidate, contact_id: -anchor.id };
+        const candidates = insertCandidate(
+          participant.candidates ?? [],
+          candidate,
+          dependency.candidateIndex,
+        );
+        meeting.participants[dependency.participantIndex] = { ...participant, candidates };
+      }
       const interactionDependency = dependencies.find(
         (dependency): dependency is Extract<CardDependency, { kind: "record_interaction" }> =>
           dependency.kind === "record_interaction",
@@ -1086,12 +1318,13 @@ export class LocalBatchContactSession {
         ? localBatchAnchorInfo(interactionAnchor.id, interactionAnchor)
         : null;
 
-      if (temporaryCandidates.length === 0 && !responseAnchor) {
+      if (temporaryCandidates.length === 0 && !responseAnchor && payload === card.payload) {
         return card;
       }
 
       return {
         ...card,
+        payload,
         disambiguation: {
           ...(card.disambiguation ?? {}),
           candidates: [

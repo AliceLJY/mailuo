@@ -284,6 +284,12 @@ export function hasInProgressFlowItems(
   );
 }
 
+export function hasPendingFlowCards(
+  cards: ReadonlyArray<Pick<ActionCardRecord, "status">>,
+) {
+  return cards.some((card) => card.status === "pending");
+}
+
 export function findCompletedPastedTextItem(items: FlowBatchItem[]) {
   return items.find(
     (item) =>

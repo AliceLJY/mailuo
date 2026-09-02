@@ -1,6 +1,6 @@
 import { router } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Platform } from "react-native";
+import { Platform, StyleSheet, View } from "react-native";
 
 import { getConfiguredApiUrl, getContactDetail, getErrorMessage } from "@/api";
 import { AppButton } from "@/components/button";
@@ -114,13 +114,23 @@ export default function InsightsScreen() {
       title="洞察结果"
       subtitle="这里会汇总这次确认后整理出的洞察，并附上对应依据。"
       footer={
-        <AppButton
-          label="继续整理下一批"
-          onPress={() => {
-            resetFlow();
-            router.replace("/");
-          }}
-        />
+        <View style={styles.footerActions}>
+          <AppButton
+            label="完成"
+            onPress={() => {
+              resetFlow();
+              router.replace("/meetings");
+            }}
+          />
+          <AppButton
+            label="继续整理下一批"
+            onPress={() => {
+              resetFlow();
+              router.replace("/");
+            }}
+            tone="secondary"
+          />
+        </View>
       }
     >
       {processingNotice ? (
@@ -164,3 +174,10 @@ export default function InsightsScreen() {
     </Page>
   );
 }
+
+const styles = StyleSheet.create({
+  footerActions: {
+    flexDirection: "column",
+    gap: 10,
+  },
+});

@@ -32,10 +32,19 @@ export const UpdateContactPayloadSchema = z
   })
   .strict();
 
+export const ContactCandidateSchema = z
+  .object({
+    contact_id: z.number().int().refine((value) => value !== 0),
+    name: z.string().min(1),
+    company: z.string().nullable().optional(),
+  })
+  .strict();
+
 export const MeetingParticipantSchema = z
   .object({
     contact_id: z.number().int().positive().optional(),
     name: z.string().min(1),
+    candidates: z.array(ContactCandidateSchema).optional(),
   })
   .strict();
 

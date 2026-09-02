@@ -44,6 +44,17 @@ function splitList(value: string) {
     .filter(Boolean);
 }
 
+function formatParticipantCandidate(
+  candidate: NonNullable<
+    CreateMeetingPayload["participants"][number]["candidates"]
+  >[number],
+) {
+  const contact = candidate.company
+    ? `${candidate.name} · ${candidate.company}`
+    : candidate.name;
+  return candidate.contact_id < 0 ? `${contact}（本批新建）` : contact;
+}
+
 const CHANGE_LABELS = {
   aliases: "追加别名",
   company: "公司",
@@ -243,8 +254,40 @@ export function MeetingFields({
         <View key={`${participant.contact_id ?? "name"}-${index}`} style={styles.block}>
           <Text style={styles.fieldLabel}>{isOther ? "相关人" : "参与人"} {index + 1}</Text>
           <Text style={styles.metaText}>
-            {participant.contact_id ? "已关联到已有联系人" : "先按名字保存"}
+            {participant.contact_id == null
+              ? "先按名字保存"
+              : participant.contact_id < 0
+                ? "已选择本批新建联系人"
+                : "已关联到已有联系人"}
           </Text>
+          {participant.contact_id == null
+            ? participant.candidates?.map((candidate) => (
+                <View key={candidate.contact_id} style={styles.candidateRow}>
+                  <Text style={[styles.metaText, styles.candidateText]}>
+                    可能是：{formatParticipantCandidate(candidate)}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={!editable}
+                    onPress={() =>
+                      setPayload({
+                        ...payload,
+                        participants: payload.participants.map((item, itemIndex) => {
+                          if (itemIndex !== index) {
+                            return item;
+                          }
+                          const { candidates: _candidates, ...selected } = item;
+                          return { ...selected, contact_id: candidate.contact_id };
+                        }),
+                      })
+                    }
+                    style={[styles.candidateButton, !editable ? styles.disabled : undefined]}
+                  >
+                    <Text style={styles.candidateButtonText}>就是这位</Text>
+                  </Pressable>
+                </View>
+              ))
+            : null}
           <FieldInput
             editable={editable}
             label="姓名"
@@ -365,6 +408,11 @@ function StaticLine({ label, value }: { label: string; value: string }) {
 const styles = StyleSheet.create({
   section: { gap: 12 },
   block: { backgroundColor: theme.colors.surfaceMuted, borderRadius: 16, gap: 8, padding: 12 },
+  candidateRow: { alignItems: "center", flexDirection: "row", gap: 10, justifyContent: "space-between" },
+  candidateButton: { backgroundColor: theme.colors.primarySoft, borderColor: theme.colors.primaryBorder, borderRadius: 12, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 8 },
+  candidateButtonText: { color: theme.colors.primary, fontSize: 13, fontWeight: "700" },
+  candidateText: { flex: 1 },
+  disabled: { opacity: 0.45 },
   dualRow: { flexDirection: "row", gap: 10 },
   dualColumn: { flex: 1 },
   field: { gap: 6 },

@@ -20,6 +20,7 @@ import { humanizeLocalProviderError } from "@/connection/presentation";
 import { setCrashContext } from "@/diagnostics/crash-record";
 import {
   findCompletedPastedTextItem,
+  hasPendingFlowCards,
   useFlow,
   type FlowBatchItem,
   type FlowBatchSummary,
@@ -67,6 +68,7 @@ export default function UploadScreen() {
     batchSummary,
     beginBatch,
     beginTextUpload,
+    cards,
     finishBatch,
     flowGeneration,
     isFlowGenerationCurrent,
@@ -96,6 +98,7 @@ export default function UploadScreen() {
   const displayResult = lastResult ?? flowResult;
   const completedTextItem = findCompletedPastedTextItem(batchItems);
   const hasStoredResult = displayResult != null || completedTextItem != null;
+  const hasPendingCards = hasPendingFlowCards(cards);
   const currentMode: UploadBatchMode = isLocal ? "local" : "server";
   const currentServerUrl = normalizeUploadServerUrl(
     config?.serverUrl ?? getConfiguredApiUrl(),
@@ -520,7 +523,7 @@ export default function UploadScreen() {
 
   const footer = (
     <View style={styles.footerContent}>
-      {assets.length > 0 || displayResult ? (
+      {hasStoredResult && !hasPendingCards ? null : assets.length > 0 || displayResult ? (
         <Text style={styles.costText}>
           共 {displayResult?.totalCount ?? assets.length} 张；将按选择顺序逐张读取并整理。
         </Text>
@@ -535,18 +538,20 @@ export default function UploadScreen() {
           disabled={loading || targetMismatch}
           onPress={() => void retryFailures()}
         />
-      ) : displayResult?.successCount ? (
+      ) : displayResult?.successCount && hasPendingCards ? (
         <AppButton
           label={targetMismatch ? "切回本批次目标后确认" : "查看待确认卡片"}
           disabled={loading || targetMismatch}
           onPress={() => openReview(displayResult)}
         />
-      ) : completedTextItem ? (
+      ) : completedTextItem && hasPendingCards ? (
         <AppButton
           label={targetMismatch ? "切回本次处理目标后确认" : "查看待确认卡片"}
           disabled={loading || targetMismatch}
           onPress={openCompletedTextReview}
         />
+      ) : hasStoredResult ? (
+        <Text style={styles.completedText}>本批已整理完成</Text>
       ) : (
         <AppButton
           label={loading ? "处理中..." : "提交并开始整理"}
@@ -554,7 +559,10 @@ export default function UploadScreen() {
           onPress={() => void submit()}
         />
       )}
-      {displayResult && displayResult.successCount > 0 && displayResult.failureCount > 0 ? (
+      {displayResult &&
+      displayResult.successCount > 0 &&
+      displayResult.failureCount > 0 &&
+      hasPendingCards ? (
         <AppButton
           label="先确认已成功的截图"
           disabled={loading || targetMismatch}
@@ -787,6 +795,13 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
     fontSize: 13,
     lineHeight: 18,
+    textAlign: "center",
+  },
+  completedText: {
+    color: theme.colors.primary,
+    fontSize: 15,
+    fontWeight: "700",
+    lineHeight: 22,
     textAlign: "center",
   },
   serverNote: {
