@@ -44,7 +44,7 @@
   第二张不出 ②同批两条不同 other（相似度 < 0.85）都出 ③同批一条 other 与一条 meeting 互不影响 ④跨 batch 不去重
   ⑤先出那张已 reject 后再撞同句仍不出。
 
-### 2. 通知类：同截图内匹配放宽 + 路由决策入 trace（core + app）—— **待 Alice 确认；她若说不做，本节整节不做**
+### 2. 通知类：同截图内匹配放宽 + 路由决策入 trace（core + app；**Alice 2026-09-03 拍板「做吧」，与 Goal 1 同批**）
 
 - `findMeetingNoticeCandidate` 第二分支放宽一种情况：notice 无可判日期（`meetingCalendarDay` 为 null）**且候选来自同一张截图的
   同批会议**时，只要参与人集合有交集且**候选唯一** → 视为命中（并入该会议卡自身 `agenda`，走既有分支②）。
@@ -80,5 +80,5 @@
 ## Done when
 
 1. 两端 `npm test` + `npx tsc --noEmit` 全绿；server 不低于 191、app 不低于 158；`git diff --check` 干净
-2. Goal 1 五组测试；Goal 2（若做）四组测试 + trace 字段 + 黑匣子事件
+2. Goal 1 五组测试；Goal 2 四组测试 + trace 字段 + 黑匣子事件
 3. 报告贴真实测试输出、文件清单、偏离决定；只写本仓的事
