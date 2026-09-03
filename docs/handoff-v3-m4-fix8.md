@@ -31,8 +31,13 @@
 
 - `kind=other` 事件，标题或原文以「通知／告知／转发／提醒」开头或含「会议时间／时间调整／时间变更／改到／改为」，
   且**能在本批提议卡或已有会议里找到被指代的会议**（`normalizedEditSimilarity` 对会议标题 ≥ `MEETING_DUPLICATE_RULES` 现用阈值，
-  或参与人集合有交集且时间同日）→ 不建独立事项；把该 other 的原文追加为那张会议卡的 `agenda_append`（复用 M4 进展机制），
-  找不到对应会议 → 丢弃（不出卡）。
+  或参与人集合有交集且时间同日）→ 不建独立事项。**分三种情况（owner 2026-09-03 裁决，原文只写了 `agenda_append` 一种，与 schema 冲突）**：
+  ① 命中的是**已落库会议** → 出标准 `agenda_append` 卡（复用 M4 进展机制）；
+  ② 命中的是**同批新会议卡**（尚无会议 ID）→ 把该 other 的原文并入那张会议卡自身的 `agenda`，不另建事项、不出 `agenda_append` 卡；
+  ③ 找不到对应会议 → 丢弃（不出卡）。
+  **为什么要分**：`shared/core/schemas.ts:92` 校验 `agenda_append` 必须带 `duplicate_of_meeting_id`，
+  `shared/core/agent/execute.ts:1146` 又要求该 ID 能在 `db.listMeetings()` 里找到——同批新会议两者都不满足。
+  走 ② 可在不动 DB schema / execute（本任务书禁区）的前提下达成同一效果。
 - 「会议参会人员确认」「来访对接」这类**无时间、无地点、只是沟通动作**的 other：标题命中「确认／对接／沟通／联系」且 `has_time_signal=false`
   且 `location` 为空 → 不出卡。**有时间或地点的 other（如「报损备车及工作餐安排 · 明天上午」）照旧出卡**——owner 确认过这类。
 - 测试：通知类归入对应会议的 agenda_append；无对应会议 → 无卡；「确认参会人员」无时间 → 无卡；有时间的 other 仍出卡。
@@ -58,6 +63,10 @@
 - 可动：`shared/core/agent/perceive.ts`、`propose.ts`、`shared/core/llm/prompts.ts`、`shared/core/llm/provider.ts`、
   `shared/core/schemas.ts`（仅 speech_act）、`app/app/settings.tsx`、`app/src/connection/config.ts`（昵称字段）、
   `app/src/local/api.ts`（传 selfNames）、测试、快照。
+- 可动（**owner 2026-09-03 追加**，Goal 3 的必要调用方，属「改字段就得改 caller」不算扩 scope）：
+  `app/src/local/runtime-base.ts`（第 28 行 `getProcessingSettings` 现在非 Android 直接返回硬编码默认值、根本不读连接配置，
+  iOS 本地模式因此读不到 `selfNames`）、`app/app/connection/local.tsx`（第 142 行 `saveConfig` 用白名单重建配置对象，
+  只列了 mode / perceptionPath / exportOcrResults，**用户设完昵称再来改一次模型或 Key 就会被清空**——这是真 bug，必须一并修）。
 - 不可动：DB schema / migrations、`resolve.ts` near match、fix1–fix7 已交付行为、`app/app.json` 版本号、依赖。
 
 ## Constraints（含仓库围栏，硬性）
