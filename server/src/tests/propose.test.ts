@@ -920,6 +920,172 @@ test('proposeCards keeps an interaction when mixed source evidence includes one 
   assert.equal(interactionCard.payload.summary, '收到！；明天上午我带车牌号过去');
 });
 
+test('proposeCards omits an interaction when acknowledgement evidence carries a department-plus-name prefix', () => {
+  const sourceQuotes = ['集团市场部 小禾 收到', '收到'];
+  const extraction: PerceptionResult = {
+    participants: sourceQuotes.map((sourceQuote) => ({
+      name: '小禾',
+      is_self: false,
+      role: 'speaker',
+      interaction_summary: '小禾已确认收到通知。',
+      confidence: 'high',
+      source_quote: sourceQuote,
+    })),
+    events: [],
+    facts: [],
+    quotes: [],
+  };
+  const resolutions: ParticipantResolution[] = sourceQuotes.map(() => ({
+    participant_name: '小禾',
+    normalized_name: '小禾',
+    status: 'same_as',
+    contact_id: 101,
+    source: 'exact',
+  }));
+  const contacts: ResolvableContact[] = [{
+    id: 101,
+    canonical_name: '小禾',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+
+  assert.deepEqual(proposeCards(extraction, resolutions, contacts), []);
+});
+
+test('proposeCards omits an interaction when an acknowledgement follows a bare name prefix', () => {
+  const extraction = singleParticipantExtraction({
+    name: '小禾',
+    role: 'speaker',
+    interaction_summary: '小禾已确认收到通知。',
+    source_quote: '小禾 好的收到',
+  });
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '小禾',
+    normalized_name: '小禾',
+    status: 'same_as',
+    contact_id: 102,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 102,
+    canonical_name: '小禾',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+
+  assert.deepEqual(proposeCards(extraction, resolutions, contacts), []);
+});
+
+test('proposeCards keeps an interaction when a name-prefixed message still carries substantive content', () => {
+  const sourceQuotes = ['小禾 明天上午10点开会，大家准时', '收到'];
+  const extraction: PerceptionResult = {
+    participants: sourceQuotes.map((sourceQuote) => ({
+      name: '小禾',
+      is_self: false,
+      role: 'speaker',
+      interaction_summary: '小禾通知了明天的会议安排。',
+      confidence: 'high',
+      source_quote: sourceQuote,
+    })),
+    events: [],
+    facts: [],
+    quotes: [],
+  };
+  const resolutions: ParticipantResolution[] = sourceQuotes.map(() => ({
+    participant_name: '小禾',
+    normalized_name: '小禾',
+    status: 'same_as',
+    contact_id: 103,
+    source: 'exact',
+  }));
+  const contacts: ResolvableContact[] = [{
+    id: 103,
+    canonical_name: '小禾',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+  const interactionCard = proposeCards(extraction, resolutions, contacts)
+    .find((card) => card.type === 'record_interaction');
+
+  assert.ok(interactionCard);
+});
+
+test('proposeCards strips the prefix up to the last occurrence when the participant name repeats in a fragment', () => {
+  const extraction = singleParticipantExtraction({
+    name: '小禾',
+    role: 'speaker',
+    interaction_summary: '小禾已确认收到通知。',
+    source_quote: '小禾：@小禾 收到',
+  });
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '小禾',
+    normalized_name: '小禾',
+    status: 'same_as',
+    contact_id: 104,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 104,
+    canonical_name: '小禾',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+
+  assert.deepEqual(proposeCards(extraction, resolutions, contacts), []);
+});
+
+test('proposeCards leaves ordinary acknowledgement evidence without a name prefix unaffected', () => {
+  const sourceQuotes = ['收到！', '好的'];
+  const extraction: PerceptionResult = {
+    participants: sourceQuotes.map((sourceQuote) => ({
+      name: '小禾',
+      is_self: false,
+      role: 'speaker',
+      interaction_summary: '小禾已确认收到通知。',
+      confidence: 'high',
+      source_quote: sourceQuote,
+    })),
+    events: [],
+    facts: [],
+    quotes: [],
+  };
+  const resolutions: ParticipantResolution[] = sourceQuotes.map(() => ({
+    participant_name: '小禾',
+    normalized_name: '小禾',
+    status: 'same_as',
+    contact_id: 105,
+    source: 'exact',
+  }));
+  const contacts: ResolvableContact[] = [{
+    id: 105,
+    canonical_name: '小禾',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+
+  assert.deepEqual(proposeCards(extraction, resolutions, contacts), []);
+});
+
 test('proposeCards skips generic mentioned contacts in the no-resolution branch but keeps item names', () => {
   const genericNames = [
     '大家',

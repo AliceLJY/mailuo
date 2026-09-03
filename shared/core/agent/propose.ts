@@ -1345,6 +1345,43 @@ function isPureAcknowledgement(value: string): boolean {
   return codePointLength(normalized) <= 2 || pureAcknowledgementTexts.has(normalized);
 }
 
+const participantPrefixSeparatorPattern = /[\p{P}\p{White_Space}]/u;
+
+function stripParticipantPrefix(
+  fragment: string,
+  participant: { name: string; aliases?: string[] },
+): string {
+  const identifiers = [participant.name, ...(participant.aliases ?? [])].filter(
+    (identifier): identifier is string => Boolean(identifier),
+  );
+
+  let cutEnd = -1;
+
+  for (const identifier of identifiers) {
+    const lastIndex = fragment.lastIndexOf(identifier);
+
+    if (lastIndex === -1) {
+      continue;
+    }
+
+    const matchEnd = lastIndex + identifier.length;
+    const nextChar = fragment.charAt(matchEnd);
+
+    // Only treat the match as a label prefix (OCR sender/department tag) when it is
+    // followed by a genuine separator. Without this, a name that is itself the tail of
+    // real content (e.g. a self-introduction ending in the speaker's own name) or the
+    // head of a short substantive remark (e.g. "荀导已到") would be misread as a bare
+    // nickname line and wrongly cut down to nothing.
+    if (!nextChar || !participantPrefixSeparatorPattern.test(nextChar)) {
+      continue;
+    }
+
+    cutEnd = Math.max(cutEnd, matchEnd);
+  }
+
+  return cutEnd === -1 ? fragment : fragment.slice(cutEnd);
+}
+
 function shouldSkipMentionedContactCreation(
   participant: ProposeParticipant,
   relatedFacts: PerceptionFact[] | undefined,
@@ -1876,7 +1913,12 @@ function proposeCardsInternal(
       ...candidate.relatedQuotes.map((quote) => quote.text),
     ]);
 
-    if (sourceEvidence.length > 0 && sourceEvidence.every(isPureAcknowledgement)) {
+    if (
+      sourceEvidence.length > 0 &&
+      sourceEvidence
+        .map((fragment) => stripParticipantPrefix(fragment, { name: candidate.participantName }))
+        .every(isPureAcknowledgement)
+    ) {
       continue;
     }
 
