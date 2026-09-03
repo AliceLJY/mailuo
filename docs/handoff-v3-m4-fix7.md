@@ -3,8 +3,8 @@
 ## 你的角色
 
 接 v3.1.6（`ff97cc0` + tag）。3.1.6 真机反馈：纯应答不记互动、假人名不建联系人**通过**；
-进洞察页仍闪退；**并暴露一个 3.1.5 引入的 P0**。本批分两批：批 A = Goal 1、2（必修 + 诊断能力），
-批 B = Goal 3（实验性缓解，owner 拍板后才派）。**不动 DB schema、不做迁移。** 施工图 PLAN.md（第 0 节适用），
+进洞察页仍闪退；**并暴露一个 3.1.5 引入的 P0**。本批分三批：批 A = Goal 1、2（必修 + 诊断能力，已交付 `55979b1`），批 B = Goal 2b（Java 异常写栈，必做），
+批 C = Goal 3（实验性缓解，owner 拍板后才派）。**不动 DB schema、不做迁移。** 施工图 PLAN.md（第 0 节适用），
 先 `git log -3` 同步认知。自验用本机 Node 26。含 Kotlin 改动，本机无 Gradle，靠 EAS 出包验；JS 侧必须容忍原生函数缺席。
 
 ## 真机实证（v3.1.6，2026-09-03 早）
@@ -57,7 +57,21 @@ Goal 3 只作实验。
   面板「系统记录的退出原因」下方加一行「已保存崩溃现场 N 字节」或「无崩溃现场」。
 - 测试：JS 侧假模块返回样例 → 事件与面板文案；返回 null → 「无崩溃现场」；Kotlin 贴完整源码。
 
-### 3. 切换实验（批 B，owner 拍板后才做）
+### 2b. Java 未捕获异常写栈到文件（批 B，必做）
+
+- **依据**：3.1.6 诊断包 `exit_reason=REASON_CRASH description=crash`，且黑匣子无 `crash` 事件 → 异常在 Java/Kotlin 层抛出、
+  未经 JS 全局 handler；`getTraceInputStream()` 对 REASON_CRASH 通常为 null，Goal 2 的 tombstone 抓不到它。
+- Kotlin（同一模块 `OnCreate` 或 `definition` 初始化时）：`Thread.setDefaultUncaughtExceptionHandler` 包一层——
+  先把 `Thread.currentThread().name`、异常类名、message、完整 `stackTraceToString()`（含 cause 链）、时间戳、app 版本
+  **同步**写到 `<filesDir>/diagnostics/java-crashes/<timestamp>.txt`（上限保留 5 份，写入失败静默），
+  再原样交给之前的 handler（不吞、不改变崩溃行为）。安装必须幂等（重复 OnCreate 不叠包）。
+- 启动时（`_layout.tsx` 现有 `previousExitDiagnosticsPromise` 链上）读最新一份 java-crash 文件（新增 `AsyncFunction("readLatestJavaCrash")`
+  返回 `{ path, timestamp, head }`，head = 前 40 行），若时间戳晚于上一段 `app_start` → 黑匣子记 `java_crash` 事件
+  （detail = 异常类名 + message 前 100 字 + 第一帧），面板「系统记录的退出原因」下方显示「Java 异常：<类名>：<message>」+ 前 3 帧。
+- 诊断包导出把 `diagnostics/java-crashes/` 复制进包内 `java-crashes/`（与 exit-traces 同一套复制逻辑）。
+- 测试：JS 侧假模块三组（有记录 / 无 / 抛错）；Kotlin 贴完整源码。**JS 侧 handler 缺席时一切降级为无**。
+
+### 3. 切换实验（批 C，owner 拍板后才做）
 
 - `app/app/_layout.tsx` 的 `Stack.Screen` 对 `review/[screenshotId]` 与 `insights` 设 `animation: "none"`；
 - 确认页最后一张卡处理完→跳洞察页、上传页完成→跳确认页两处：先把本页大列表置空（state 清空使卡片树卸载），
@@ -75,7 +89,8 @@ Goal 3 只作实验。
   `app/src/connection/dispatch.ts`、`app/src/api.ts`（server 占位）、`app/src/local/api.ts`、`app/src/local/types.ts`、
   `app/modules/tenglu-region-sampler/**`、`app/src/diagnostics/event-log.ts` / `previous-exit.ts`、
   `app/src/components/crash-boundary.tsx`、`app/app/_layout.tsx`（调用 saveLastExitTrace）、测试。
-- 可动（批 B）：`app/app/_layout.tsx`（animation）、`app/app/review/[screenshotId].tsx`、`app/app/(tabs)/index.tsx`、
+- 可动（批 B）：与批 A 相同集合 + `app/src/diagnostics/*`
+- 可动（批 C）：`app/app/_layout.tsx`（animation）、`app/app/review/[screenshotId].tsx`、`app/app/(tabs)/index.tsx`、
   `app/src/flow-context.tsx`（若需置空列表的 action）、测试。
 - 不可动：DB schema / migrations、fix1–fix6 已交付规则层行为、`app/app.json` 版本号、依赖。
 
@@ -94,4 +109,7 @@ Goal 3 只作实验。
 4. 报告贴真实测试输出、文件清单、偏离决定
 
 **批 B**
+1. 两端测试与 tsc 全绿、server 不低于 177、app 不低于 146；Goal 2b 三组 JS 测试 + Kotlin 完整源码 + 诊断包含 `java-crashes/`
+
+**批 C**
 1. 同上第 1 条；两处切换 `animation: none` 与置空再跳有测试或断言；报告标注「实验」
