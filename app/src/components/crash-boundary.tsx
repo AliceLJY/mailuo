@@ -18,18 +18,23 @@ import {
 } from "@/diagnostics/event-log";
 import {
   formatEventLogEntry,
+  formatSavedExitTrace,
   formatSystemExitReason,
   getPreviousExitPanelCopy,
   getRecentPreviousEvents,
   shouldShowPreviousExit,
 } from "@/diagnostics/previous-exit";
 import { theme } from "@/theme";
-import type { ExitInfo } from "../../modules/tenglu-region-sampler/src/TengluRegionSampler.types";
+import type {
+  ExitInfo,
+  ExitTraceSaveResult,
+} from "../../modules/tenglu-region-sampler/src/TengluRegionSampler.types";
 
 type Props = PropsWithChildren<{
   storage: SyncCrashStorage;
   onReturnHome: () => void;
   previousExitInfo?: ExitInfo | null;
+  previousExitTrace?: ExitTraceSaveResult | null;
   previousSession?: PreviousSessionSnapshot | null;
 }>;
 
@@ -104,6 +109,7 @@ export class CrashBoundary extends Component<Props, State> {
           intro={copy.intro}
           onAction={this.acknowledgePrevious}
           previousExitInfo={this.props.previousExitInfo}
+          previousExitTrace={this.props.previousExitTrace}
           record={this.state.previousRecord ?? undefined}
         />
       );
@@ -120,6 +126,7 @@ function CrashPanel({
   intro,
   onAction,
   previousExitInfo,
+  previousExitTrace,
   record,
 }: {
   actionLabel: string;
@@ -128,6 +135,7 @@ function CrashPanel({
   intro: string;
   onAction: () => void;
   previousExitInfo?: ExitInfo | null;
+  previousExitTrace?: ExitTraceSaveResult | null;
   record?: CrashRecord;
 }) {
   const hermesEntries = Object.entries(record?.hermesStats ?? {});
@@ -145,6 +153,11 @@ function CrashPanel({
           {previousExitInfo !== undefined ? (
             <Text selectable style={styles.systemExitReason}>
               {formatSystemExitReason(previousExitInfo)}
+            </Text>
+          ) : null}
+          {previousExitTrace !== undefined ? (
+            <Text selectable style={styles.systemExitReason}>
+              {formatSavedExitTrace(previousExitTrace)}
             </Text>
           ) : null}
 

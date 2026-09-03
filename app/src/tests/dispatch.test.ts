@@ -39,6 +39,17 @@ function fakeApi(label: string, calls: string[]): RoutedApi {
       calls.push(`${label}:dependent-count`);
       return 0;
     },
+    async readDiagnosticsSnapshot() {
+      calls.push(`${label}:diagnostics-snapshot`);
+      return {
+        screenshots: [],
+        action_cards: [],
+        contacts: [],
+        observations: [],
+        meetings: [],
+        insights: [],
+      };
+    },
     async clearAllData() {
       calls.push(`${label}:clear`);
     },
@@ -87,7 +98,7 @@ test("native local config dispatches to local API while web remains server-only"
   assert.deepEqual(calls, ["local", "web-server"]);
 });
 
-test("clear-all and local dependency counts route through the selected API", async () => {
+test("local utility operations route through the selected API", async () => {
   const calls: string[] = [];
   const api = createApiDispatcher({
     configStore: configStore({ mode: "local" }),
@@ -99,9 +110,21 @@ test("clear-all and local dependency counts route through the selected API", asy
   });
 
   assert.equal(await api.countPendingLocalBatchInteractionCards(42), 0);
+  assert.deepEqual(await api.readDiagnosticsSnapshot(), {
+    screenshots: [],
+    action_cards: [],
+    contacts: [],
+    observations: [],
+    meetings: [],
+    insights: [],
+  });
   await api.clearAllData();
 
-  assert.deepEqual(calls, ["local:dependent-count", "local:clear"]);
+  assert.deepEqual(calls, [
+    "local:dependent-count",
+    "local:diagnostics-snapshot",
+    "local:clear",
+  ]);
 });
 
 test("text uploads route through native local, native server, and web server targets", async () => {

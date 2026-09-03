@@ -18,6 +18,7 @@ export type DiagnosticsExportMeta = {
 export type DiagnosticsExportInput = {
   snapshot: DiagnosticsSnapshot;
   traces: readonly DiagnosticsTrace[];
+  exitTraceDirectory?: ExitTraceExportSource;
   eventLog: readonly EventLogEntry[];
   crashRecord?: CrashRecord | null;
   appVersion: string;
@@ -41,6 +42,11 @@ export interface DiagnosticsExportDirectory {
   list(): readonly DiagnosticsExportDirectoryEntry[];
   createFile(name: string, mimeType: string | null): DiagnosticsExportFile;
   createDirectory(name: string): DiagnosticsExportDirectory;
+}
+
+export interface ExitTraceExportSource {
+  listFileNames(): readonly string[];
+  copyTo(destination: DiagnosticsExportDirectory): Promise<void> | void;
 }
 
 export type DiagnosticsExportResult = {
@@ -126,6 +132,23 @@ export async function writeDiagnosticsBundleToDirectory(
 
   if (input.crashRecord) {
     await writeRootJson("crash-record.json", input.crashRecord);
+  }
+
+  if (input.exitTraceDirectory) {
+    let names: readonly string[];
+    try {
+      names = input.exitTraceDirectory.listFileNames();
+      await input.exitTraceDirectory.copyTo(directory);
+    } catch (error) {
+      throw new DiagnosticsExportError(`无法复制 exit-traces 目录：${describeError(error)}`);
+    }
+    files.push(...names.slice().sort().map((name) => `exit-traces/${name}`));
+  } else {
+    try {
+      directory.createDirectory("exit-traces");
+    } catch (error) {
+      throw new DiagnosticsExportError(`无法创建 exit-traces 目录：${describeError(error)}`);
+    }
   }
 
   const meta: DiagnosticsExportMeta = {

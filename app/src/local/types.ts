@@ -28,7 +28,7 @@ export interface DiagnosticsDataSource {
   readDiagnosticsSnapshot(): DiagnosticsSnapshot;
 }
 
-export interface LocalStore extends ExecuteStore, InsightGenerationDb {
+export interface LocalStore extends ExecuteStore, InsightGenerationDb, DiagnosticsDataSource {
   getStoredActionCardById(cardId: number): ActionCardRecord | null;
   createScreenshot(input: {
     imagePath: string;

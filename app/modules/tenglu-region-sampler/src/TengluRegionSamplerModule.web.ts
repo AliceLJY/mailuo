@@ -2,6 +2,7 @@ import { registerWebModule, NativeModule } from 'expo';
 
 import type {
   ExitInfo,
+  ExitTraceSaveResult,
   MemoryStats,
 } from './TengluRegionSampler.types';
 
@@ -10,6 +11,10 @@ class TengluRegionSamplerModule extends NativeModule<{}> {}
 
 export async function readLastExitInfo(): Promise<ExitInfo[]> {
   return [];
+}
+
+export async function saveLastExitTrace(): Promise<ExitTraceSaveResult | null> {
+  return null;
 }
 
 export async function readMemoryStats(): Promise<MemoryStats | null> {

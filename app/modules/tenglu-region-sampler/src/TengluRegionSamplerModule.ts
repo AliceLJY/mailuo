@@ -5,6 +5,7 @@ import { NativeModule, requireOptionalNativeModule } from 'expo';
 import type {
   ExtractedFrameBatch,
   ExitInfo,
+  ExitTraceSaveResult,
   FrameCleanupResult,
   MemoryStats,
   RegionRequest,
@@ -16,6 +17,7 @@ declare class TengluRegionSamplerModule extends NativeModule<{}> {
   cleanupFrames(): Promise<string>;
   sampleRegions(requestsJson: string): Promise<string>;
   readLastExitInfo?(): Promise<unknown>;
+  saveLastExitTrace?(): Promise<unknown>;
   readMemoryStats?(): Promise<unknown>;
 }
 
@@ -58,10 +60,25 @@ export async function readLastExitInfo(): Promise<ExitInfo[]> {
   try {
     const result = await nativeModule.readLastExitInfo();
     return Array.isArray(result)
-      ? result.filter(isExitInfo)
+      ? result
+          .map(parseExitInfo)
+          .filter((item): item is ExitInfo => item !== null)
       : [];
   } catch {
     return [];
+  }
+}
+
+export async function saveLastExitTrace(): Promise<ExitTraceSaveResult | null> {
+  if (typeof nativeModule?.saveLastExitTrace !== 'function') {
+    return null;
+  }
+
+  try {
+    const result = await nativeModule.saveLastExitTrace();
+    return isExitTraceSaveResult(result) ? result : null;
+  } catch {
+    return null;
   }
 }
 
@@ -82,21 +99,54 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function isExitInfo(value: unknown): value is ExitInfo {
+function parseExitInfo(value: unknown): ExitInfo | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const item = value as Partial<ExitInfo>;
+  if (
+    !isFiniteNumber(item.reason) ||
+    typeof item.reason_name !== 'string' ||
+    !isFiniteNumber(item.status) ||
+    (typeof item.description !== 'string' && item.description !== null) ||
+    !isFiniteNumber(item.timestamp) ||
+    !isFiniteNumber(item.importance) ||
+    !isFiniteNumber(item.pss_kb) ||
+    !isFiniteNumber(item.rss_kb) ||
+    (item.has_trace !== undefined && typeof item.has_trace !== 'boolean')
+  ) {
+    return null;
+  }
+
+  return {
+    reason: item.reason,
+    reason_name: item.reason_name,
+    status: item.status,
+    description: item.description,
+    timestamp: item.timestamp,
+    importance: item.importance,
+    pss_kb: item.pss_kb,
+    rss_kb: item.rss_kb,
+    has_trace: item.has_trace ?? false,
+  };
+}
+
+function isExitTraceSaveResult(value: unknown): value is ExitTraceSaveResult {
   if (!value || typeof value !== 'object') {
     return false;
   }
 
-  const item = value as Partial<ExitInfo>;
+  const result = value as Partial<ExitTraceSaveResult>;
   return (
-    isFiniteNumber(item.reason) &&
-    typeof item.reason_name === 'string' &&
-    isFiniteNumber(item.status) &&
-    (typeof item.description === 'string' || item.description === null) &&
-    isFiniteNumber(item.timestamp) &&
-    isFiniteNumber(item.importance) &&
-    isFiniteNumber(item.pss_kb) &&
-    isFiniteNumber(item.rss_kb)
+    typeof result.bin_path === 'string' &&
+    result.bin_path.length > 0 &&
+    typeof result.strings_path === 'string' &&
+    result.strings_path.length > 0 &&
+    Number.isSafeInteger(result.byte_count) &&
+    (result.byte_count ?? -1) >= 0 &&
+    Number.isSafeInteger(result.string_count) &&
+    (result.string_count ?? -1) >= 0
   );
 }
 

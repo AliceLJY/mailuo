@@ -18,6 +18,7 @@ import kotlin.math.max
 import kotlin.math.min
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
 
 class TengluRegionSamplerModule : Module() {
   override fun definition() = ModuleDefinition {
@@ -37,6 +38,10 @@ class TengluRegionSamplerModule : Module() {
 
     AsyncFunction("readLastExitInfo") {
       readLastExitInfo()
+    }
+
+    AsyncFunction("saveLastExitTrace") {
+      saveLastExitTrace()
     }
 
     AsyncFunction("readMemoryStats") {
@@ -63,10 +68,209 @@ class TengluRegionSamplerModule : Module() {
             "importance" to info.importance,
             "pss_kb" to info.pss,
             "rss_kb" to info.rss,
+            "has_trace" to hasExitTrace(info),
           )
         }
     } catch (_: Throwable) {
       emptyList()
+    }
+  }
+
+  private fun hasExitTrace(info: ApplicationExitInfo): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false
+
+    return try {
+      info.traceInputStream?.use { true } ?: false
+    } catch (_: Throwable) {
+      false
+    }
+  }
+
+  private fun saveLastExitTrace(): Map<String, Any>? {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+
+    return try {
+      val context = appContext.reactContext ?: return null
+      val activityManager = context.getSystemService(ActivityManager::class.java)
+        ?: return null
+      val info = activityManager
+        .getHistoricalProcessExitReasons(context.packageName, 0, 0)
+        .filter { isTraceExitReason(it.reason) }
+        .maxByOrNull { it.timestamp }
+        ?: return null
+      val trace = try {
+        info.traceInputStream
+      } catch (_: Throwable) {
+        null
+      } ?: return null
+
+      trace.use { input ->
+        saveExitTraceFiles(context.filesDir, info.timestamp, input)
+      }
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
+  private fun isTraceExitReason(reason: Int): Boolean = when (reason) {
+    ApplicationExitInfo.REASON_CRASH_NATIVE,
+    ApplicationExitInfo.REASON_ANR,
+    ApplicationExitInfo.REASON_CRASH -> true
+    else -> false
+  }
+
+  private data class ExitTraceCopy(
+    val byteCount: Long,
+    val strings: List<String>,
+  )
+
+  private fun saveExitTraceFiles(
+    filesDir: File,
+    timestamp: Long,
+    input: InputStream,
+  ): Map<String, Any>? {
+    val outputDir = File(filesDir, "diagnostics/exit-traces")
+    if ((!outputDir.exists() && !outputDir.mkdirs()) || !outputDir.isDirectory) {
+      return null
+    }
+
+    val stem = timestamp.toString()
+    val binFile = File(outputDir, "$stem.bin")
+    val stringsFile = File(outputDir, "$stem.strings.txt")
+    val tempBin = File.createTempFile("$stem-", ".bin.tmp", outputDir)
+
+    try {
+      val tempStrings = File.createTempFile("$stem-", ".strings.tmp", outputDir)
+      var stringsCommitted = false
+      var binCommitted = false
+      try {
+        val copied = FileOutputStream(tempBin).use { output ->
+          copyTraceAndExtractStrings(input, output)
+        }
+        tempStrings.bufferedWriter(Charsets.US_ASCII).use { writer ->
+          for (value in copied.strings) {
+            writer.write(value)
+            writer.newLine()
+          }
+        }
+
+        if (!replaceFile(tempStrings, stringsFile)) return null
+        stringsCommitted = true
+        if (!replaceFile(tempBin, binFile)) {
+          stringsFile.delete()
+          binFile.delete()
+          return null
+        }
+        binCommitted = true
+
+        pruneSavedExitTraces(outputDir)
+        if (!binFile.isFile || !stringsFile.isFile) {
+          binFile.delete()
+          stringsFile.delete()
+          return null
+        }
+        return mapOf(
+          "bin_path" to binFile.absolutePath,
+          "strings_path" to stringsFile.absolutePath,
+          "byte_count" to copied.byteCount,
+          "string_count" to copied.strings.size,
+        )
+      } catch (error: Throwable) {
+        if (binCommitted) binFile.delete()
+        if (stringsCommitted) stringsFile.delete()
+        throw error
+      } finally {
+        tempStrings.delete()
+      }
+    } finally {
+      tempBin.delete()
+    }
+  }
+
+  private fun copyTraceAndExtractStrings(
+    input: InputStream,
+    output: FileOutputStream,
+  ): ExitTraceCopy {
+    val strings = linkedSetOf<String>()
+    val current = StringBuilder()
+    val buffer = ByteArray(8 * 1024)
+    var byteCount = 0L
+
+    fun finishString() {
+      if (current.length >= MIN_EXIT_TRACE_STRING_LENGTH &&
+        strings.size < MAX_EXIT_TRACE_STRINGS
+      ) {
+        strings.add(current.toString())
+      }
+      current.setLength(0)
+    }
+
+    while (true) {
+      val count = input.read(buffer)
+      if (count < 0) break
+      if (count == 0) continue
+      output.write(buffer, 0, count)
+      byteCount += count.toLong()
+
+      for (index in 0 until count) {
+        val value = buffer[index].toInt() and 0xff
+        if (value in PRINTABLE_ASCII_MIN..PRINTABLE_ASCII_MAX) {
+          if (strings.size < MAX_EXIT_TRACE_STRINGS) {
+            current.append(value.toChar())
+          }
+        } else {
+          finishString()
+        }
+      }
+    }
+    finishString()
+    return ExitTraceCopy(byteCount, strings.toList())
+  }
+
+  private fun replaceFile(source: File, target: File): Boolean {
+    if (target.exists() && !target.delete()) return false
+    return source.renameTo(target)
+  }
+
+  private fun pruneSavedExitTraces(outputDir: File) {
+    val traceFiles = outputDir.listFiles { file ->
+      file.isFile && file.name.endsWith(".bin")
+    } ?: throw IllegalStateException("无法读取崩溃现场目录")
+    val traces = traceFiles
+      .mapNotNull { file ->
+        file.name.removeSuffix(".bin").toLongOrNull()?.let { timestamp ->
+          timestamp to file
+        }
+      }
+      .sortedByDescending { it.first }
+
+    for ((timestamp, binFile) in traces.drop(MAX_SAVED_EXIT_TRACES)) {
+      deleteSavedExitTraceFile(binFile)
+      deleteSavedExitTraceFile(File(outputDir, "$timestamp.strings.txt"))
+    }
+
+    val keptTimestamps = traces
+      .take(MAX_SAVED_EXIT_TRACES)
+      .mapTo(mutableSetOf()) { it.first }
+    val stringFiles = outputDir.listFiles { file ->
+      file.isFile && file.name.endsWith(".strings.txt")
+    } ?: throw IllegalStateException("无法读取崩溃现场目录")
+    stringFiles.forEach { stringsFile ->
+      val timestamp = stringsFile.name
+        .removeSuffix(".strings.txt")
+        .toLongOrNull()
+        ?: return@forEach
+      if (timestamp !in keptTimestamps &&
+        !File(outputDir, "$timestamp.bin").exists()
+      ) {
+        deleteSavedExitTraceFile(stringsFile)
+      }
+    }
+  }
+
+  private fun deleteSavedExitTraceFile(file: File) {
+    if (file.exists() && !file.delete()) {
+      throw IllegalStateException("无法清理旧崩溃现场文件")
     }
   }
 
@@ -491,4 +695,12 @@ class TengluRegionSamplerModule : Module() {
       .put("side", JSONObject.NULL)
       .put("errorCode", errorCode)
       .put("error", message)
+
+  private companion object {
+    const val MAX_SAVED_EXIT_TRACES = 5
+    const val MAX_EXIT_TRACE_STRINGS = 2_000
+    const val MIN_EXIT_TRACE_STRING_LENGTH = 6
+    const val PRINTABLE_ASCII_MIN = 0x20
+    const val PRINTABLE_ASCII_MAX = 0x7e
+  }
 }

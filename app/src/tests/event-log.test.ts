@@ -162,10 +162,11 @@ test("configured logEvent is synchronous and storage failures do not escape", ()
   configureEventLogStorage(null);
 });
 
-test("Goal 1 event kinds survive the event-log read whitelist", () => {
+test("diagnostic event kinds survive the event-log read whitelist", () => {
   const memory = createMemoryStorage();
   const kinds = [
     "exit_reason",
+    "exit_trace",
     "insights_start",
     "insights_ok",
     "insights_error",

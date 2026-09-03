@@ -61,6 +61,14 @@ export type ExitInfo = {
   importance: number;
   pss_kb: number;
   rss_kb: number;
+  has_trace: boolean;
+};
+
+export type ExitTraceSaveResult = {
+  bin_path: string;
+  strings_path: string;
+  byte_count: number;
+  string_count: number;
 };
 
 export type MemoryStats = {

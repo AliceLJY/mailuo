@@ -513,6 +513,9 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
     async countPendingLocalBatchInteractionCards(anchorCardId) {
       return options.store.countPendingLocalBatchInteractionCards(anchorCardId);
     },
+    async readDiagnosticsSnapshot() {
+      return options.store.readDiagnosticsSnapshot();
+    },
     async clearAllData() {
       options.store.clearAllData();
       batchSessionByCardId.clear();

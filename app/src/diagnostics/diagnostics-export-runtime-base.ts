@@ -1,15 +1,16 @@
 import Constants from "expo-constants";
-import { Directory } from "expo-file-system";
+import { Directory, File, Paths } from "expo-file-system";
 import { Platform } from "react-native";
 
+import { readDiagnosticsSnapshot } from "../api";
 import type { ConnectionConfig } from "../connection/config";
-import { createExpoSqliteLocalStore } from "../local/store";
 import { readCrashRecord } from "./crash-record";
 import { crashStorage } from "./crash-storage";
 import {
   DiagnosticsExportError,
   writeDiagnosticsBundleToDirectory,
   type DiagnosticsExportResult,
+  type ExitTraceExportSource,
 } from "./diagnostics-export";
 import { readEventLog } from "./event-log";
 import { readDeviceDiagnosticsTraces } from "./trace-storage-expo";
@@ -29,17 +30,10 @@ export async function exportLocalDiagnosticsBundle(input: {
   }
 
   try {
-    const store = createExpoSqliteLocalStore();
-    let snapshot;
-    try {
-      snapshot = store.readDiagnosticsSnapshot();
-    } finally {
-      store.close();
-    }
-
     return await writeDiagnosticsBundleToDirectory(destination, {
-      snapshot,
+      snapshot: await readDiagnosticsSnapshot(),
       traces: await readDeviceDiagnosticsTraces(),
+      exitTraceDirectory: openExitTraceExportSource(),
       eventLog: readEventLog(crashStorage),
       crashRecord: readCrashRecord(crashStorage),
       appVersion: Constants.expoConfig?.version ?? "unknown",
@@ -56,4 +50,23 @@ export async function exportLocalDiagnosticsBundle(input: {
       : "未知错误";
     throw new Error(`导出诊断包失败：${reason}`);
   }
+}
+
+function openExitTraceExportSource(): ExitTraceExportSource | undefined {
+  const source = new Directory(Paths.document, "diagnostics", "exit-traces");
+  if (!source.exists) {
+    return undefined;
+  }
+
+  return {
+    listFileNames() {
+      return source
+        .list()
+        .filter((entry): entry is File => entry instanceof File)
+        .map((file) => file.name);
+    },
+    copyTo(destination) {
+      return source.copy(new Directory(destination.uri));
+    },
+  };
 }

@@ -23,7 +23,9 @@ import {
 } from "@/diagnostics/memory-stats";
 import {
   formatExitReasonEventDetail,
+  formatExitTraceEventDetail,
   loadPreviousExitInfo,
+  savePreviousExitTrace,
 } from "@/diagnostics/previous-exit";
 import { installDeviceDiagnosticsTraceWriter } from "@/diagnostics/trace-runtime";
 import { FlowProvider } from "@/flow-context";
@@ -32,8 +34,12 @@ import { ToastProvider } from "@/toast-context";
 import {
   readLastExitInfo,
   readMemoryStats,
+  saveLastExitTrace,
 } from "../modules/tenglu-region-sampler/src/TengluRegionSamplerModule";
-import type { ExitInfo } from "../modules/tenglu-region-sampler/src/TengluRegionSampler.types";
+import type {
+  ExitInfo,
+  ExitTraceSaveResult,
+} from "../modules/tenglu-region-sampler/src/TengluRegionSampler.types";
 
 configureEventLogStorage(crashStorage);
 installDeviceDiagnosticsTraceWriter();
@@ -43,6 +49,14 @@ const previousExitInfoPromise = loadPreviousExitInfo(
   previousSession,
   (info) => logEvent("exit_reason", formatExitReasonEventDetail(info)),
 );
+const previousExitDiagnosticsPromise = previousExitInfoPromise.then(async (info) => ({
+  info,
+  trace: await savePreviousExitTrace(
+    { saveLastExitTrace },
+    info,
+    (result) => logEvent("exit_trace", formatExitTraceEventDetail(result)),
+  ),
+}));
 setCrashContext({ appVersion: Constants.expoConfig?.version ?? "unknown" });
 installGlobalCrashHandler(crashStorage);
 
@@ -64,9 +78,10 @@ function AppStack() {
   const pathname = usePathname();
   const { config } = useConnection();
   const lastLoggedRouteRef = useRef<string | null>(null);
-  const [previousExitInfo, setPreviousExitInfo] = useState<
-    ExitInfo | null | undefined
-  >(undefined);
+  const [previousExitDiagnostics, setPreviousExitDiagnostics] = useState<{
+    info: ExitInfo | null;
+    trace: ExitTraceSaveResult | null;
+  } | undefined>(undefined);
 
   if (lastLoggedRouteRef.current !== pathname) {
     logEvent("route", pathname);
@@ -95,9 +110,9 @@ function AppStack() {
 
   useEffect(() => {
     let active = true;
-    void previousExitInfoPromise.then((info) => {
+    void previousExitDiagnosticsPromise.then((diagnostics) => {
       if (active) {
-        setPreviousExitInfo(info);
+        setPreviousExitDiagnostics(diagnostics);
       }
     });
 
@@ -123,7 +138,8 @@ function AppStack() {
       <StatusBar style="dark" />
       <CrashBoundary
         onReturnHome={() => router.replace("/")}
-        previousExitInfo={previousExitInfo}
+        previousExitInfo={previousExitDiagnostics?.info}
+        previousExitTrace={previousExitDiagnostics?.trace}
         previousSession={previousSession}
         storage={crashStorage}
       >

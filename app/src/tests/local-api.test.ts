@@ -41,8 +41,46 @@ import { perceiveScreenshotWithOcr, type OcrPerceptionResult } from "../local/pe
 import type { LocalStore } from "../local/types";
 import type { LocalLlmSecretStore } from "../connection/secrets";
 import type { DiagnosticsTrace } from "../diagnostics/trace-store";
+import {
+  writeDiagnosticsBundleToDirectory,
+  type DiagnosticsExportDirectory,
+} from "../diagnostics/diagnostics-export";
 
 const FIXED_NOW = new Date("2026-08-27T04:00:00.000Z");
+
+function createFakeExportDirectory(uri = "fake:///picked/"): DiagnosticsExportDirectory {
+  const entries = new Set<string>();
+
+  return {
+    uri,
+    list() {
+      return [...entries].map((name) => ({ name }));
+    },
+    createDirectory(name) {
+      if (entries.has(name)) {
+        throw new Error(`entry already exists: ${name}`);
+      }
+      entries.add(name);
+      return createFakeExportDirectory(`${uri}${name}/`);
+    },
+    createFile(name) {
+      if (entries.has(name)) {
+        throw new Error(`entry already exists: ${name}`);
+      }
+      entries.add(name);
+      let content = "";
+      return {
+        uri: `${uri}${name}`,
+        write(value) {
+          content = value;
+        },
+        async text() {
+          return content;
+        },
+      };
+    },
+  };
+}
 
 class FakeStructuredOutputProvider implements StructuredOutputProvider {
   readonly name = "fake";
@@ -100,6 +138,7 @@ class FakeLocalStore implements LocalStore {
   transactionCalls = 0;
   pendingCardUpdateCalls = 0;
   listMeetingCalls = 0;
+  diagnosticsSnapshotReads = 0;
 
   withTransaction<T>(callback: () => T): T {
     this.transactionCalls += 1;
@@ -226,6 +265,18 @@ class FakeLocalStore implements LocalStore {
     this.cards.clear();
     this.screenshots.clear();
     this.contacts.clear();
+  }
+
+  readDiagnosticsSnapshot() {
+    this.diagnosticsSnapshotReads += 1;
+    return {
+      screenshots: [...this.screenshots.values()],
+      action_cards: [...this.cards.values()],
+      contacts: [...this.contacts.values()],
+      observations: [...this.observations],
+      meetings: [...this.meetings],
+      insights: [...this.insights],
+    };
   }
 
   tableCounts() {
@@ -739,6 +790,36 @@ const fakeKeys: LocalLlmSecretStore = {
   async clear() {},
   async clearAll() {},
 };
+
+test("diagnostics export uses the live store snapshot and leaves the same store usable", async () => {
+  const store = new FakeLocalStore();
+  const screenshot = store.createScreenshot({ imagePath: "file:///diagnostics.png" });
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    async loadImage() {
+      throw new Error("diagnostics export must not load an image");
+    },
+  });
+
+  const snapshot = await api.readDiagnosticsSnapshot();
+  await writeDiagnosticsBundleToDirectory(createFakeExportDirectory(), {
+    snapshot,
+    traces: [],
+    eventLog: [],
+    appVersion: "3.1.6",
+    platform: "android",
+    connectionMode: "local",
+    exportedAt: FIXED_NOW,
+  });
+
+  assert.equal(store.diagnosticsSnapshotReads, 1);
+  assert.deepEqual(snapshot.screenshots, [screenshot]);
+  assert.deepEqual(await api.getScreenshotDetail(screenshot.id), {
+    ...screenshot,
+    cards: [],
+  });
+});
 
 function collectContactIds(value: unknown): number[] {
   if (Array.isArray(value)) {

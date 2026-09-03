@@ -5,6 +5,7 @@ import {
   writeDiagnosticsBundleToDirectory,
   type DiagnosticsExportDirectory,
   type DiagnosticsExportFile,
+  type ExitTraceExportSource,
 } from "../diagnostics/diagnostics-export";
 import type { DiagnosticsTrace } from "../diagnostics/trace-store";
 import type { DiagnosticsSnapshot } from "../local/types";
@@ -84,6 +85,21 @@ class FakeExportDirectory implements DiagnosticsExportDirectory {
   }
 }
 
+class FakeExitTraceSource implements ExitTraceExportSource {
+  constructor(private readonly files: ReadonlyMap<string, string>) {}
+
+  listFileNames() {
+    return [...this.files.keys()];
+  }
+
+  copyTo(destination: DiagnosticsExportDirectory) {
+    const copied = destination.createDirectory("exit-traces");
+    for (const [name, content] of this.files) {
+      copied.createFile(name, null).write(content);
+    }
+  }
+}
+
 const snapshot: DiagnosticsSnapshot = {
   screenshots: [{
     id: 42,
@@ -122,6 +138,10 @@ test("diagnostics writer creates the exact bundle file set and writes meta last"
   const result = await writeDiagnosticsBundleToDirectory(destination, {
     snapshot,
     traces: [trace],
+    exitTraceDirectory: new FakeExitTraceSource(new Map([
+      ["1788397205000.bin", "binary tombstone"],
+      ["1788397205000.strings.txt", "backtrace\nlibreactnative.so\n"],
+    ])),
     eventLog: [{ t: "2026-09-02T01:00:00.000Z", kind: "app_start", detail: "" }],
     crashRecord: {
       timestamp: "2026-09-02T00:59:00.000Z",
@@ -141,6 +161,8 @@ test("diagnostics writer creates the exact bundle file set and writes meta last"
     "contacts.json",
     "crash-record.json",
     "event-log.json",
+    "exit-traces/1788397205000.bin",
+    "exit-traces/1788397205000.strings.txt",
     "insights.json",
     "meetings.json",
     "meta.json",
@@ -162,6 +184,10 @@ test("diagnostics writer creates the exact bundle file set and writes meta last"
   const screenshots = JSON.parse(bundle.getFile("screenshots.json")?.content ?? "null");
   assert.equal(screenshots[0].user_note, "某集团 市场部通知");
   assert.deepEqual(screenshots[0].raw_extraction, snapshot.screenshots[0]?.raw_extraction);
+  assert.deepEqual(
+    bundle.getDirectory("exit-traces")?.listFilePaths(),
+    ["1788397205000.bin", "1788397205000.strings.txt"],
+  );
 });
 
 test("diagnostics writer keeps crash-record optional", async () => {
@@ -178,6 +204,7 @@ test("diagnostics writer keeps crash-record optional", async () => {
   const bundle = destination.getDirectory(result.directoryName);
 
   assert.ok(bundle);
+  assert.ok(bundle.getDirectory("exit-traces"));
   assert.equal(bundle.listFilePaths().includes("crash-record.json"), false);
   assert.deepEqual(bundle.listFilePaths(), [
     "action_cards.json",

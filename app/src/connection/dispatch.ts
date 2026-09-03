@@ -10,6 +10,7 @@ import type {
   UploadImageAsset,
 } from "../types";
 import type { LocalBatchContactSession } from "../local/batch-contacts";
+import type { DiagnosticsSnapshot } from "../local/types";
 
 import type { ConnectionConfigStore } from "./config";
 
@@ -39,6 +40,7 @@ export interface RoutedApi {
   confirmCard(cardId: number, body?: ConfirmCardRequest): Promise<ConfirmCardResponse>;
   rejectCard(cardId: number): Promise<RejectCardResponse>;
   countPendingLocalBatchInteractionCards(anchorCardId: number): Promise<number>;
+  readDiagnosticsSnapshot(): Promise<DiagnosticsSnapshot>;
   clearAllData(): Promise<void>;
   getContacts(): Promise<ContactListItem[]>;
   getContactDetail(contactId: number): Promise<ContactDetail>;
@@ -135,6 +137,9 @@ export function createApiDispatcher(options: ApiDispatcherOptions): RoutedApi {
     },
     async countPendingLocalBatchInteractionCards(anchorCardId) {
       return (await selectedApi()).countPendingLocalBatchInteractionCards(anchorCardId);
+    },
+    async readDiagnosticsSnapshot() {
+      return (await selectedApi()).readDiagnosticsSnapshot();
     },
     async clearAllData() {
       return (await selectedApi()).clearAllData();

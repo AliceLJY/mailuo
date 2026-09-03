@@ -215,6 +215,9 @@ function createServerApi(serverUrl?: string): RoutedApi {
     async countPendingLocalBatchInteractionCards() {
       return 0;
     },
+    async readDiagnosticsSnapshot() {
+      throw new ApiError("服务器模式暂不支持读取诊断快照。", 501, "NOT_SUPPORTED");
+    },
     async clearAllData() {
       throw new ApiError("服务器模式暂不支持清空全部数据。", 501, "NOT_SUPPORTED");
     },
@@ -251,6 +254,7 @@ export const confirmCard = apiDispatcher.confirmCard;
 export const rejectCard = apiDispatcher.rejectCard;
 export const countPendingLocalBatchInteractionCards =
   apiDispatcher.countPendingLocalBatchInteractionCards;
+export const readDiagnosticsSnapshot = apiDispatcher.readDiagnosticsSnapshot;
 export const clearAllData = apiDispatcher.clearAllData;
 export const getContacts = apiDispatcher.getContacts;
 export const getContactDetail = apiDispatcher.getContactDetail;

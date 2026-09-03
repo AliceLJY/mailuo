@@ -66,6 +66,9 @@ function apiWithUpload(
     async countPendingLocalBatchInteractionCards() {
       return 0;
     },
+    async readDiagnosticsSnapshot() {
+      throw new Error("unused");
+    },
     async clearAllData() {
       throw new Error("unused");
     },

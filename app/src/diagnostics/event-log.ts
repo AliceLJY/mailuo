@@ -21,6 +21,7 @@ export const EVENT_KINDS = [
   "crash",
   "acknowledged",
   "exit_reason",
+  "exit_trace",
   "insights_start",
   "insights_ok",
   "insights_error",
@@ -226,7 +227,7 @@ function toEventLogEntry(value: unknown): EventLogEntry | null {
 }
 
 function eventDetailLimit(kind: EventKind) {
-  return kind === "exit_reason" || kind === "mem"
+  return kind === "exit_reason" || kind === "exit_trace" || kind === "mem"
     ? MAX_DIAGNOSTIC_EVENT_DETAIL_CODE_POINTS
     : MAX_EVENT_DETAIL_CODE_POINTS;
 }

@@ -1,6 +1,9 @@
 import type { CrashRecord } from "./crash-record";
 import type { EventLogEntry, PreviousSessionSnapshot } from "./event-log";
-import type { ExitInfo } from "../../modules/tenglu-region-sampler/src/TengluRegionSampler.types";
+import type {
+  ExitInfo,
+  ExitTraceSaveResult,
+} from "../../modules/tenglu-region-sampler/src/TengluRegionSampler.types";
 
 export const MAX_VISIBLE_PREVIOUS_EVENTS = 20;
 
@@ -11,6 +14,10 @@ export type PreviousExitPanelCopy = {
 
 export type ExitInfoReader = {
   readLastExitInfo(): Promise<ExitInfo[]>;
+};
+
+export type ExitTraceSaver = {
+  saveLastExitTrace?(): Promise<ExitTraceSaveResult | null>;
 };
 
 export function shouldShowPreviousExit(
@@ -79,6 +86,32 @@ export async function loadPreviousExitInfo(
   }
 }
 
+export async function savePreviousExitTrace(
+  saver: ExitTraceSaver,
+  info: ExitInfo | null,
+  onResult: (result: ExitTraceSaveResult | null) => void = () => {},
+): Promise<ExitTraceSaveResult | null> {
+  if (!info) {
+    return null;
+  }
+
+  let result: ExitTraceSaveResult | null = null;
+  try {
+    result = typeof saver.saveLastExitTrace === "function"
+      ? await saver.saveLastExitTrace()
+      : null;
+  } catch {
+    result = null;
+  }
+
+  try {
+    onResult(result);
+  } catch {
+    // Diagnostics callbacks must not make startup fail.
+  }
+  return result;
+}
+
 export function formatExitReasonEventDetail(info: ExitInfo) {
   const description = Array.from(info.description?.trim() ?? "")
     .slice(0, 80)
@@ -87,8 +120,21 @@ export function formatExitReasonEventDetail(info: ExitInfo) {
     `reason_name=${info.reason_name}`,
     `status=${info.status}`,
     `pss_kb=${Math.round(info.pss_kb)}`,
+    `has_trace=${info.has_trace}`,
     ...(description ? [`description=${description}`] : []),
   ].join(" ");
+}
+
+export function formatExitTraceEventDetail(result: ExitTraceSaveResult | null) {
+  return result
+    ? `byte_count=${Math.round(result.byte_count)} string_count=${Math.round(result.string_count)}`
+    : "saved=false";
+}
+
+export function formatSavedExitTrace(result: ExitTraceSaveResult | null) {
+  return result
+    ? `已保存崩溃现场 ${Math.round(result.byte_count)} 字节`
+    : "无崩溃现场";
 }
 
 export function formatSystemExitReason(info: ExitInfo | null | undefined) {
