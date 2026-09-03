@@ -62,7 +62,7 @@
 
 ## Constraints（含仓库围栏，硬性）
 
-- 只在 `~/Projects/mailuo` 内 `git add / commit / push origin main`；**不调用任何名为 commit / 提交 的技能**；不读写、不 cd 到该目录之外的仓库或 `~/Downloads/sync-bridge`；产出（报告、快照）只写本仓 `docs/`，**不写 AI产出**；收尾不移动、不删除任何文件。
+- 只在 `~/Projects/mailuo` 内 `git add / commit / push origin main`；**不调用任何名为 commit / 提交 的技能**；不读写、不 cd 到本仓之外的任何目录；产出（报告、快照）只写本仓 `docs/`；收尾不移动、不删除任何文件。
 - PLAN 第 0 节适用；中文 commit；自验全绿才 commit + push；示例用虚构名；有边界疑问报 BLOCKED / NEEDS_CONTEXT。
 
 ## Done when
