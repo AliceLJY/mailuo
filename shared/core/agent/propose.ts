@@ -18,7 +18,7 @@ import {
   tokenize,
 } from '../text/compare.ts';
 
-import type { PerceptionResult } from './perceive.ts';
+import { normalizeSelfName, type PerceptionResult } from './perceive.ts';
 import type {
   MeetingProgressResolution,
   ParticipantResolution,
@@ -32,7 +32,10 @@ export type ProposedCard = ActionCard;
 
 type PerceptionFact = PerceptionResult['facts'][number];
 type PerceptionQuote = PerceptionResult['quotes'][number];
-type ProposeParticipant = PerceptionResult['participants'][number] & { is_self?: boolean };
+type ProposeParticipant = PerceptionResult['participants'][number] & {
+  is_self?: boolean;
+  speech_act?: 'initiate' | 'respond';
+};
 type ProposeEvent = PerceptionResult['events'][number] & { has_time_signal?: boolean };
 type ContactField = 'company' | 'title' | 'phone' | 'wechat_id' | 'notes';
 
@@ -315,7 +318,7 @@ export function buildMeetingChanges(
 }
 
 function isSelfParticipant(participant: ProposeParticipant): boolean {
-  return participant.is_self === true || normalizeComparableText(participant.name) === selfParticipantName;
+  return participant.is_self === true || normalizeSelfName(participant.name) === selfParticipantName;
 }
 
 function buildSelfParticipantNames(participants: ProposeParticipant[]): Set<string> {
@@ -323,7 +326,7 @@ function buildSelfParticipantNames(participants: ProposeParticipant[]): Set<stri
 
   for (const participant of participants) {
     if (isSelfParticipant(participant)) {
-      normalizedNames.add(normalizeComparableText(participant.name));
+      normalizedNames.add(normalizeSelfName(participant.name));
     }
   }
 
@@ -717,28 +720,34 @@ function buildMeetingCard(
   existingMeetings: ExistingMeeting[],
 ): ProposedCard {
   const normalizedTimeIso = normalizeOptionalText(event.time_iso);
+  let hasSelfParticipant = false;
 
   let payload: CreateMeetingPayload = {
     kind: event.kind,
     title: event.title,
     time_iso: normalizedTimeIso ?? null,
     time_text: event.time_text.trim(),
-    participants: event.participant_names.map((name) => {
+    participants: event.participant_names.flatMap<CreateMeetingPayload['participants'][number]>((name) => {
       const normalizedName = normalizeComparableText(name);
 
-      if (selfParticipantNames.has(normalizedName)) {
-        return { name: selfParticipantName };
+      if (selfParticipantNames.has(normalizeSelfName(name))) {
+        if (hasSelfParticipant) {
+          return [];
+        }
+
+        hasSelfParticipant = true;
+        return [{ name: selfParticipantName }];
       }
 
       const resolvedContactId = sameAsParticipantsByName.get(normalizedName);
 
       if (resolvedContactId) {
-        return { contact_id: resolvedContactId, name };
+        return [{ contact_id: resolvedContactId, name }];
       }
 
       const candidates = unsureCandidatesByName.get(normalizedName);
 
-      return candidates?.length ? { name, candidates } : { name };
+      return [candidates?.length ? { name, candidates } : { name }];
     }),
   };
 
@@ -921,6 +930,307 @@ function alignParticipantResolutions(
 function normalizeOptionalText(value: string | null | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+const absoluteMonthDayPattern = /(?:(\d{4}|[〇零一二三四五六七八九]{4})年)?(?:\d{1,2}|[〇零一二两三四五六七八九十]{1,3})月(?:\d{1,2}|[〇零一二两三四五六七八九十]{1,3})(?:日|号)/u;
+const chineseYearDigitMap: Record<string, string> = {
+  '〇': '0',
+  '零': '0',
+  '一': '1',
+  '二': '2',
+  '三': '3',
+  '四': '4',
+  '五': '5',
+  '六': '6',
+  '七': '7',
+  '八': '8',
+  '九': '9',
+};
+const meetingNoticePrefixes = ['通知', '告知', '转发', '提醒'] as const;
+const meetingNoticeSignals = ['会议时间', '时间调整', '时间变更', '改到', '改为'] as const;
+const timelessCommunicationSignals = ['确认', '对接', '沟通', '联系'] as const;
+
+function isMeetingNoticeEvent(event: ProposeEvent): boolean {
+  if (event.kind !== 'other') {
+    return false;
+  }
+
+  const values = [event.title, event.source_quote].map(normalizeMeetingTitle);
+
+  return values.some((value) => (
+    meetingNoticePrefixes.some((prefix) => value.startsWith(prefix)) ||
+    meetingNoticeSignals.some((signal) => value.includes(signal))
+  ));
+}
+
+function isTimelessCommunicationEvent(event: ProposeEvent): boolean {
+  if (
+    event.kind !== 'other' ||
+    event.has_time_signal !== false ||
+    normalizeOptionalText(event.location)
+  ) {
+    return false;
+  }
+
+  const normalizedTitle = normalizeMeetingTitle(event.title);
+  return timelessCommunicationSignals.some((signal) => normalizedTitle.includes(signal));
+}
+
+type MeetingNoticeCandidate = {
+  title: string;
+  time_iso: string | null;
+  time_text: string;
+  participantNames: string[];
+};
+
+function normalizeChineseTimeText(value: string): string {
+  return value
+    .normalize('NFKC')
+    .replace(/礼拜/gu, '星期')
+    .replace(/週/gu, '周')
+    .replace(/\s+/gu, '');
+}
+
+function buildAbsoluteDateAnchor(explicitYearToken: string | undefined, now: Date): Date {
+  const currentYear = Number(new Intl.DateTimeFormat('en', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+  }).format(now));
+  const absoluteYear = explicitYearToken
+    ? Number(Array.from(explicitYearToken, (digit) => chineseYearDigitMap[digit] ?? digit).join(''))
+    : currentYear;
+
+  return new Date(`${absoluteYear}-01-01T00:00:00+08:00`);
+}
+
+function meetingCalendarDay(
+  reference: Pick<MeetingNoticeCandidate, 'time_iso' | 'time_text'>,
+  now: Date,
+): string | null {
+  const isoDay = calendarDay(reference.time_iso);
+  if (isoDay) {
+    return isoDay;
+  }
+
+  const normalizedTimeText = normalizeChineseTimeText(reference.time_text);
+  const absoluteDateMatch = normalizedTimeText.match(absoluteMonthDayPattern);
+  if (!absoluteDateMatch) {
+    return null;
+  }
+
+  return calendarDay(resolveChineseTime(
+    absoluteDateMatch[0],
+    buildAbsoluteDateAnchor(absoluteDateMatch[1], now),
+  ));
+}
+
+function normalizeMeetingParticipantName(
+  name: string,
+  selfParticipantNames: ReadonlySet<string>,
+): string {
+  return selfParticipantNames.has(normalizeSelfName(name))
+    ? selfParticipantName
+    : normalizeComparableText(name);
+}
+
+function findMeetingNoticeCandidate<T>(
+  notice: ProposeEvent,
+  candidates: T[],
+  toCandidate: (candidate: T) => MeetingNoticeCandidate,
+  now: Date,
+  selfParticipantNames: ReadonlySet<string>,
+): T | undefined {
+  const normalizedNoticeTitle = normalizeMeetingTitle(notice.title);
+  const titleMatches = candidates.filter((candidate) => {
+    const normalizedCandidateTitle = normalizeMeetingTitle(toCandidate(candidate).title);
+    return normalizedEditSimilarity(normalizedNoticeTitle, normalizedCandidateTitle) >=
+      MEETING_DUPLICATE_RULES.similarTitleThreshold;
+  });
+
+  if (titleMatches.length !== 0) {
+    return titleMatches.length === 1 ? titleMatches[0] : undefined;
+  }
+
+  const noticeDay = meetingCalendarDay(notice, now);
+  if (!noticeDay) {
+    return undefined;
+  }
+
+  const noticeParticipantNames = new Set(
+    notice.participant_names
+      .map((name) => normalizeMeetingParticipantName(name, selfParticipantNames))
+      .filter(Boolean),
+  );
+  if (noticeParticipantNames.size === 0) {
+    return undefined;
+  }
+
+  const contextMatches = candidates.filter((candidate) => {
+    const reference = toCandidate(candidate);
+    return meetingCalendarDay(reference, now) === noticeDay && reference.participantNames.some(
+      (name) => noticeParticipantNames.has(
+        normalizeMeetingParticipantName(name, selfParticipantNames),
+      ),
+    );
+  });
+
+  return contextMatches.length === 1 ? contextMatches[0] : undefined;
+}
+
+function meetingEventPayload(event: ProposeEvent): CreateMeetingPayload {
+  return {
+    kind: event.kind,
+    title: event.title,
+    time_iso: event.time_iso,
+    time_text: event.time_text,
+    participants: event.participant_names.map((name) => ({ name })),
+    ...(event.location ? { location: event.location } : {}),
+    ...(event.agenda ? { agenda: event.agenda } : {}),
+  };
+}
+
+function routeSpecialOtherEvents(
+  events: ProposeEvent[],
+  existingMeetings: ExistingMeeting[],
+  meetingProgressResolutions: MeetingProgressResolution[],
+  now: Date,
+  selfParticipantNames: ReadonlySet<string>,
+): { events: ProposeEvent[]; meetingProgressResolutions: MeetingProgressResolution[] } {
+  const routedEvents = events.map((event) => ({ ...event }));
+  const discardedIndexes = new Set<number>();
+  const discardedSourceQuotes = new Set<string>();
+  const noticeProgressResolutions: MeetingProgressResolution[] = [];
+  const storedMeetingCandidates = existingMeetings.filter((meeting) => meeting.kind === 'meeting');
+  const batchMeetingIndexes = routedEvents
+    .map((event, index) => event.kind === 'meeting' ? index : -1)
+    .filter((index) => index !== -1);
+
+  for (const [index, event] of events.entries()) {
+    if (!isMeetingNoticeEvent(event)) {
+      if (isTimelessCommunicationEvent(event)) {
+        discardedIndexes.add(index);
+        discardedSourceQuotes.add(event.source_quote.trim());
+      }
+      continue;
+    }
+
+    discardedIndexes.add(index);
+    discardedSourceQuotes.add(event.source_quote.trim());
+    const storedTarget = findMeetingNoticeCandidate(
+      event,
+      storedMeetingCandidates,
+      (meeting) => ({
+        title: meeting.title,
+        time_iso: meeting.time_iso,
+        time_text: meeting.time_text,
+        participantNames: meeting.participants.map((participant) => participant.name),
+      }),
+      now,
+      selfParticipantNames,
+    );
+
+    if (storedTarget) {
+      noticeProgressResolutions.push({
+        meeting_id: storedTarget.id,
+        fragments: [{ content: event.source_quote, source_quote: event.source_quote }],
+      });
+      continue;
+    }
+
+    const batchTargetIndex = findMeetingNoticeCandidate(
+      event,
+      batchMeetingIndexes,
+      (candidateIndex) => {
+        const candidate = routedEvents[candidateIndex];
+        return {
+          title: candidate.title,
+          time_iso: candidate.time_iso,
+          time_text: candidate.time_text,
+          participantNames: candidate.participant_names,
+        };
+      },
+      now,
+      selfParticipantNames,
+    );
+
+    if (batchTargetIndex == null) {
+      continue;
+    }
+
+    const batchTarget = routedEvents[batchTargetIndex];
+    const duplicate = findDuplicateMeeting(meetingEventPayload(batchTarget), existingMeetings);
+
+    if (duplicate) {
+      noticeProgressResolutions.push({
+        meeting_id: duplicate.id,
+        fragments: [{ content: event.source_quote, source_quote: event.source_quote }],
+      });
+      continue;
+    }
+
+    const agenda = appendMeetingAgenda(batchTarget.agenda, [event.source_quote]);
+    routedEvents[batchTargetIndex] = {
+      ...batchTarget,
+      ...(agenda ? { agenda } : {}),
+      source_quote: joinSourceQuotes([batchTarget.source_quote, event.source_quote]),
+    };
+  }
+
+  const splitEvidenceLabel = (value: string): { label: string | null; content: string } => {
+    const match = value.match(/^([^:：\n\d]{1,20})[:：]\s*(.*)$/u);
+
+    return match
+      ? { label: normalizeContactText(match[1]), content: normalizeContactText(match[2]) }
+      : { label: null, content: normalizeContactText(value) };
+  };
+  const discardedEvidence = [...discardedSourceQuotes]
+    .map((sourceQuote) => ({
+      normalized: normalizeContactText(sourceQuote),
+      ...splitEvidenceLabel(sourceQuote),
+    }))
+    .filter((evidence) => evidence.normalized.length > 0);
+  const isDiscardedSourceQuote = (sourceQuote: string): boolean => {
+    const normalizedSourceQuote = normalizeContactText(sourceQuote);
+    const sourceEvidence = splitEvidenceLabel(sourceQuote);
+
+    return discardedEvidence.some((evidence) => {
+      if (
+        normalizedSourceQuote === evidence.normalized ||
+        (
+          sourceEvidence.content.length > 0 &&
+          sourceEvidence.content === evidence.content &&
+          (sourceEvidence.label === null || evidence.label === null)
+        )
+      ) {
+        return true;
+      }
+
+      const shorterLength = Math.min(
+        Array.from(normalizedSourceQuote).length,
+        Array.from(evidence.normalized).length,
+      );
+      return shorterLength >= 4 && (
+        normalizedSourceQuote.includes(evidence.normalized) ||
+        evidence.normalized.includes(normalizedSourceQuote)
+      );
+    });
+  };
+  const retainedProgressResolutions = meetingProgressResolutions
+    .map((resolution) => ({
+      ...resolution,
+      fragments: resolution.fragments.filter(
+        (fragment) => !isDiscardedSourceQuote(fragment.source_quote),
+      ),
+    }))
+    .filter((resolution) => resolution.fragments.length > 0);
+
+  return {
+    events: routedEvents.filter((_event, index) => !discardedIndexes.has(index)),
+    meetingProgressResolutions: [
+      ...retainedProgressResolutions,
+      ...noticeProgressResolutions,
+    ],
+  };
 }
 
 function codePointLength(value: string): number {
@@ -1221,47 +1531,20 @@ export function proposeCards(
     contact.title ?? undefined,
   ]));
   // Only an explicit month/day permits deterministic local resolution. Relative-only text stays with the model value, which the prompt requires to be null.
-  const events = (extraction.events as ProposeEvent[]).map((event) => {
+  const normalizedEvents = (extraction.events as ProposeEvent[]).map((event) => {
     const timeText = normalizeOptionalText(event.time_text);
 
     if (!timeText) {
       return event;
     }
 
-    const normalizedTimeText = timeText
-      .normalize('NFKC')
-      .replace(/礼拜/gu, '星期')
-      .replace(/週/gu, '周')
-      .replace(/\s+/gu, '');
-    const absoluteDateMatch = normalizedTimeText.match(
-      /(?:(\d{4}|[〇零一二三四五六七八九]{4})年)?(?:\d{1,2}|[〇零一二两三四五六七八九十]{1,3})月(?:\d{1,2}|[〇零一二两三四五六七八九十]{1,3})(?:日|号)/u,
-    );
+    const normalizedTimeText = normalizeChineseTimeText(timeText);
+    const absoluteDateMatch = normalizedTimeText.match(absoluteMonthDayPattern);
 
     if (!absoluteDateMatch) {
       return event;
     }
 
-    const currentYear = Number(new Intl.DateTimeFormat('en', {
-      timeZone: 'Asia/Shanghai',
-      year: 'numeric',
-    }).format(now));
-    const explicitYearToken = absoluteDateMatch[1];
-    const chineseYearDigitMap: Record<string, string> = {
-      '〇': '0',
-      '零': '0',
-      '一': '1',
-      '二': '2',
-      '三': '3',
-      '四': '4',
-      '五': '5',
-      '六': '6',
-      '七': '7',
-      '八': '8',
-      '九': '9',
-    };
-    const absoluteYear = explicitYearToken
-      ? Number(Array.from(explicitYearToken, (digit) => chineseYearDigitMap[digit] ?? digit).join(''))
-      : currentYear;
     const absoluteTimeText = normalizedTimeText
       .slice(absoluteDateMatch.index ?? 0)
       .replace(
@@ -1277,7 +1560,7 @@ export function proposeCards(
         time_iso: null,
       };
     }
-    const absoluteAnchor = new Date(`${absoluteYear}-01-01T00:00:00+08:00`);
+    const absoluteAnchor = buildAbsoluteDateAnchor(absoluteDateMatch[1], now);
 
     return {
       ...event,
@@ -1285,6 +1568,16 @@ export function proposeCards(
     };
   });
   const selfParticipantNames = buildSelfParticipantNames(participants);
+  const {
+    events,
+    meetingProgressResolutions: routedMeetingProgressResolutions,
+  } = routeSpecialOtherEvents(
+    normalizedEvents,
+    existingMeetings,
+    meetingProgressResolutions,
+    now,
+    selfParticipantNames,
+  );
   const factsBySubject = indexFactsBySubject(extraction.facts);
   const quotesBySpeaker = indexQuotesBySpeaker(extraction.quotes);
 
@@ -1314,7 +1607,7 @@ export function proposeCards(
       cards.push(buildMeetingCard(event, new Map(), new Map(), selfParticipantNames, existingMeetings));
     }
 
-    cards.push(...buildMeetingProgressCards(existingMeetings, meetingProgressResolutions));
+    cards.push(...buildMeetingProgressCards(existingMeetings, routedMeetingProgressResolutions));
 
     // simplified: keep the legacy M1 flow stable until execute/schema catches up with M2 cards.
     return cards;
@@ -1356,7 +1649,7 @@ export function proposeCards(
     const relatedQuotes =
       quotesBySpeaker.get(normalizeComparableText(participant.name)) ?? [];
     const draft = buildCreateContactPayload(participant, relatedFacts, libraryFieldValues);
-    if (participant.role !== 'mentioned') {
+    if (participant.role !== 'mentioned' && participant.speech_act !== 'respond') {
       const interactionKey =
         resolution.status === 'same_as'
           ? `contact:${resolution.contact_id}`
@@ -1456,7 +1749,7 @@ export function proposeCards(
     );
   }
 
-  cards.push(...buildMeetingProgressCards(existingMeetings, meetingProgressResolutions));
+  cards.push(...buildMeetingProgressCards(existingMeetings, routedMeetingProgressResolutions));
 
   for (const [interactionKey, candidate] of interactionCandidates) {
     if (candidate.requiresCreateCard && !interactionKey.startsWith('pending:')) {

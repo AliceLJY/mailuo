@@ -1,12 +1,16 @@
 import { router } from "expo-router";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Alert, Platform, StyleSheet, Switch, Text, View } from "react-native";
 
 import { clearAllData } from "@/api";
 import { AppButton } from "@/components/button";
-import { FormNotice } from "@/components/connection-fields";
+import { FormNotice, LabeledInput } from "@/components/connection-fields";
 import { Page, SectionCard } from "@/components/page";
-import { getLocalProcessingSettings, type LocalProcessingSettings } from "@/connection/config";
+import {
+  getLocalProcessingSettings,
+  parseSelfNamesInput,
+  type LocalProcessingSettings,
+} from "@/connection/config";
 import { useConnection } from "@/connection/context";
 import { exportLocalDiagnosticsBundle } from "@/diagnostics/diagnostics-export-runtime";
 import { logEvent } from "@/diagnostics/event-log";
@@ -21,6 +25,7 @@ export default function SettingsScreen() {
   const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [savingPreference, setSavingPreference] = useState(false);
+  const [selfNamesInput, setSelfNamesInput] = useState(config?.selfNames?.join("，") ?? "");
   const [message, setMessage] = useState<string | null>(null);
   const isLocal = config?.mode === "local";
   const localProcessing = getLocalProcessingSettings(config);
@@ -30,6 +35,10 @@ export default function SettingsScreen() {
   const hasInProgressUploadRef = useRef(hasInProgressUpload);
   const { showToast } = useToast();
   hasInProgressUploadRef.current = hasInProgressUpload;
+
+  useEffect(() => {
+    setSelfNamesInput(config?.selfNames?.join("，") ?? "");
+  }, [config?.selfNames]);
 
   async function saveLocalProcessing(patch: Partial<LocalProcessingSettings>) {
     if (!config || config.mode !== "local") {
@@ -48,6 +57,25 @@ export default function SettingsScreen() {
       });
     } catch {
       setMessage("处理设置暂时没有保存成功，请再试一次。");
+    } finally {
+      setSavingPreference(false);
+    }
+  }
+
+  async function saveSelfNames() {
+    if (!config || config.mode !== "local") {
+      return;
+    }
+
+    setSavingPreference(true);
+    setMessage(null);
+
+    try {
+      const selfNames = parseSelfNamesInput(selfNamesInput);
+      await saveConfig({ ...config, selfNames });
+      setSelfNamesInput(selfNames.join("，"));
+    } catch {
+      setMessage("本人昵称暂时没有保存成功，请再试一次。");
     } finally {
       setSavingPreference(false);
     }
@@ -193,6 +221,34 @@ export default function SettingsScreen() {
           onPress={() => router.push(isLocal ? "/connection/local" : "/connection/server")}
           tone="secondary"
         />
+      </SectionCard>
+
+      <SectionCard title="本人在群里的昵称">
+        {isLocal ? (
+          <>
+            <Text style={styles.description}>
+              用于避免把你自己的群昵称误建成联系人。多个昵称请用逗号分隔。
+            </Text>
+            <LabeledInput
+              autoCorrect={false}
+              label="群昵称"
+              onChangeText={(value) => {
+                setSelfNamesInput(value);
+                setMessage(null);
+              }}
+              placeholder="例如：小禾，禾老师"
+              value={selfNamesInput}
+            />
+            <AppButton
+              disabled={savingPreference}
+              label={savingPreference ? "正在保存..." : "保存本人昵称"}
+              onPress={() => void saveSelfNames()}
+              tone="secondary"
+            />
+          </>
+        ) : (
+          <Text style={styles.description}>服务器模式暂不支持本人昵称设置。</Text>
+        )}
       </SectionCard>
 
       {isLocal && Platform.OS === "android" ? (

@@ -5,11 +5,13 @@ export type ConnectionConfig = {
   serverUrl?: string;
   perceptionPath?: PerceptionPath;
   exportOcrResults?: boolean;
+  selfNames?: string[];
 };
 
 export type LocalProcessingSettings = {
   perceptionPath: PerceptionPath;
   exportOcrResults: boolean;
+  selfNames: string[];
 };
 
 export interface TextStorage {
@@ -31,12 +33,48 @@ function normalizeServerUrl(value: string | undefined): string | undefined {
   return normalized || undefined;
 }
 
+function normalizeComparableName(value: string): string {
+  return value.trim().replace(/\s+/gu, " ").toLocaleLowerCase();
+}
+
+export function normalizeSelfNames(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const names: string[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of value) {
+    if (typeof entry !== "string") {
+      continue;
+    }
+
+    const name = entry.trim().replace(/\s+/gu, " ");
+    const comparableName = normalizeComparableName(name);
+
+    if (!comparableName || seen.has(comparableName)) {
+      continue;
+    }
+
+    seen.add(comparableName);
+    names.push(name);
+  }
+
+  return names;
+}
+
+export function parseSelfNamesInput(value: string): string[] {
+  return normalizeSelfNames(value.split(/[,，]/u));
+}
+
 export function getLocalProcessingSettings(
   config: ConnectionConfig | null | undefined,
 ): LocalProcessingSettings {
   return {
     perceptionPath: config?.perceptionPath === "cloud" ? "cloud" : "ocr",
     exportOcrResults: config?.exportOcrResults === true,
+    selfNames: normalizeSelfNames(config?.selfNames),
   };
 }
 
@@ -59,6 +97,7 @@ function parseConnectionConfig(value: string | null): ConnectionConfig | null {
       ...(serverUrl ? { serverUrl } : {}),
       ...(processing.perceptionPath === "cloud" ? { perceptionPath: "cloud" as const } : {}),
       ...(processing.exportOcrResults ? { exportOcrResults: true } : {}),
+      ...(processing.selfNames.length > 0 ? { selfNames: processing.selfNames } : {}),
     };
   } catch {
     return null;
@@ -80,6 +119,7 @@ export function createConnectionConfigStore(storage: TextStorage): ConnectionCon
           ...(serverUrl ? { serverUrl } : {}),
           ...(processing.perceptionPath === "cloud" ? { perceptionPath: "cloud" as const } : {}),
           ...(processing.exportOcrResults ? { exportOcrResults: true } : {}),
+          ...(processing.selfNames.length > 0 ? { selfNames: processing.selfNames } : {}),
         } satisfies ConnectionConfig),
       );
     },

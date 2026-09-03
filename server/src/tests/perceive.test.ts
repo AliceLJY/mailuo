@@ -38,6 +38,15 @@ function extractParticipantRoleRules(prompt: string): string {
   return match[0];
 }
 
+function extractParticipantSpeechActRules(prompt: string): string {
+  const match = prompt.match(
+    /Participant speech-act rules:[\s\S]+?(?=\nParticipant role rules:)/u,
+  );
+
+  assert.ok(match);
+  return match[0];
+}
+
 test('PerceptionParticipantSchema requires explicit is_self', () => {
   const result = PerceptionParticipantSchema.safeParse({
     name: '我',
@@ -82,6 +91,36 @@ test('PerceptionParticipantSchema accepts speaker and mentioned roles, rejects i
   assert.equal(invalid.error.issues[0]?.path.join('.'), 'role');
   assert.equal(missing.role, undefined);
   assert.equal(Object.hasOwn(missing, 'role'), false);
+});
+
+test('PerceptionParticipantSchema accepts initiate and respond speech acts, rejects invalid values, and preserves a missing field', () => {
+  const participant = {
+    name: '骆澄',
+    is_self: false,
+    role: 'speaker',
+    confidence: 'high',
+    source_quote: '我来通知一下评审时间',
+  } as const;
+  const initiate = PerceptionParticipantSchema.parse({
+    ...participant,
+    speech_act: 'initiate',
+  });
+  const respond = PerceptionParticipantSchema.parse({
+    ...participant,
+    speech_act: 'respond',
+  });
+  const invalid = PerceptionParticipantSchema.safeParse({
+    ...participant,
+    speech_act: 'observe',
+  });
+  const missing = PerceptionParticipantSchema.parse(participant);
+
+  assert.equal(initiate.speech_act, 'initiate');
+  assert.equal(respond.speech_act, 'respond');
+  assert.equal(invalid.success, false);
+  assert.equal(invalid.error.issues[0]?.path.join('.'), 'speech_act');
+  assert.equal(missing.speech_act, undefined);
+  assert.equal(Object.hasOwn(missing, 'speech_act'), false);
 });
 
 test('PerceptionParticipantSchema trims non-empty interaction_summary and rejects blank values', () => {
@@ -268,6 +307,18 @@ test('visual and text perception prompts share the exact participant role rules'
   );
 });
 
+test('visual and text perception prompts share the exact participant speech-act rules', () => {
+  const now = new Date('2026-12-27T10:15:30+08:00');
+  const visualRules = extractParticipantSpeechActRules(buildPerceptionSystemPrompt(now));
+  const textRules = extractParticipantSpeechActRules(buildPerceptionTextSystemPrompt(now));
+
+  assert.equal(visualRules, textRules);
+  assert.match(visualRules, /speech_act="initiate" when the participant initiates an arrangement, notification, question, assignment, proposal, or information-sharing/u);
+  assert.match(visualRules, /speech_act="respond" only when all messages from that participant merely respond/u);
+  assert.match(visualRules, /Treat it as respond even when the wording is longer/u);
+  assert.match(visualRules, /both initiate and respond messages, set speech_act="initiate"/u);
+});
+
 test('visual and text perception prompts share the evidence-gated participant alias rules', () => {
   const now = new Date('2026-12-27T10:15:30+08:00');
   const visualRules = extractAliasRules(buildPerceptionSystemPrompt(now));
@@ -332,6 +383,8 @@ test('parseStoredPerceptionResult restores legacy missing booleans without dropp
   assert.equal(result.participants[1]?.is_self, false);
   assert.equal(result.participants[1]?.role, undefined);
   assert.equal(Object.hasOwn(result.participants[1] ?? {}, 'role'), false);
+  assert.equal(result.participants[1]?.speech_act, undefined);
+  assert.equal(Object.hasOwn(result.participants[1] ?? {}, 'speech_act'), false);
   assert.equal(result.events[0]?.has_time_signal, false);
   assert.equal(result.events[1]?.has_time_signal, true);
 });

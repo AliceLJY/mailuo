@@ -26,11 +26,17 @@ export function getExpoLocalApi(): RoutedApi {
       keys: localLlmSecretStore,
       loadImage: loadScreenshotImage,
       async getProcessingSettings() {
+        const processing = getLocalProcessingSettings(await connectionConfigStore.get());
+
         if (Platform.OS !== "android") {
-          return { perceptionPath: "cloud", exportOcrResults: false };
+          return {
+            ...processing,
+            perceptionPath: "cloud",
+            exportOcrResults: false,
+          };
         }
 
-        return getLocalProcessingSettings(await connectionConfigStore.get());
+        return processing;
       },
       perceiveOcr: perceiveScreenshotWithNativeOcr,
       perceiveOcrText,

@@ -143,6 +143,7 @@ export default function LocalConnectionScreen() {
         mode: "local",
         ...(config?.perceptionPath === "cloud" ? { perceptionPath: "cloud" } : {}),
         ...(config?.exportOcrResults ? { exportOcrResults: true } : {}),
+        ...(config?.selfNames?.length ? { selfNames: config.selfNames } : {}),
       });
       resetFlow({ preserveExistingBatch: true });
       router.replace("/(tabs)");

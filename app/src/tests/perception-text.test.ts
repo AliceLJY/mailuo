@@ -87,6 +87,15 @@ function extractParticipantRoleRules(prompt: string) {
   return match[0];
 }
 
+function extractParticipantSpeechActRules(prompt: string) {
+  const match = prompt.match(
+    /Participant speech-act rules:[\s\S]+?(?=\nParticipant role rules:)/u,
+  );
+
+  assert.ok(match);
+  return match[0];
+}
+
 function extractGeneratedContentRules(prompt: string) {
   const match = prompt.match(
     /Generated natural-language and item-detail rules:[\s\S]+?(?=\nIf an event contains no time wording)/u,
@@ -129,6 +138,13 @@ const FIX5_PARTICIPANT_ROLE_RULES = [
   "- Set role=\"mentioned\" only when the participant appears in message body text, a notification, a roster, or an @mention list and did not send any message in this evidence.",
 ].join("\n");
 
+const FIX8_PARTICIPANT_SPEECH_ACT_RULES = [
+  "Participant speech-act rules:",
+  "- Set speech_act=\"initiate\" when the participant initiates an arrangement, notification, question, assignment, proposal, or information-sharing in this evidence—that is, any message that gives the other side something new to do or new information to know.",
+  "- Set speech_act=\"respond\" only when all messages from that participant merely respond to another person through acknowledgement, confirmation, agreement, thanks, or a brief stance such as \"收到\", \"好的\", \"会落实\", \"可以参加\", or \"明白\". Treat it as respond even when the wording is longer.",
+  "- If the participant has both initiate and respond messages, set speech_act=\"initiate\". Omit speech_act only when the participant sent no message in this evidence.",
+].join("\n");
+
 const AFTER_FIX5_INTERACTION_SUMMARY_RULES = [
   "Interaction summary rules:",
   "- For every participant with is_self=false and role=\"speaker\", interaction_summary is required and must be exactly one non-empty natural-language sentence. A participant with role=\"mentioned\" may omit interaction_summary. Omit interaction_summary for the self participant.",
@@ -163,12 +179,18 @@ function readPerceptionPromptSnapshot(fileName: string): PerceptionPromptSnapsho
   )) as PerceptionPromptSnapshot;
 }
 
-test("v3-M4-fix5 visual and text system prompts match the fixed after snapshot", () => {
-  const snapshot = readPerceptionPromptSnapshot("perception-prompts.after-v3-m4-fix5.json");
+test("v3-M4-fix8 visual and text system prompts match the fixed after snapshot", () => {
+  const snapshot = JSON.parse(readFileSync(
+    new URL(
+      "../../../docs/perception-baseline/perception-prompts.after-v3-m4-fix8.json",
+      import.meta.url,
+    ),
+    "utf8",
+  )) as Fix6PerceptionPromptSnapshot;
   const now = new Date(snapshot.baselineNow);
 
   assert.equal(
-    buildPerceptionSystemPrompt(now),
+    buildPerceptionSystemPrompt(now, snapshot.timestampHints),
     snapshot.buildPerceptionSystemPrompt,
   );
   assert.equal(
@@ -195,7 +217,6 @@ test("v3-M4-fix6 prompt snapshots preserve fix5 bytes and add only visual timest
   const afterText = readFileSync(afterUrl, "utf8");
   const before = JSON.parse(beforeBytes.toString("utf8")) as PerceptionPromptSnapshot;
   const after = JSON.parse(afterText) as Fix6PerceptionPromptSnapshot;
-  const now = new Date(after.baselineNow);
 
   assert.deepEqual(beforeBytes, previousBytes);
   assert.equal(
@@ -208,14 +229,6 @@ test("v3-M4-fix6 prompt snapshots preserve fix5 bytes and add only visual timest
   assert.deepEqual(after.timestampHints, FIX6_TIMESTAMP_HINTS);
   assert.equal(afterText, `${JSON.stringify(after, null, 2)}\n`);
   assert.equal(
-    buildPerceptionSystemPrompt(now, after.timestampHints),
-    after.buildPerceptionSystemPrompt,
-  );
-  assert.equal(
-    buildPerceptionTextSystemPrompt(now),
-    after.buildPerceptionTextSystemPrompt,
-  );
-  assert.equal(
     after.buildPerceptionSystemPrompt.replace(`${FIX6_VISUAL_TIMESTAMP_HINTS}\n`, ""),
     before.buildPerceptionSystemPrompt,
   );
@@ -223,6 +236,71 @@ test("v3-M4-fix6 prompt snapshots preserve fix5 bytes and add only visual timest
     after.buildPerceptionTextSystemPrompt,
     before.buildPerceptionTextSystemPrompt,
   );
+});
+
+test("v3-M4-fix8 prompt snapshots preserve fix7 bytes and add only the participant speech-act contract", () => {
+  const beforeUrl = new URL(
+    "../../../docs/perception-baseline/perception-prompts.before-v3-m4-fix8.json",
+    import.meta.url,
+  );
+  const previousUrl = new URL(
+    "../../../docs/perception-baseline/perception-prompts.after-v3-m4-fix6.json",
+    import.meta.url,
+  );
+  const afterUrl = new URL(
+    "../../../docs/perception-baseline/perception-prompts.after-v3-m4-fix8.json",
+    import.meta.url,
+  );
+  const beforeBytes = readFileSync(beforeUrl);
+  const previousBytes = readFileSync(previousUrl);
+  const afterText = readFileSync(afterUrl, "utf8");
+  const before = JSON.parse(beforeBytes.toString("utf8")) as Fix6PerceptionPromptSnapshot;
+  const after = JSON.parse(afterText) as Fix6PerceptionPromptSnapshot;
+  const now = new Date(after.baselineNow);
+  const promptKeys = [
+    "buildPerceptionSystemPrompt",
+    "buildPerceptionTextSystemPrompt",
+  ] as const;
+  const beforeSchemaLines = {
+    buildPerceptionSystemPrompt: "- participants: array of people explicitly shown or mentioned in the screenshot. Include name, is_self, role (\"speaker\" or \"mentioned\"), optional aliases/company/title/phone/wechat_id/notes, interaction_summary required only for non-self role=\"speaker\" participants and optional for role=\"mentioned\" participants, confidence, source_quote. Omit interaction_summary for self.",
+    buildPerceptionTextSystemPrompt: "- participants: array of people explicitly shown or mentioned in the provided OCR text. Include name, is_self, role (\"speaker\" or \"mentioned\"), optional aliases/company/title/phone/wechat_id/notes, interaction_summary required only for non-self role=\"speaker\" participants and optional for role=\"mentioned\" participants, confidence, source_quote. Omit interaction_summary for self.",
+  } as const;
+  const afterSchemaLines = {
+    buildPerceptionSystemPrompt: "- participants: array of people explicitly shown or mentioned in the screenshot. Include name, is_self, role (\"speaker\" or \"mentioned\"), speech_act (\"initiate\" or \"respond\") for role=\"speaker\", optional aliases/company/title/phone/wechat_id/notes, interaction_summary required only for non-self role=\"speaker\" participants and optional for role=\"mentioned\" participants, confidence, source_quote. Omit speech_act for role=\"mentioned\" and interaction_summary for self.",
+    buildPerceptionTextSystemPrompt: "- participants: array of people explicitly shown or mentioned in the provided OCR text. Include name, is_self, role (\"speaker\" or \"mentioned\"), speech_act (\"initiate\" or \"respond\") for role=\"speaker\", optional aliases/company/title/phone/wechat_id/notes, interaction_summary required only for non-self role=\"speaker\" participants and optional for role=\"mentioned\" participants, confidence, source_quote. Omit speech_act for role=\"mentioned\" and interaction_summary for self.",
+  } as const;
+
+  assert.deepEqual(beforeBytes, previousBytes);
+  assert.equal(
+    createHash("sha256").update(beforeBytes).digest("hex"),
+    "590d35628c8c19e84b7c7447bbad75d9a3f9fadf05ede0aa02b41869ccf88232",
+  );
+  assert.equal(after.sourceRevision, "897d512");
+  assert.equal(after.snapshotPhase, "after v3-M4-fix8 working-tree changes");
+  assert.equal(after.baselineNow, before.baselineNow);
+  assert.deepEqual(after.timestampHints, before.timestampHints);
+  assert.equal(afterText, `${JSON.stringify(after, null, 2)}\n`);
+  assert.equal(
+    buildPerceptionSystemPrompt(now, after.timestampHints),
+    after.buildPerceptionSystemPrompt,
+  );
+  assert.equal(
+    buildPerceptionTextSystemPrompt(now),
+    after.buildPerceptionTextSystemPrompt,
+  );
+
+  for (const promptKey of promptKeys) {
+    assert.doesNotMatch(before[promptKey], /Participant speech-act rules:/u);
+    assert.equal(after[promptKey].split(FIX8_PARTICIPANT_SPEECH_ACT_RULES).length, 2);
+    assert.equal(before[promptKey].split(beforeSchemaLines[promptKey]).length, 2);
+    assert.equal(after[promptKey].split(afterSchemaLines[promptKey]).length, 2);
+    assert.equal(
+      after[promptKey]
+        .replace(`${FIX8_PARTICIPANT_SPEECH_ACT_RULES}\n`, "")
+        .replace(afterSchemaLines[promptKey], beforeSchemaLines[promptKey]),
+      before[promptKey],
+    );
+  }
 });
 
 test("visual timestamp hints are included only when the hint list is non-empty", () => {
@@ -429,6 +507,15 @@ test("visual and text prompts share the exact participant role rules", () => {
 
   assert.equal(visualRules, textRules);
   assert.equal(visualRules, FIX5_PARTICIPANT_ROLE_RULES);
+});
+
+test("visual and text prompts share the exact participant speech-act rules", () => {
+  const now = new Date("2026-08-29T08:00:00+08:00");
+  const visualRules = extractParticipantSpeechActRules(buildPerceptionSystemPrompt(now));
+  const textRules = extractParticipantSpeechActRules(buildPerceptionTextSystemPrompt(now));
+
+  assert.equal(visualRules, textRules);
+  assert.equal(visualRules, FIX8_PARTICIPANT_SPEECH_ACT_RULES);
 });
 
 test("visual and text prompts share the exact timestamp-anchor time rules", () => {

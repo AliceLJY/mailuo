@@ -739,6 +739,7 @@ test("clearAllData removes all six local data tables while retaining keys and se
     mode: "local",
     perceptionPath: "cloud",
     exportOcrResults: true,
+    selfNames: ["小禾"],
   });
   const api = createLocalApi({
     store,
@@ -778,6 +779,7 @@ test("clearAllData removes all six local data tables while retaining keys and se
     mode: "local",
     perceptionPath: "cloud",
     exportOcrResults: true,
+    selfNames: ["小禾"],
   });
   assert.equal(configRemoveCalls, 0);
 });
@@ -1960,6 +1962,129 @@ test("a persisted dependent interaction reports its named pending, rejected, and
   );
 });
 
+test("configured self name overrides visual extraction and displays the meeting participant as me", async () => {
+  const store = new FakeLocalStore();
+  const qwen = new FakeStructuredOutputProvider(() => ({
+    participants: [{
+      name: "麦  老师",
+      is_self: false,
+      role: "speaker",
+      speech_act: "initiate",
+      interaction_summary: "禾老师发起了周会安排。",
+      confidence: "high",
+      source_quote: "禾老师：周五一起开周会",
+    }, {
+      name: "小禾",
+      is_self: false,
+      role: "speaker",
+      speech_act: "respond",
+      interaction_summary: "小禾确认了周会安排。",
+      confidence: "high",
+      source_quote: "小禾：好的",
+    }],
+    events: [{
+      kind: "meeting",
+      title: "项目周会",
+      time_text: "周五上午十点",
+      time_iso: "2026-08-28T10:00:00+08:00",
+      has_time_signal: true,
+      participant_names: ["麦 老师", "小禾"],
+      confidence: "high",
+      source_quote: "禾老师：周五上午十点一起开项目周会",
+    }],
+    facts: [],
+    quotes: [],
+  }));
+  const text = new FakeStructuredOutputProvider(() => ({ insights: [] }));
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async (asset) => ({
+      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+      imagePath: asset.uri,
+    }),
+    providers: {
+      async createQwenProvider() {
+        return qwen;
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    async getProcessingSettings() {
+      return {
+        perceptionPath: "cloud",
+        exportOcrResults: false,
+        selfNames: ["麦 老师", "小禾"],
+      };
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  const upload = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/self-name.png", mimeType: "image/png" },
+  });
+
+  assert.deepEqual(upload.cards.map((card) => card.type), ["create_meeting"]);
+  const meeting = upload.cards[0];
+  assert.equal(meeting?.type, "create_meeting");
+  if (meeting?.type === "create_meeting") {
+    assert.deepEqual(meeting.payload.participants, [{ name: "我" }]);
+  }
+  const detail = await api.getScreenshotDetail(upload.screenshot_id);
+  assert.equal(detail.raw_extraction?.participants[0]?.is_self, true);
+});
+
+test("a participant not matching configured self names keeps normal contact and interaction cards", async () => {
+  const store = new FakeLocalStore();
+  const extraction = {
+    participants: [{
+      name: "小杉",
+      is_self: false,
+      role: "speaker",
+      speech_act: "initiate",
+      interaction_summary: "小杉发起了方案讨论。",
+      confidence: "high" as const,
+      source_quote: "小杉：我们讨论一下新方案",
+    }],
+    events: [],
+    facts: [],
+    quotes: [],
+  } satisfies PerceptionResult;
+  const text = new FakeStructuredOutputProvider(() => ({ insights: [] }));
+  const api = createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async () => {
+      throw new Error("image loading is not used for text uploads");
+    },
+    providers: {
+      async createQwenProvider() {
+        throw new Error("Qwen is not used for text uploads");
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    async perceiveOcrText() {
+      return extraction;
+    },
+    async getProcessingSettings() {
+      return { perceptionPath: "cloud", exportOcrResults: false, selfNames: ["小禾"] };
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  const upload = await api.uploadText({ text: "小杉：我们讨论一下新方案" });
+
+  assert.deepEqual(
+    upload.cards.map((card) => card.type),
+    ["create_contact", "record_interaction"],
+  );
+  const detail = await api.getScreenshotDetail(upload.screenshot_id);
+  assert.equal(detail.raw_extraction?.participants[0]?.is_self, false);
+});
+
 test("local orchestration reaches terminal contacts, observations, meetings, and insights", async () => {
   const store = new FakeLocalStore();
   const qwen = new FakeStructuredOutputProvider(() => ({
@@ -2299,7 +2424,7 @@ async function runOcrFallbackCase(
       },
     },
     async getProcessingSettings() {
-      return { perceptionPath: "ocr", exportOcrResults: false };
+      return { perceptionPath: "ocr", exportOcrResults: false, selfNames: [] };
     },
     perceiveOcr,
     async perceiveOcrText() {
@@ -2349,7 +2474,7 @@ async function runOcrTextOnlyCase(ocr: OcrPerceptionResult) {
       },
     },
     async getProcessingSettings() {
-      return { perceptionPath: "ocr", exportOcrResults: false };
+      return { perceptionPath: "ocr", exportOcrResults: false, selfNames: [] };
     },
     async perceiveOcr() {
       return ocr;
@@ -2626,7 +2751,7 @@ test("healthy OCR stays on the text path and does not create a Qwen-VL provider"
       },
     },
     async getProcessingSettings() {
-      return { perceptionPath: "ocr", exportOcrResults: false };
+      return { perceptionPath: "ocr", exportOcrResults: false, selfNames: [] };
     },
     async perceiveOcr() {
       return {
@@ -2687,7 +2812,7 @@ test("forced cloud path does not invoke OCR or OCR text interpretation", async (
       },
     },
     async getProcessingSettings() {
-      return { perceptionPath: "cloud", exportOcrResults: true };
+      return { perceptionPath: "cloud", exportOcrResults: true, selfNames: [] };
     },
     async perceiveOcr() {
       ocrCalls += 1;
@@ -2742,7 +2867,7 @@ test("OCR export failure is reported without changing a healthy text result", as
       },
     },
     async getProcessingSettings() {
-      return { perceptionPath: "ocr", exportOcrResults: true };
+      return { perceptionPath: "ocr", exportOcrResults: true, selfNames: [] };
     },
     async perceiveOcr() {
       return {
@@ -3034,7 +3159,7 @@ test("local screenshot success records OCR decisions and proposed cards", async 
       },
     },
     async getProcessingSettings() {
-      return { perceptionPath: "ocr", exportOcrResults: false };
+      return { perceptionPath: "ocr", exportOcrResults: false, selfNames: [] };
     },
     async perceiveOcr() {
       return {
@@ -3110,7 +3235,7 @@ test("local screenshot failure records OCR fallback state and preserves the orig
       },
     },
     async getProcessingSettings() {
-      return { perceptionPath: "ocr", exportOcrResults: false };
+      return { perceptionPath: "ocr", exportOcrResults: false, selfNames: [] };
     },
     async perceiveOcr() {
       return {
@@ -3179,7 +3304,7 @@ test("OCR configuration is recorded before text-provider creation fails", async 
       },
     },
     async getProcessingSettings() {
-      return { perceptionPath: "ocr", exportOcrResults: false };
+      return { perceptionPath: "ocr", exportOcrResults: false, selfNames: [] };
     },
     async perceiveOcr() {
       throw new Error("OCR is not reached");

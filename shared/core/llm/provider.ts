@@ -91,6 +91,11 @@ export class StructuredOutputError extends Error {
 
 export type FetchLike = typeof fetch;
 
+export const MODEL_REQUEST_TIMEOUT_MS = {
+  text: 60_000,
+  vision: 90_000,
+} as const;
+
 export type OpenAICompatibleProviderOptions = {
   name: string;
   model: string;
@@ -190,6 +195,14 @@ function buildRetryMessages(messages: ChatMessage[], rawText: string, errorDetai
   ];
 }
 
+function hasImageContent(messages: ChatMessage[]): boolean {
+  return messages.some(
+    (message) =>
+      Array.isArray(message.content) &&
+      message.content.some((part) => part.type === 'image_url'),
+  );
+}
+
 export abstract class OpenAICompatibleProvider implements StructuredOutputProvider {
   readonly name: string;
   readonly model: string;
@@ -209,43 +222,85 @@ export abstract class OpenAICompatibleProvider implements StructuredOutputProvid
 
   async complete(request: ChatCompletionRequest): Promise<string> {
     let response: Response;
-
-    try {
-      response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.model,
-          messages: request.messages,
-          temperature: request.temperature ?? 0,
-          max_tokens: request.maxOutputTokens,
-          response_format: request.responseFormat,
-        }),
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new ProviderRequestError({
-        message: `${this.name} request failed: ${message}`,
-        provider: this.name,
-        model: this.model,
-      });
-    }
-
     let payload: OpenAIChatCompletionResponse;
+    const timeoutMs = hasImageContent(request.messages)
+      ? MODEL_REQUEST_TIMEOUT_MS.vision
+      : MODEL_REQUEST_TIMEOUT_MS.text;
+    const abortController = new AbortController();
+    let didTimeout = false;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
-    try {
-      payload = (await response.json()) as OpenAIChatCompletionResponse;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new ProviderRequestError({
-        message: `${this.name} returned a non-JSON response: ${message}`,
+    const timeoutError = () =>
+      new ProviderRequestError({
+        message: `模型请求超时（${timeoutMs / 1_000} 秒），请检查网络后重试`,
         provider: this.name,
         model: this.model,
-        statusCode: response.status,
+        code: 'PROVIDER_REQUEST_TIMEOUT',
       });
+
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timeoutHandle = setTimeout(() => {
+        didTimeout = true;
+        reject(timeoutError());
+        abortController.abort();
+      }, timeoutMs);
+    });
+
+    try {
+      try {
+        response = await Promise.race([
+          this.fetchImpl(`${this.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${this.apiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              model: this.model,
+              messages: request.messages,
+              temperature: request.temperature ?? 0,
+              max_tokens: request.maxOutputTokens,
+              response_format: request.responseFormat,
+            }),
+            signal: abortController.signal,
+          }),
+          timeoutPromise,
+        ]);
+      } catch (error) {
+        if (didTimeout) {
+          throw timeoutError();
+        }
+
+        const message = error instanceof Error ? error.message : String(error);
+        throw new ProviderRequestError({
+          message: `${this.name} request failed: ${message}`,
+          provider: this.name,
+          model: this.model,
+        });
+      }
+
+      try {
+        payload = await Promise.race([
+          response.json() as Promise<OpenAIChatCompletionResponse>,
+          timeoutPromise,
+        ]);
+      } catch (error) {
+        if (didTimeout) {
+          throw timeoutError();
+        }
+
+        const message = error instanceof Error ? error.message : String(error);
+        throw new ProviderRequestError({
+          message: `${this.name} returned a non-JSON response: ${message}`,
+          provider: this.name,
+          model: this.model,
+          statusCode: response.status,
+        });
+      }
+    } finally {
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+      }
     }
 
     if (!response.ok) {

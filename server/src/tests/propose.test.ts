@@ -737,6 +737,68 @@ test('proposeCards falls back to raw quote content when interaction_summary is m
   );
 });
 
+test('proposeCards records interactions only for initiating or legacy participants', () => {
+  const resolution: ParticipantResolution = {
+    participant_name: '骆澄',
+    normalized_name: '骆澄',
+    status: 'same_as',
+    contact_id: 15,
+    source: 'exact',
+  };
+  const contact: ResolvableContact = {
+    id: 15,
+    canonical_name: '骆澄',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  };
+  const baseParticipant: PerceptionResult['participants'][number] = {
+    name: '骆澄',
+    is_self: false,
+    role: 'speaker',
+    interaction_summary: '骆澄就项目安排作了说明。',
+    confidence: 'high',
+    source_quote: '骆澄：我来安排下一轮评审',
+  };
+  const extraction = (
+    participant: PerceptionResult['participants'][number],
+  ): PerceptionResult => ({
+    participants: [participant],
+    events: [],
+    facts: [],
+    quotes: [],
+  });
+
+  const respondCards = proposeCards(
+    extraction({ ...baseParticipant, speech_act: 'respond', company: '星桥科技' }),
+    [resolution],
+    [contact],
+  );
+  const initiateCards = proposeCards(
+    extraction({ ...baseParticipant, speech_act: 'initiate' }),
+    [resolution],
+    [contact],
+  );
+  const legacyCards = proposeCards(extraction(baseParticipant), [resolution], [contact]);
+
+  assert.deepEqual(respondCards.map((card) => card.type), ['update_contact']);
+  assert.deepEqual(
+    respondCards[0]?.type === 'update_contact' ? respondCards[0].payload.changes : null,
+    { company: { old: null, new: '星桥科技' } },
+  );
+  assert.equal(
+    initiateCards.some((card) => card.type === 'record_interaction'),
+    true,
+  );
+  assert.equal(
+    legacyCards.some((card) => card.type === 'record_interaction'),
+    true,
+  );
+});
+
 test('proposeCards omits an interaction when three source messages are only acknowledgements', () => {
   const sourceQuotes = ['收到！', '收到1️⃣', '收到 👍'];
   const extraction: PerceptionResult = {
@@ -862,13 +924,14 @@ test('proposeCards skips generic mentioned contacts in the no-resolution branch 
     events: [
       {
         kind: 'other',
-        title: '发送通知',
+        title: '准备资料寄送',
         time_text: '',
         time_iso: null,
         has_time_signal: false,
+        location: '园区收发室',
         participant_names: genericNames,
         confidence: 'high',
-        source_quote: '通知已发送',
+        source_quote: '资料送到园区收发室',
       },
     ],
     facts: [],
@@ -2420,6 +2483,364 @@ test('proposeCards creates create_contact cards for new and unsure participants 
       source_quote: '李姐，下周找时间见面',
     },
   ]);
+});
+
+const storedProjectMeeting: ExistingMeeting = {
+  id: 61,
+  kind: 'meeting',
+  title: '星桥项目阶段评审会',
+  time_iso: '2026-09-08T09:30:00+08:00',
+  time_text: '9月8日上午9:30',
+  location: '第三会议室',
+  participants: [{ contact_id: 18, name: '骆澄' }],
+  agenda: '评审阶段成果',
+};
+
+function eventOnlyExtraction(
+  events: PerceptionResult['events'],
+): PerceptionResult {
+  return {
+    participants: [],
+    events,
+    facts: [],
+    quotes: [],
+  };
+}
+
+test('proposeCards turns a stored-meeting time notice into a standard agenda-append card', () => {
+  const noticeSource = '通知：星桥项目阶段评审会改到下午三点';
+  const cards = proposeCards(
+    eventOnlyExtraction([
+      {
+        kind: 'other',
+        title: '通知星桥项目参会人时间变更',
+        time_text: '9月8日下午3点',
+        time_iso: '2026-09-08T15:00:00+08:00',
+        has_time_signal: true,
+        participant_names: ['骆澄'],
+        confidence: 'high',
+        source_quote: noticeSource,
+      },
+    ]),
+    [],
+    [],
+    proposalNow,
+    [storedProjectMeeting],
+    [{
+      meeting_id: storedProjectMeeting.id,
+      fragments: [{
+        content: '参会时间已确认',
+        source_quote: noticeSource,
+      }],
+    }],
+  );
+
+  assert.deepEqual(cards, [
+    {
+      type: 'create_meeting',
+      payload: {
+        kind: 'meeting',
+        title: storedProjectMeeting.title,
+        time_iso: storedProjectMeeting.time_iso,
+        time_text: storedProjectMeeting.time_text,
+        location: storedProjectMeeting.location,
+        participants: storedProjectMeeting.participants,
+        agenda: `评审阶段成果；${noticeSource}`,
+        agenda_append: noticeSource,
+        duplicate_of_meeting_id: storedProjectMeeting.id,
+        changes: {
+          agenda: {
+            old: '评审阶段成果',
+            new: `评审阶段成果；${noticeSource}`,
+          },
+        },
+      },
+      confidence: 'high',
+      source_quote: noticeSource,
+    },
+  ]);
+});
+
+test('proposeCards matches a stored meeting by participants and an absolute date without a clock time', () => {
+  const noticeSource = '提醒：9月8日评审时间另行告知';
+  const cards = proposeCards(
+    eventOnlyExtraction([{
+      kind: 'other',
+      title: '项目评审日期提醒',
+      time_text: '9月8日，具体时间另行告知',
+      time_iso: null,
+      has_time_signal: true,
+      participant_names: ['骆澄'],
+      confidence: 'high',
+      source_quote: noticeSource,
+    }]),
+    [],
+    [],
+    proposalNow,
+    [storedProjectMeeting],
+  );
+
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0]?.type, 'create_meeting');
+  if (cards[0]?.type !== 'create_meeting') {
+    throw new Error('expected one stored-meeting agenda append card');
+  }
+  assert.equal(cards[0].payload.duplicate_of_meeting_id, storedProjectMeeting.id);
+  assert.equal(cards[0].payload.agenda_append, noticeSource);
+});
+
+test('proposeCards matches a stored self participant when the notice keeps the configured nickname', () => {
+  const noticeSource = '通知：会议时间调整为9月8日下午三点';
+  const extraction = eventOnlyExtraction([{
+    kind: 'other',
+    title: '临时排期通知',
+    time_text: '9月8日下午3点',
+    time_iso: '2026-09-08T15:00:00+08:00',
+    has_time_signal: true,
+    participant_names: ['禾老师'],
+    confidence: 'high',
+    source_quote: noticeSource,
+  }]);
+  extraction.participants = [{
+    name: '禾老师',
+    is_self: true,
+    role: 'speaker',
+    speech_act: 'respond',
+    confidence: 'high',
+    source_quote: '收到时间调整',
+  }];
+  const storedSelfMeeting: ExistingMeeting = {
+    ...storedProjectMeeting,
+    id: 62,
+    title: '秋季产品评审会',
+    participants: [{ name: '我' }],
+  };
+
+  const cards = proposeCards(
+    extraction,
+    [],
+    [],
+    proposalNow,
+    [storedSelfMeeting],
+  );
+
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0]?.type, 'create_meeting');
+  if (cards[0]?.type !== 'create_meeting') {
+    throw new Error('expected a self-matched stored-meeting agenda append card');
+  }
+  assert.equal(cards[0].payload.duplicate_of_meeting_id, storedSelfMeeting.id);
+  assert.equal(cards[0].payload.agenda_append, noticeSource);
+});
+
+test('date-only meeting notice matching keeps the current year and honors an explicit year', () => {
+  const cases = [
+    {
+      timeText: '8月12日，具体时间另行告知',
+      meetingTimeIso: '2026-08-12T09:30:00+08:00',
+    },
+    {
+      timeText: '2025年9月8日，具体时间另行告知',
+      meetingTimeIso: '2025-09-08T09:30:00+08:00',
+    },
+  ] as const;
+
+  for (const [index, fixture] of cases.entries()) {
+    const existingMeeting = {
+      ...storedProjectMeeting,
+      id: 70 + index,
+      time_iso: fixture.meetingTimeIso,
+      time_text: fixture.timeText,
+    };
+    const sourceQuote = `提醒：${fixture.timeText}召开评审会`;
+    const cards = proposeCards(
+      eventOnlyExtraction([{
+        kind: 'other',
+        title: '项目评审日期提醒',
+        time_text: fixture.timeText,
+        time_iso: null,
+        has_time_signal: true,
+        participant_names: ['骆澄'],
+        confidence: 'high',
+        source_quote: sourceQuote,
+      }]),
+      [],
+      [],
+      proposalNow,
+      [existingMeeting],
+    );
+
+    assert.equal(cards.length, 1);
+    assert.equal(
+      cards[0]?.type === 'create_meeting'
+        ? cards[0].payload.duplicate_of_meeting_id
+        : null,
+      existingMeeting.id,
+    );
+  }
+});
+
+test('proposeCards merges a time notice into the agenda of its same-batch new meeting', () => {
+  const noticeSource = '提醒：第三季度项目推进协调会改为线上举行';
+  const cards = proposeCards(
+    eventOnlyExtraction([
+      {
+        kind: 'other',
+        title: '第三季度项目推进协同会',
+        time_text: '',
+        time_iso: '2026-09-10T10:00:00+08:00',
+        has_time_signal: true,
+        participant_names: [],
+        confidence: 'high',
+        source_quote: noticeSource,
+      },
+      {
+        kind: 'meeting',
+        title: '第三季度项目推进协调会',
+        time_text: '9月10日上午10点',
+        time_iso: '2026-09-10T10:00:00+08:00',
+        has_time_signal: true,
+        participant_names: [],
+        agenda: '复盘里程碑',
+        confidence: 'high',
+        source_quote: '第三季度项目推进协调会定于9月10日上午10点召开',
+      },
+    ]),
+    [],
+    [],
+  );
+
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0]?.type, 'create_meeting');
+  if (cards[0]?.type !== 'create_meeting') {
+    throw new Error('expected one same-batch meeting card');
+  }
+  assert.equal(cards[0].payload.agenda, `复盘里程碑；${noticeSource}`);
+  assert.equal(cards[0].payload.agenda_append, undefined);
+  assert.equal(cards[0].payload.duplicate_of_meeting_id, undefined);
+  assert.equal(
+    cards[0].source_quote,
+    `第三季度项目推进协调会定于9月10日上午10点召开\n\n${noticeSource}`,
+  );
+});
+
+test('proposeCards drops a meeting-time notice when no meeting can be identified', () => {
+  const noticeSource = '告知：会议时间有调整，请留意后续消息';
+  const cards = proposeCards(
+    eventOnlyExtraction([
+      {
+        kind: 'other',
+        title: '临时排期通知',
+        time_text: '明天下午',
+        time_iso: null,
+        has_time_signal: true,
+        participant_names: ['周岚'],
+        confidence: 'medium',
+        source_quote: noticeSource,
+      },
+    ]),
+    [],
+    [],
+    proposalNow,
+    [storedProjectMeeting],
+    [{
+      meeting_id: storedProjectMeeting.id,
+      fragments: [{ content: '会议时间已调整', source_quote: noticeSource }],
+    }],
+  );
+
+  assert.deepEqual(cards, []);
+});
+
+test('proposeCards preserves unrelated progress when dropping an unmatched special event', () => {
+  const noticeSource = '告知：会议时间有调整，请留意后续消息';
+  const unrelatedSource = '骆澄：评审材料已发送';
+  const cards = proposeCards(
+    eventOnlyExtraction([{
+      kind: 'other',
+      title: '临时排期通知',
+      time_text: '明天下午',
+      time_iso: null,
+      has_time_signal: true,
+      participant_names: ['周岚'],
+      confidence: 'medium',
+      source_quote: noticeSource,
+    }]),
+    [],
+    [],
+    proposalNow,
+    [storedProjectMeeting],
+    [{
+      meeting_id: storedProjectMeeting.id,
+      fragments: [
+        { content: '会议时间已调整', source_quote: noticeSource },
+        { content: '评审材料已发送', source_quote: unrelatedSource },
+      ],
+    }],
+  );
+
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0]?.type, 'create_meeting');
+  if (cards[0]?.type !== 'create_meeting') {
+    throw new Error('expected one retained unrelated progress card');
+  }
+  assert.equal(cards[0].payload.agenda_append, '评审材料已发送');
+  assert.equal(cards[0].source_quote, unrelatedSource);
+});
+
+test('proposeCards drops timeless communication actions but keeps ones with time or location', () => {
+  const timelessSource = '已确认';
+  const cards = proposeCards(
+    eventOnlyExtraction([
+      {
+        kind: 'other',
+        title: '星桥项目参会人员确认',
+        time_text: '',
+        time_iso: null,
+        has_time_signal: false,
+        participant_names: ['骆澄'],
+        confidence: 'high',
+        source_quote: timelessSource,
+      },
+      {
+        kind: 'other',
+        title: '准备车辆及工作餐安排',
+        time_text: '明天上午',
+        time_iso: null,
+        has_time_signal: true,
+        participant_names: [],
+        confidence: 'high',
+        source_quote: '明天上午准备车辆和工作餐',
+      },
+      {
+        kind: 'other',
+        title: '场地对接',
+        time_text: '',
+        time_iso: null,
+        has_time_signal: false,
+        location: '园区北门',
+        participant_names: [],
+        confidence: 'medium',
+        source_quote: '在园区北门完成场地对接',
+      },
+    ]),
+    [],
+    [],
+    proposalNow,
+    [storedProjectMeeting],
+    [{
+      meeting_id: storedProjectMeeting.id,
+      fragments: [{
+        content: '参会人员已确认',
+        source_quote: `骆澄：${timelessSource}`,
+      }],
+    }],
+  );
+
+  assert.deepEqual(
+    cards.map((card) => card.type === 'create_meeting' ? card.payload.title : null),
+    ['准备车辆及工作餐安排', '场地对接'],
+  );
 });
 
 const existingItem: ExistingMeeting = {

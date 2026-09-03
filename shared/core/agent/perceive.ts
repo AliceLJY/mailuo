@@ -19,14 +19,25 @@ function hasNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
-export function isSelfName(value: string): boolean {
-  return value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase() === '我';
+export function normalizeSelfName(value: string): string {
+  return value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
+}
+
+export function isSelfName(value: string, selfNames: readonly string[] = []): boolean {
+  const normalizedValue = normalizeSelfName(value);
+
+  return normalizedValue === '我' || (
+    normalizedValue.length > 0 && selfNames.some(
+      (selfName) => normalizeSelfName(selfName) === normalizedValue,
+    )
+  );
 }
 
 export const PerceptionParticipantSchema = z.object({
   name: z.string().min(1),
   is_self: z.boolean(),
   role: z.enum(['speaker', 'mentioned']).optional(),
+  speech_act: z.enum(['initiate', 'respond']).optional(),
   aliases: z.array(z.string().min(1)).optional(),
   company: z.string().min(1).optional(),
   title: z.string().min(1).optional(),
@@ -73,6 +84,24 @@ export const PerceptionResultSchema = z.object({
 }).strict();
 
 export type PerceptionResult = z.infer<typeof PerceptionResultSchema>;
+
+export function applySelfNames(
+  extraction: PerceptionResult,
+  selfNames: readonly string[],
+): PerceptionResult {
+  if (selfNames.length === 0) {
+    return extraction;
+  }
+
+  return {
+    ...extraction,
+    participants: extraction.participants.map((participant) => (
+      participant.is_self || !isSelfName(participant.name, selfNames)
+        ? participant
+        : { ...participant, is_self: true }
+    )),
+  };
+}
 
 export type ScreenshotImageInput = {
   base64: string;

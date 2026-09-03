@@ -1,6 +1,9 @@
 import { executeCard, rejectCard as rejectActionCard } from "../../../shared/core/agent/execute.ts";
 import { generateInsights } from "../../../shared/core/agent/insight.ts";
-import { perceiveScreenshot } from "../../../shared/core/agent/perceive.ts";
+import {
+  applySelfNames,
+  perceiveScreenshot,
+} from "../../../shared/core/agent/perceive.ts";
 import type { PerceptionResult } from "../../../shared/core/agent/perceive.ts";
 import { proposeCards } from "../../../shared/core/agent/propose.ts";
 import {
@@ -111,6 +114,11 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
   const providerFactory = options.providers ?? createLocalProviderFactory();
   const now = options.now ?? (() => new Date());
   const traceWriter = options.traceWriter ?? writeConfiguredDiagnosticsTrace;
+  const getProcessingSettings = options.getProcessingSettings ?? (async () => ({
+    perceptionPath: "cloud" as const,
+    exportOcrResults: false,
+    selfNames: [],
+  }));
   const batchSessionByCardId = new Map<number, LocalBatchContactSession>();
 
   async function writeTraceBestEffort(
@@ -133,6 +141,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
         throw new Error("请先粘贴需要整理的聊天文本。");
       }
 
+      const processing = await getProcessingSettings();
       const textProvider = await providerFactory.createTextProvider(options.keys);
       const note = input.note?.trim() || undefined;
       const timestamp = now();
@@ -144,12 +153,15 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
       });
 
       try {
-        const extraction = await (options.perceiveOcrText ?? perceiveSharedOcrText)({
-          ocr: createPastedTextOcrResult(text),
-          note,
-          provider: textProvider,
-          now: timestamp,
-        });
+        const extraction = applySelfNames(
+          await (options.perceiveOcrText ?? perceiveSharedOcrText)({
+            ocr: createPastedTextOcrResult(text),
+            note,
+            provider: textProvider,
+            now: timestamp,
+          }),
+          processing.selfNames,
+        );
         const contacts = listResolvableContacts(options.store);
         const resolutions = await resolveParticipants({
           extraction,
@@ -223,10 +235,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
         batchSession?.reconcilePendingContacts((cardId) =>
           options.store.getStoredActionCardById(cardId),
         );
-        const processing = await (options.getProcessingSettings?.() ?? Promise.resolve({
-          perceptionPath: "cloud" as const,
-          exportOcrResults: false,
-        }));
+        const processing = await getProcessingSettings();
         const canUseOcr =
           processing.perceptionPath === "ocr" &&
           Boolean(options.perceiveOcr) &&
@@ -311,6 +320,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
         } else {
           extraction = await perceiveVisually();
         }
+        extraction = applySelfNames(extraction, processing.selfNames);
         traceExtraction = extraction;
 
         const contacts = [

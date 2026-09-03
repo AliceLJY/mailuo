@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 
 import {
+  MODEL_REQUEST_TIMEOUT_MS,
   OpenAICompatibleProvider,
+  ProviderRequestError,
   StructuredOutputError,
   createTextProvider,
 } from '../../../shared/core/llm/provider.ts';
@@ -37,6 +39,31 @@ class MockProvider extends OpenAICompatibleProvider {
 
     return next;
   }
+}
+
+function createNeverReturningProvider(onSignal: (signal: AbortSignal) => void) {
+  return new (class extends OpenAICompatibleProvider {
+    constructor() {
+      super({
+        name: 'MockProvider',
+        model: 'mock-model',
+        apiKeyEnv: 'MOCK_API_KEY',
+        apiKey: 'test-key',
+        baseUrl: 'https://example.test',
+        fetchImpl: ((_input, init) => {
+          onSignal(init?.signal as AbortSignal);
+          return new Promise<Response>(() => {});
+        }) as typeof fetch,
+      });
+    }
+  })();
+}
+
+function assertTimeoutError(error: unknown, seconds: number): boolean {
+  assert.ok(error instanceof ProviderRequestError);
+  assert.equal(error.code, 'PROVIDER_REQUEST_TIMEOUT');
+  assert.equal(error.message, `模型请求超时（${seconds} 秒），请检查网络后重试`);
+  return true;
 }
 
 test('generateStructuredOutput retries once with validation details', async () => {
@@ -75,6 +102,80 @@ test('generateStructuredOutput throws explicit error after two invalid attempts'
       return true;
     },
   );
+});
+
+test('text request aborts and rejects after 60 seconds when fetch never returns', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal: AbortSignal | undefined;
+  const provider = createNeverReturningProvider((nextSignal) => {
+    signal = nextSignal;
+  });
+
+  const result = provider.complete({
+    messages: [{ role: 'user', content: 'Return JSON.' }],
+  });
+
+  context.mock.timers.tick(MODEL_REQUEST_TIMEOUT_MS.text);
+
+  await assert.rejects(result, (error) => assertTimeoutError(error, 60));
+  assert.equal(signal?.aborted, true);
+});
+
+test('vision request uses the 90 second timeout', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal: AbortSignal | undefined;
+  const provider = createNeverReturningProvider((nextSignal) => {
+    signal = nextSignal;
+  });
+
+  const result = provider.complete({
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Inspect this image.' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,ZmFrZQ==' } },
+      ],
+    }],
+  });
+
+  context.mock.timers.tick(MODEL_REQUEST_TIMEOUT_MS.vision - 1);
+  assert.equal(signal?.aborted, false);
+  context.mock.timers.tick(1);
+
+  await assert.rejects(result, (error) => assertTimeoutError(error, 90));
+  assert.equal(signal?.aborted, true);
+});
+
+test('request timeout also covers a response body that never finishes', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal: AbortSignal | undefined;
+  const provider = new (class extends OpenAICompatibleProvider {
+    constructor() {
+      super({
+        name: 'MockProvider',
+        model: 'mock-model',
+        apiKeyEnv: 'MOCK_API_KEY',
+        apiKey: 'test-key',
+        baseUrl: 'https://example.test',
+        fetchImpl: ((_input, init) => {
+          signal = init?.signal as AbortSignal;
+          return Promise.resolve({
+            status: 200,
+            json: () => new Promise<never>(() => {}),
+          } as unknown as Response);
+        }) as typeof fetch,
+      });
+    }
+  })();
+
+  const result = provider.complete({
+    messages: [{ role: 'user', content: 'Return JSON.' }],
+  });
+  await Promise.resolve();
+  context.mock.timers.tick(MODEL_REQUEST_TIMEOUT_MS.text);
+
+  await assert.rejects(result, (error) => assertTimeoutError(error, 60));
+  assert.equal(signal?.aborted, true);
 });
 
 test('text provider uses Qwen qwen-plus when DeepSeek is not configured', () => {
