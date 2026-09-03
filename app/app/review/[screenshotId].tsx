@@ -47,6 +47,8 @@ const ITEM_STATUS_LABEL = {
   failure: "处理失败",
 } satisfies Record<FlowBatchItem["status"], string>;
 
+const REVIEW_TO_INSIGHTS_TRANSITION = "review_to_insights";
+
 function cloneDraft(card: ActionCardRecord): ReviewCardDraft {
   return {
     payload: JSON.parse(JSON.stringify(card.payload)) as ReviewCardDraft["payload"],
@@ -89,10 +91,13 @@ export default function ReviewScreen() {
   const [pageError, setPageError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<number, ReviewCardDraft>>({});
+  const [reviewGroupsCleared, setReviewGroupsCleared] = useState(false);
   const mountedRef = useRef(true);
   const loadRunTokenRef = useRef(0);
   const actionRunTokenRef = useRef(0);
   const actionRunningRef = useRef(false);
+  const transitionFrameRef = useRef<ReturnType<typeof requestAnimationFrame> | null>(null);
+  const transitionStartedRef = useRef(false);
   const {
     applyConfirmResult,
     batchItems,
@@ -130,6 +135,7 @@ export default function ReviewScreen() {
     () => orderedGroups.flatMap((group) => group.cards),
     [orderedGroups],
   );
+  const renderedReviewGroups = reviewGroupsCleared ? [] : orderedGroups;
   const currentPendingCard = useMemo(
     () => findCurrentPendingReviewCard(
       orderedGroups.map((group) => ({ index: group.item.index, cards: group.cards })),
@@ -186,6 +192,11 @@ export default function ReviewScreen() {
       loadRunTokenRef.current += 1;
       actionRunTokenRef.current += 1;
       actionRunningRef.current = false;
+      if (transitionFrameRef.current != null) {
+        cancelAnimationFrame(transitionFrameRef.current);
+        transitionFrameRef.current = null;
+      }
+      transitionStartedRef.current = false;
     };
   }, []);
 
@@ -304,7 +315,7 @@ export default function ReviewScreen() {
       return;
     }
 
-    router.replace("/insights");
+    scheduleInsightsTransition();
   }, [
     batchSettled,
     batchSummary?.failureCount,
@@ -313,6 +324,41 @@ export default function ReviewScreen() {
     isValidId,
     targetMismatch,
   ]);
+
+  useEffect(() => {
+    if (!reviewGroupsCleared || !transitionStartedRef.current) {
+      return;
+    }
+
+    transitionFrameRef.current = requestAnimationFrame(() => {
+      transitionFrameRef.current = null;
+      if (!mountedRef.current) {
+        transitionStartedRef.current = false;
+        return;
+      }
+
+      router.replace("/insights");
+      logEvent("transition_done", REVIEW_TO_INSIGHTS_TRANSITION);
+    });
+
+    return () => {
+      if (transitionFrameRef.current != null) {
+        cancelAnimationFrame(transitionFrameRef.current);
+        transitionFrameRef.current = null;
+      }
+    };
+  }, [reviewGroupsCleared]);
+
+  function scheduleInsightsTransition() {
+    if (transitionStartedRef.current) {
+      return;
+    }
+
+    transitionStartedRef.current = true;
+    logEvent("transition_start", REVIEW_TO_INSIGHTS_TRANSITION);
+    setReviewGroupsCleared(true);
+    setDrafts({});
+  }
 
   async function refreshScreenshot(
     targetScreenshotId: number,
@@ -683,7 +729,7 @@ export default function ReviewScreen() {
             <AppButton
               disabled={targetMismatch}
               label="暂不重试，查看洞察"
-              onPress={() => router.replace("/insights")}
+              onPress={scheduleInsightsTransition}
             />
           ) : null}
         </SectionCard>
@@ -705,11 +751,11 @@ export default function ReviewScreen() {
         </SectionCard>
       ) : null}
 
-      {!orderedGroups.length && !pageError ? (
+      {!reviewGroupsCleared && !orderedGroups.length && !pageError ? (
         <EmptyHint text="正在找回这批来源的待确认内容..." />
       ) : null}
 
-      {orderedGroups.map(({ item, cards: groupCards }) => (
+      {renderedReviewGroups.map(({ item, cards: groupCards }) => (
         <SectionCard
           key={item.index}
           kicker={`第 ${item.index + 1} ${item.asset ? "张" : "项"} · ${

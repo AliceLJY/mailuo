@@ -61,6 +61,10 @@ export default function UploadScreen() {
   const [loading, setLoading] = useState(false);
   const [loadingText, setLoadingText] = useState("正在准备截图…");
   const [lastResult, setLastResult] = useState<UploadBatchResult | null>(null);
+  const [reviewTransition, setReviewTransition] = useState<{
+    screenshotId: number;
+    detail: string;
+  } | null>(null);
   const {
     batchItems,
     batchMode,
@@ -90,6 +94,8 @@ export default function UploadScreen() {
   const focusEpochRef = useRef(0);
   const runningRef = useRef(false);
   const submitTokenRef = useRef(0);
+  const transitionFrameRef = useRef<ReturnType<typeof requestAnimationFrame> | null>(null);
+  const transitionStartedRef = useRef(false);
   const flowResult = buildFlowBatchResult(
     batchItems,
     batchSummary,
@@ -122,6 +128,7 @@ export default function UploadScreen() {
       mountedRef.current = false;
       submitTokenRef.current += 1;
       clearLoadingTimer(loadingTimerRef.current);
+      cancelPendingReviewTransition();
     };
   }, []);
 
@@ -134,9 +141,39 @@ export default function UploadScreen() {
         focusEpochRef.current += 1;
         clearLoadingTimer(loadingTimerRef.current);
         loadingTimerRef.current = null;
+        cancelPendingReviewTransition();
       };
     }, []),
   );
+
+  useEffect(() => {
+    if (
+      !reviewTransition ||
+      !transitionStartedRef.current ||
+      !mountedRef.current ||
+      !focusedRef.current
+    ) {
+      return;
+    }
+
+    transitionFrameRef.current = requestAnimationFrame(() => {
+      transitionFrameRef.current = null;
+      if (!mountedRef.current || !focusedRef.current) {
+        transitionStartedRef.current = false;
+        return;
+      }
+
+      router.push(`/review/${reviewTransition.screenshotId}`);
+      logEvent("transition_done", reviewTransition.detail);
+    });
+
+    return () => {
+      if (transitionFrameRef.current != null) {
+        cancelAnimationFrame(transitionFrameRef.current);
+        transitionFrameRef.current = null;
+      }
+    };
+  }, [reviewTransition]);
 
   useEffect(() => {
     if (batchItems.length === 0 && batchSummary == null) {
@@ -384,7 +421,7 @@ export default function UploadScreen() {
       return;
     }
 
-    router.push(`/review/${firstSuccess.response.screenshot_id}`);
+    scheduleReviewPush(firstSuccess.response.screenshot_id);
   }
 
   function openCompletedTextReview() {
@@ -398,7 +435,7 @@ export default function UploadScreen() {
       return;
     }
 
-    router.push(`/review/${completedTextItem.screenshotId}`);
+    scheduleReviewPush(completedTextItem.screenshotId);
   }
 
   async function submit() {
@@ -470,7 +507,7 @@ export default function UploadScreen() {
         currentFocusEpoch: focusEpochRef.current,
         submitFocusEpoch: focusEpoch,
       })) {
-        router.push(`/review/${response.screenshot_id}`);
+        scheduleReviewPush(response.screenshot_id);
       }
     } catch (error) {
       if (
@@ -494,6 +531,26 @@ export default function UploadScreen() {
         setLoadingText("正在准备截图…");
       }
     }
+  }
+
+  function scheduleReviewPush(screenshotId: number) {
+    if (transitionStartedRef.current) {
+      return;
+    }
+
+    const detail = `upload_to_review screenshot_id=${screenshotId}`;
+    transitionStartedRef.current = true;
+    logEvent("transition_start", detail);
+    dispatchDraft({ type: "reset" });
+    setReviewTransition({ screenshotId, detail });
+  }
+
+  function cancelPendingReviewTransition() {
+    if (transitionFrameRef.current != null) {
+      cancelAnimationFrame(transitionFrameRef.current);
+      transitionFrameRef.current = null;
+    }
+    transitionStartedRef.current = false;
   }
 
   function startTextDraft() {

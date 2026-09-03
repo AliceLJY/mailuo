@@ -9,6 +9,8 @@ export const MAX_JAVA_CRASH_EVENT_DETAIL_CODE_POINTS = 400;
 export const EVENT_KINDS = [
   "app_start",
   "route",
+  "transition_start",
+  "transition_done",
   "upload_start",
   "upload_progress",
   "upload_done",

@@ -174,6 +174,8 @@ test("diagnostic event kinds survive the event-log read whitelist", () => {
     "exit_reason",
     "exit_trace",
     "java_crash",
+    "transition_start",
+    "transition_done",
     "insights_start",
     "insights_ok",
     "insights_error",
