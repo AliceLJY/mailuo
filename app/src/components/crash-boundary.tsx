@@ -18,9 +18,11 @@ import {
 } from "@/diagnostics/event-log";
 import {
   formatEventLogEntry,
+  formatJavaCrashSummary,
   formatSavedExitTrace,
   formatSystemExitReason,
   getPreviousExitPanelCopy,
+  getJavaCrashStackFrames,
   getRecentPreviousEvents,
   shouldShowPreviousExit,
 } from "@/diagnostics/previous-exit";
@@ -28,13 +30,16 @@ import { theme } from "@/theme";
 import type {
   ExitInfo,
   ExitTraceSaveResult,
+  JavaCrashRecord,
 } from "../../modules/tenglu-region-sampler/src/TengluRegionSampler.types";
 
 type Props = PropsWithChildren<{
   storage: SyncCrashStorage;
   onReturnHome: () => void;
+  previousExitDiagnosticsReady?: boolean;
   previousExitInfo?: ExitInfo | null;
   previousExitTrace?: ExitTraceSaveResult | null;
+  previousJavaCrash?: JavaCrashRecord | null;
   previousSession?: PreviousSessionSnapshot | null;
 }>;
 
@@ -98,18 +103,27 @@ export class CrashBoundary extends Component<Props, State> {
       shouldShowPreviousExit(
         this.state.previousRecord,
         this.props.previousSession,
+        this.props.previousJavaCrash,
       )
     ) {
-      const copy = getPreviousExitPanelCopy(this.state.previousRecord !== null);
+      const copy = getPreviousExitPanelCopy(
+        this.state.previousRecord !== null || this.props.previousJavaCrash != null,
+      );
       return (
         <CrashPanel
-          actionLabel="知道了"
+          actionDisabled={this.props.previousExitDiagnosticsReady === false}
+          actionLabel={
+            this.props.previousExitDiagnosticsReady === false
+              ? "正在读取诊断…"
+              : "知道了"
+          }
           events={getRecentPreviousEvents(this.props.previousSession)}
           heading={copy.heading}
           intro={copy.intro}
           onAction={this.acknowledgePrevious}
           previousExitInfo={this.props.previousExitInfo}
           previousExitTrace={this.props.previousExitTrace}
+          previousJavaCrash={this.props.previousJavaCrash}
           record={this.state.previousRecord ?? undefined}
         />
       );
@@ -120,6 +134,7 @@ export class CrashBoundary extends Component<Props, State> {
 }
 
 function CrashPanel({
+  actionDisabled = false,
   actionLabel,
   events = [],
   heading,
@@ -127,8 +142,10 @@ function CrashPanel({
   onAction,
   previousExitInfo,
   previousExitTrace,
+  previousJavaCrash,
   record,
 }: {
+  actionDisabled?: boolean;
   actionLabel: string;
   events?: EventLogEntry[];
   heading: string;
@@ -136,10 +153,14 @@ function CrashPanel({
   onAction: () => void;
   previousExitInfo?: ExitInfo | null;
   previousExitTrace?: ExitTraceSaveResult | null;
+  previousJavaCrash?: JavaCrashRecord | null;
   record?: CrashRecord;
 }) {
   const hermesEntries = Object.entries(record?.hermesStats ?? {});
   const stackFrames = record?.stackFrames ?? [];
+  const javaCrashFrames = previousJavaCrash
+    ? getJavaCrashStackFrames(previousJavaCrash)
+    : [];
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -154,6 +175,21 @@ function CrashPanel({
             <Text selectable style={styles.systemExitReason}>
               {formatSystemExitReason(previousExitInfo)}
             </Text>
+          ) : null}
+          {previousJavaCrash ? (
+            <>
+              <Text selectable style={styles.systemExitReason}>
+                {formatJavaCrashSummary(previousJavaCrash)}
+              </Text>
+              <View style={styles.section}>
+                <Text style={styles.label}>Java 堆栈（前 3 帧）</Text>
+                <Text selectable style={styles.mono}>
+                  {javaCrashFrames.length > 0
+                    ? javaCrashFrames.join("\n")
+                    : "无可用堆栈"}
+                </Text>
+              </View>
+            </>
           ) : null}
           {previousExitTrace !== undefined ? (
             <Text selectable style={styles.systemExitReason}>
@@ -209,7 +245,7 @@ function CrashPanel({
                 </Text>
               </View>
             </>
-          ) : (
+          ) : previousJavaCrash ? null : (
             <DiagnosticLine label="崩溃记录" value="未捕获" />
           )}
 
@@ -223,7 +259,11 @@ function CrashPanel({
           ) : null}
         </View>
 
-        <AppButton label={actionLabel} onPress={onAction} />
+        <AppButton
+          disabled={actionDisabled}
+          label={actionLabel}
+          onPress={onAction}
+        />
       </ScrollView>
     </SafeAreaView>
   );

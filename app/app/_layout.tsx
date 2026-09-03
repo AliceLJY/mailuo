@@ -24,7 +24,9 @@ import {
 import {
   formatExitReasonEventDetail,
   formatExitTraceEventDetail,
+  formatJavaCrashEventDetail,
   loadPreviousExitInfo,
+  loadPreviousJavaCrash,
   savePreviousExitTrace,
 } from "@/diagnostics/previous-exit";
 import { installDeviceDiagnosticsTraceWriter } from "@/diagnostics/trace-runtime";
@@ -33,12 +35,14 @@ import { theme } from "@/theme";
 import { ToastProvider } from "@/toast-context";
 import {
   readLastExitInfo,
+  readLatestJavaCrash,
   readMemoryStats,
   saveLastExitTrace,
 } from "../modules/tenglu-region-sampler/src/TengluRegionSamplerModule";
 import type {
   ExitInfo,
   ExitTraceSaveResult,
+  JavaCrashRecord,
 } from "../modules/tenglu-region-sampler/src/TengluRegionSampler.types";
 
 configureEventLogStorage(crashStorage);
@@ -49,14 +53,19 @@ const previousExitInfoPromise = loadPreviousExitInfo(
   previousSession,
   (info) => logEvent("exit_reason", formatExitReasonEventDetail(info)),
 );
-const previousExitDiagnosticsPromise = previousExitInfoPromise.then(async (info) => ({
-  info,
-  trace: await savePreviousExitTrace(
+const previousExitDiagnosticsPromise = previousExitInfoPromise.then(async (info) => {
+  const trace = await savePreviousExitTrace(
     { saveLastExitTrace },
     info,
     (result) => logEvent("exit_trace", formatExitTraceEventDetail(result)),
-  ),
-}));
+  );
+  const javaCrash = await loadPreviousJavaCrash(
+    { readLatestJavaCrash },
+    previousSession,
+    (record) => logEvent("java_crash", formatJavaCrashEventDetail(record)),
+  );
+  return { info, trace, javaCrash };
+});
 setCrashContext({ appVersion: Constants.expoConfig?.version ?? "unknown" });
 installGlobalCrashHandler(crashStorage);
 
@@ -81,6 +90,7 @@ function AppStack() {
   const [previousExitDiagnostics, setPreviousExitDiagnostics] = useState<{
     info: ExitInfo | null;
     trace: ExitTraceSaveResult | null;
+    javaCrash: JavaCrashRecord | null;
   } | undefined>(undefined);
 
   if (lastLoggedRouteRef.current !== pathname) {
@@ -140,6 +150,8 @@ function AppStack() {
         onReturnHome={() => router.replace("/")}
         previousExitInfo={previousExitDiagnostics?.info}
         previousExitTrace={previousExitDiagnostics?.trace}
+        previousExitDiagnosticsReady={previousExitDiagnostics !== undefined}
+        previousJavaCrash={previousExitDiagnostics?.javaCrash}
         previousSession={previousSession}
         storage={crashStorage}
       >

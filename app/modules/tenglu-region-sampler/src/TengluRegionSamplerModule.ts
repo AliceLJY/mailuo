@@ -7,6 +7,7 @@ import type {
   ExitInfo,
   ExitTraceSaveResult,
   FrameCleanupResult,
+  JavaCrashRecord,
   MemoryStats,
   RegionRequest,
   RegionSampleBatch,
@@ -18,6 +19,7 @@ declare class TengluRegionSamplerModule extends NativeModule<{}> {
   sampleRegions(requestsJson: string): Promise<string>;
   readLastExitInfo?(): Promise<unknown>;
   saveLastExitTrace?(): Promise<unknown>;
+  readLatestJavaCrash?(): Promise<unknown>;
   readMemoryStats?(): Promise<unknown>;
 }
 
@@ -77,6 +79,19 @@ export async function saveLastExitTrace(): Promise<ExitTraceSaveResult | null> {
   try {
     const result = await nativeModule.saveLastExitTrace();
     return isExitTraceSaveResult(result) ? result : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function readLatestJavaCrash(): Promise<JavaCrashRecord | null> {
+  if (typeof nativeModule?.readLatestJavaCrash !== 'function') {
+    return null;
+  }
+
+  try {
+    const result = await nativeModule.readLatestJavaCrash();
+    return isJavaCrashRecord(result) ? result : null;
   } catch {
     return null;
   }
@@ -147,6 +162,21 @@ function isExitTraceSaveResult(value: unknown): value is ExitTraceSaveResult {
     (result.byte_count ?? -1) >= 0 &&
     Number.isSafeInteger(result.string_count) &&
     (result.string_count ?? -1) >= 0
+  );
+}
+
+function isJavaCrashRecord(value: unknown): value is JavaCrashRecord {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const result = value as Partial<JavaCrashRecord>;
+  return (
+    typeof result.path === 'string' &&
+    result.path.length > 0 &&
+    Number.isSafeInteger(result.timestamp) &&
+    (result.timestamp ?? -1) >= 0 &&
+    typeof result.head === 'string'
   );
 }
 

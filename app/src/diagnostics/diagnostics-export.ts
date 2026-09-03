@@ -18,7 +18,8 @@ export type DiagnosticsExportMeta = {
 export type DiagnosticsExportInput = {
   snapshot: DiagnosticsSnapshot;
   traces: readonly DiagnosticsTrace[];
-  exitTraceDirectory?: ExitTraceExportSource;
+  exitTraceDirectory?: DiagnosticsDirectoryExportSource;
+  javaCrashDirectory?: DiagnosticsDirectoryExportSource;
   eventLog: readonly EventLogEntry[];
   crashRecord?: CrashRecord | null;
   appVersion: string;
@@ -44,7 +45,7 @@ export interface DiagnosticsExportDirectory {
   createDirectory(name: string): DiagnosticsExportDirectory;
 }
 
-export interface ExitTraceExportSource {
+export interface DiagnosticsDirectoryExportSource {
   listFileNames(): readonly string[];
   copyTo(destination: DiagnosticsExportDirectory): Promise<void> | void;
 }
@@ -134,22 +135,18 @@ export async function writeDiagnosticsBundleToDirectory(
     await writeRootJson("crash-record.json", input.crashRecord);
   }
 
-  if (input.exitTraceDirectory) {
-    let names: readonly string[];
-    try {
-      names = input.exitTraceDirectory.listFileNames();
-      await input.exitTraceDirectory.copyTo(directory);
-    } catch (error) {
-      throw new DiagnosticsExportError(`无法复制 exit-traces 目录：${describeError(error)}`);
-    }
-    files.push(...names.slice().sort().map((name) => `exit-traces/${name}`));
-  } else {
-    try {
-      directory.createDirectory("exit-traces");
-    } catch (error) {
-      throw new DiagnosticsExportError(`无法创建 exit-traces 目录：${describeError(error)}`);
-    }
-  }
+  await copyDiagnosticsDirectory(
+    directory,
+    "exit-traces",
+    input.exitTraceDirectory,
+    files,
+  );
+  await copyDiagnosticsDirectory(
+    directory,
+    "java-crashes",
+    input.javaCrashDirectory,
+    files,
+  );
 
   const meta: DiagnosticsExportMeta = {
     app_version: input.appVersion,
@@ -165,6 +162,35 @@ export async function writeDiagnosticsBundleToDirectory(
     directoryUri: directory.uri,
     files,
   };
+}
+
+async function copyDiagnosticsDirectory(
+  destination: DiagnosticsExportDirectory,
+  directoryName: string,
+  source: DiagnosticsDirectoryExportSource | undefined,
+  files: string[],
+): Promise<void> {
+  if (source) {
+    let names: readonly string[];
+    try {
+      names = source.listFileNames();
+      await source.copyTo(destination);
+    } catch (error) {
+      throw new DiagnosticsExportError(
+        `无法复制 ${directoryName} 目录：${describeError(error)}`,
+      );
+    }
+    files.push(...names.slice().sort().map((name) => `${directoryName}/${name}`));
+    return;
+  }
+
+  try {
+    destination.createDirectory(directoryName);
+  } catch (error) {
+    throw new DiagnosticsExportError(
+      `无法创建 ${directoryName} 目录：${describeError(error)}`,
+    );
+  }
 }
 
 function createTraceExportEntries(traces: readonly DiagnosticsTrace[]) {

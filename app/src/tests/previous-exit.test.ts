@@ -6,15 +6,23 @@ import type {
   EventLogEntry,
   PreviousSessionSnapshot,
 } from "../diagnostics/event-log";
-import type { ExitInfo } from "../../modules/tenglu-region-sampler/src/TengluRegionSampler.types";
+import type {
+  ExitInfo,
+  JavaCrashRecord,
+} from "../../modules/tenglu-region-sampler/src/TengluRegionSampler.types";
 import {
+  MAX_JAVA_CRASH_MESSAGE_CODE_POINTS,
   MAX_VISIBLE_PREVIOUS_EVENTS,
   formatExitReasonEventDetail,
   formatExitTraceEventDetail,
+  formatJavaCrashEventDetail,
+  formatJavaCrashSummary,
   formatSavedExitTrace,
   formatSystemExitReason,
+  getJavaCrashStackFrames,
   getPreviousExitPanelCopy,
   getRecentPreviousEvents,
+  loadPreviousJavaCrash,
   loadPreviousExitInfo,
   savePreviousExitTrace,
   shouldShowPreviousExit,
@@ -55,6 +63,27 @@ function exitInfo(overrides: Partial<ExitInfo> = {}): ExitInfo {
   };
 }
 
+function javaCrash(overrides: Partial<JavaCrashRecord> = {}): JavaCrashRecord {
+  return {
+    path: "/data/user/0/example/files/diagnostics/java-crashes/1788314405000.txt",
+    timestamp: Date.parse("2026-09-02T02:00:05.000Z"),
+    head: [
+      "timestamp=1788314405000",
+      'app_version="3.1.6"',
+      'thread="mqt_native_modules"',
+      "exception_class=java.lang.IllegalStateException",
+      'message="界面切换失败"',
+      "stack_trace:",
+      "java.lang.IllegalStateException: 界面切换失败",
+      "\tat com.example.FakeScreen.render(FakeScreen.kt:42)",
+      "\tat com.example.FakeRouter.push(FakeRouter.kt:18)",
+      "\tat com.example.FakeApp.start(FakeApp.kt:7)",
+      "\tat com.example.FakeMain.main(FakeMain.kt:3)",
+    ].join("\n"),
+    ...overrides,
+  };
+}
+
 test("previous-exit panel copy distinguishes a captured crash from event-log-only evidence", () => {
   const withCrash = getPreviousExitPanelCopy(true);
   assert.equal(withCrash.heading, "上次异常退出");
@@ -75,6 +104,10 @@ test("previous-exit visibility accepts either crash data or an abnormal event ta
   assert.equal(shouldShowPreviousExit(null, previousSession(false)), false);
   assert.equal(shouldShowPreviousExit(null, previousSession(true)), true);
   assert.equal(shouldShowPreviousExit(crashRecord, previousSession(false)), true);
+  assert.equal(
+    shouldShowPreviousExit(null, previousSession(false), javaCrash()),
+    true,
+  );
 });
 
 test("previous-exit panel receives only the last 20 events", () => {
@@ -198,4 +231,82 @@ test("last-exit reader failures are swallowed and report no system reason", asyn
 
   assert.equal(result, null);
   assert.equal(formatSystemExitReason(result), "系统未记录退出原因");
+});
+
+test("new Java crash records log the bounded message and supply panel details", async () => {
+  const session = previousSession(false);
+  session.appStartedAt = "2026-09-02T02:00:00.000Z";
+  const longMessage = `${"字".repeat(MAX_JAVA_CRASH_MESSAGE_CODE_POINTS)}🙂尾`;
+  const sample = javaCrash({
+    head: javaCrash().head.replace(
+      'message="界面切换失败"',
+      `message=${JSON.stringify(longMessage)}`,
+    ),
+  });
+  const logged: string[] = [];
+
+  const result = await loadPreviousJavaCrash(
+    { async readLatestJavaCrash() {
+      return sample;
+    } },
+    session,
+    (record) => logged.push(formatJavaCrashEventDetail(record)),
+  );
+
+  assert.deepEqual(result, sample);
+  assert.deepEqual(logged, [
+    `java.lang.IllegalStateException · ${"字".repeat(MAX_JAVA_CRASH_MESSAGE_CODE_POINTS)} · at com.example.FakeScreen.render(FakeScreen.kt:42)`,
+  ]);
+  assert.equal(logged[0]?.includes("🙂尾"), false);
+  assert.equal(
+    formatJavaCrashSummary(result),
+    `Java 异常：java.lang.IllegalStateException：${longMessage}`,
+  );
+  assert.deepEqual(getJavaCrashStackFrames(result), [
+    "at com.example.FakeScreen.render(FakeScreen.kt:42)",
+    "at com.example.FakeRouter.push(FakeRouter.kt:18)",
+    "at com.example.FakeApp.start(FakeApp.kt:7)",
+  ]);
+});
+
+test("missing, absent, and stale Java crash records all degrade to no record", async () => {
+  const session = previousSession(false);
+  session.appStartedAt = "2026-09-02T02:00:00.000Z";
+  let matches = 0;
+  const onMatch = () => {
+    matches += 1;
+  };
+
+  assert.equal(await loadPreviousJavaCrash(
+    { async readLatestJavaCrash() {
+      return null;
+    } },
+    session,
+    onMatch,
+  ), null);
+  assert.equal(await loadPreviousJavaCrash({}, session, onMatch), null);
+  assert.equal(await loadPreviousJavaCrash(
+    { async readLatestJavaCrash() {
+      return javaCrash({ timestamp: Date.parse(session.appStartedAt ?? "") });
+    } },
+    session,
+    onMatch,
+  ), null);
+  assert.equal(matches, 0);
+});
+
+test("Java crash reader failures are swallowed during startup", async () => {
+  let matched = false;
+  const result = await loadPreviousJavaCrash(
+    { async readLatestJavaCrash() {
+      throw new Error("native read failed");
+    } },
+    previousSession(true),
+    () => {
+      matched = true;
+    },
+  );
+
+  assert.equal(result, null);
+  assert.equal(matched, false);
 });

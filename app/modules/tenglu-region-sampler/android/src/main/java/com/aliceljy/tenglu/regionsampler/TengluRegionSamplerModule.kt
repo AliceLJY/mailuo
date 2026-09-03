@@ -2,6 +2,7 @@ package com.aliceljy.tenglu.regionsampler
 
 import android.app.ActivityManager
 import android.app.ApplicationExitInfo
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.BitmapRegionDecoder
@@ -24,6 +25,10 @@ class TengluRegionSamplerModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("TengluRegionSampler")
 
+    OnCreate {
+      installJavaCrashHandler()
+    }
+
     AsyncFunction("sampleRegions") { requestsJson: String ->
       sampleRegions(requestsJson)
     }
@@ -44,8 +49,167 @@ class TengluRegionSamplerModule : Module() {
       saveLastExitTrace()
     }
 
+    AsyncFunction("readLatestJavaCrash") {
+      readLatestJavaCrash()
+    }
+
     AsyncFunction("readMemoryStats") {
       readMemoryStats()
+    }
+  }
+
+  private fun installJavaCrashHandler() {
+    try {
+      val context = appContext.reactContext ?: return
+      val filesDir = context.filesDir
+      val appVersion = readAppVersion(context)
+
+      synchronized(JAVA_CRASH_HANDLER_LOCK) {
+        if (javaCrashHandlerInstalled) {
+          return@synchronized
+        }
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+          ?: return@synchronized
+        if (previous is JavaCrashUncaughtExceptionHandler) {
+          javaCrashHandlerInstalled = true
+          return@synchronized
+        }
+
+        Thread.setDefaultUncaughtExceptionHandler(
+          JavaCrashUncaughtExceptionHandler(filesDir, appVersion, previous)
+        )
+        javaCrashHandlerInstalled = true
+      }
+    } catch (_: Throwable) {
+      // Diagnostics must never prevent module initialization.
+    }
+  }
+
+  @Suppress("DEPRECATION")
+  private fun readAppVersion(context: Context): String {
+    return try {
+      val versionName = context.packageManager
+        .getPackageInfo(context.packageName, 0)
+        .versionName
+      if (versionName.isNullOrBlank()) "unknown" else versionName
+    } catch (_: Throwable) {
+      "unknown"
+    }
+  }
+
+  private fun readLatestJavaCrash(): Map<String, Any>? {
+    return try {
+      val context = appContext.reactContext ?: return null
+      val outputDir = File(context.filesDir, JAVA_CRASH_DIRECTORY)
+      val latest = outputDir
+        .listFiles { file -> file.isFile && file.name.endsWith(".txt") }
+        ?.mapNotNull { file ->
+          file.name.removeSuffix(".txt").toLongOrNull()?.let { timestamp ->
+            timestamp to file
+          }
+        }
+        ?.maxByOrNull { it.first }
+        ?: return null
+      val head = latest.second.bufferedReader(Charsets.UTF_8).use { reader ->
+        val lines = mutableListOf<String>()
+        while (lines.size < MAX_JAVA_CRASH_HEAD_LINES) {
+          val line = reader.readLine() ?: break
+          lines.add(line)
+        }
+        lines.joinToString("\n")
+      }
+
+      mapOf(
+        "path" to latest.second.absolutePath,
+        "timestamp" to latest.first,
+        "head" to head,
+      )
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
+  private class JavaCrashUncaughtExceptionHandler(
+    private val filesDir: File,
+    private val appVersion: String,
+    private val previous: Thread.UncaughtExceptionHandler,
+  ) : Thread.UncaughtExceptionHandler {
+    private val writeLock = Any()
+
+    override fun uncaughtException(thread: Thread, error: Throwable) {
+      try {
+        synchronized(writeLock) {
+          writeJavaCrash(thread, error)
+        }
+      } catch (_: Throwable) {
+        // The original handler must still receive the fatal exception.
+      }
+
+      previous.uncaughtException(thread, error)
+    }
+
+    private fun writeJavaCrash(thread: Thread, error: Throwable) {
+      val outputDir = File(filesDir, JAVA_CRASH_DIRECTORY)
+      if ((!outputDir.exists() && !outputDir.mkdirs()) || !outputDir.isDirectory) {
+        return
+      }
+
+      var timestamp = System.currentTimeMillis()
+      var crashFile = File(outputDir, "$timestamp.txt")
+      while (crashFile.exists()) {
+        timestamp += 1L
+        crashFile = File(outputDir, "$timestamp.txt")
+      }
+
+      val stackTrace = error.stackTraceToString()
+      val content = buildString {
+        append("timestamp=").append(timestamp).append('\n')
+        append("app_version=").append(JSONObject.quote(appVersion)).append('\n')
+        append("thread=")
+          .append(JSONObject.quote(Thread.currentThread().name))
+          .append('\n')
+        append("exception_class=").append(error.javaClass.name).append('\n')
+        append("message=").append(JSONObject.quote(error.message ?: "")).append('\n')
+        append("stack_trace:").append('\n')
+        append(stackTrace)
+        if (!stackTrace.endsWith('\n')) {
+          append('\n')
+        }
+      }
+      val tempFile = File.createTempFile("$timestamp-", ".tmp", outputDir)
+      try {
+        FileOutputStream(tempFile).use { output ->
+          output.write(content.toByteArray(Charsets.UTF_8))
+          output.flush()
+          output.fd.sync()
+        }
+        if (!tempFile.renameTo(crashFile)) {
+          return
+        }
+        pruneSavedJavaCrashes(outputDir)
+      } finally {
+        tempFile.delete()
+      }
+    }
+
+    private fun pruneSavedJavaCrashes(outputDir: File) {
+      val crashFiles = outputDir
+        .listFiles { file -> file.isFile && file.name.endsWith(".txt") }
+        ?.mapNotNull { file ->
+          file.name.removeSuffix(".txt").toLongOrNull()?.let { timestamp ->
+            timestamp to file
+          }
+        }
+        ?.sortedByDescending { it.first }
+        ?: return
+
+      for ((_, file) in crashFiles.drop(MAX_SAVED_JAVA_CRASHES)) {
+        var attempts = 0
+        while (file.exists() && attempts < JAVA_CRASH_DELETE_ATTEMPTS) {
+          file.delete()
+          attempts += 1
+        }
+      }
     }
   }
 
@@ -697,6 +861,12 @@ class TengluRegionSamplerModule : Module() {
       .put("error", message)
 
   private companion object {
+    val JAVA_CRASH_HANDLER_LOCK = Any()
+    var javaCrashHandlerInstalled = false
+    const val JAVA_CRASH_DIRECTORY = "diagnostics/java-crashes"
+    const val JAVA_CRASH_DELETE_ATTEMPTS = 3
+    const val MAX_SAVED_JAVA_CRASHES = 5
+    const val MAX_JAVA_CRASH_HEAD_LINES = 40
     const val MAX_SAVED_EXIT_TRACES = 5
     const val MAX_EXIT_TRACE_STRINGS = 2_000
     const val MIN_EXIT_TRACE_STRING_LENGTH = 6

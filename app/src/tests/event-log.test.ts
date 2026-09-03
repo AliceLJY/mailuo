@@ -7,6 +7,7 @@ import {
   MAX_DIAGNOSTIC_EVENT_DETAIL_CODE_POINTS,
   MAX_EVENT_DETAIL_CODE_POINTS,
   MAX_EVENT_LOG_ENTRIES,
+  MAX_JAVA_CRASH_EVENT_DETAIL_CODE_POINTS,
   acknowledgePreviousSession,
   appendEvent,
   capturePreviousSession,
@@ -164,9 +165,15 @@ test("configured logEvent is synchronous and storage failures do not escape", ()
 
 test("diagnostic event kinds survive the event-log read whitelist", () => {
   const memory = createMemoryStorage();
+  const javaCrashDetail = [
+    "java.lang.IllegalStateException",
+    "字".repeat(100),
+    `at com.example.${"LongFrame".repeat(12)}.render(FakeScreen.kt:42)`,
+  ].join(" · ");
   const kinds = [
     "exit_reason",
     "exit_trace",
+    "java_crash",
     "insights_start",
     "insights_ok",
     "insights_error",
@@ -175,12 +182,24 @@ test("diagnostic event kinds survive the event-log read whitelist", () => {
 
   for (const kind of kinds) {
     assert.ok(EVENT_KINDS.includes(kind));
-    appendEvent(memory.storage, kind, kind);
+    appendEvent(
+      memory.storage,
+      kind,
+      kind === "java_crash" ? javaCrashDetail : kind,
+    );
   }
 
-  assert.deepEqual(
-    readEventLog(memory.storage).map((entry) => entry.kind),
-    kinds,
+  const entries = readEventLog(memory.storage);
+  assert.deepEqual(entries.map((entry) => entry.kind), kinds);
+  assert.ok(
+    Array.from(javaCrashDetail).length > MAX_DIAGNOSTIC_EVENT_DETAIL_CODE_POINTS,
+  );
+  assert.ok(
+    Array.from(javaCrashDetail).length <= MAX_JAVA_CRASH_EVENT_DETAIL_CODE_POINTS,
+  );
+  assert.equal(
+    entries.find((entry) => entry.kind === "java_crash")?.detail,
+    javaCrashDetail,
   );
 });
 

@@ -3,9 +3,9 @@ import test from "node:test";
 
 import {
   writeDiagnosticsBundleToDirectory,
+  type DiagnosticsDirectoryExportSource,
   type DiagnosticsExportDirectory,
   type DiagnosticsExportFile,
-  type ExitTraceExportSource,
 } from "../diagnostics/diagnostics-export";
 import type { DiagnosticsTrace } from "../diagnostics/trace-store";
 import type { DiagnosticsSnapshot } from "../local/types";
@@ -85,15 +85,18 @@ class FakeExportDirectory implements DiagnosticsExportDirectory {
   }
 }
 
-class FakeExitTraceSource implements ExitTraceExportSource {
-  constructor(private readonly files: ReadonlyMap<string, string>) {}
+class FakeDiagnosticsDirectorySource implements DiagnosticsDirectoryExportSource {
+  constructor(
+    private readonly directoryName: string,
+    private readonly files: ReadonlyMap<string, string>,
+  ) {}
 
   listFileNames() {
     return [...this.files.keys()];
   }
 
   copyTo(destination: DiagnosticsExportDirectory) {
-    const copied = destination.createDirectory("exit-traces");
+    const copied = destination.createDirectory(this.directoryName);
     for (const [name, content] of this.files) {
       copied.createFile(name, null).write(content);
     }
@@ -138,9 +141,12 @@ test("diagnostics writer creates the exact bundle file set and writes meta last"
   const result = await writeDiagnosticsBundleToDirectory(destination, {
     snapshot,
     traces: [trace],
-    exitTraceDirectory: new FakeExitTraceSource(new Map([
+    exitTraceDirectory: new FakeDiagnosticsDirectorySource("exit-traces", new Map([
       ["1788397205000.bin", "binary tombstone"],
       ["1788397205000.strings.txt", "backtrace\nlibreactnative.so\n"],
+    ])),
+    javaCrashDirectory: new FakeDiagnosticsDirectorySource("java-crashes", new Map([
+      ["1788397206000.txt", "exception_class=java.lang.IllegalStateException\n"],
     ])),
     eventLog: [{ t: "2026-09-02T01:00:00.000Z", kind: "app_start", detail: "" }],
     crashRecord: {
@@ -164,6 +170,7 @@ test("diagnostics writer creates the exact bundle file set and writes meta last"
     "exit-traces/1788397205000.bin",
     "exit-traces/1788397205000.strings.txt",
     "insights.json",
+    "java-crashes/1788397206000.txt",
     "meetings.json",
     "meta.json",
     "observations.json",
@@ -188,6 +195,10 @@ test("diagnostics writer creates the exact bundle file set and writes meta last"
     bundle.getDirectory("exit-traces")?.listFilePaths(),
     ["1788397205000.bin", "1788397205000.strings.txt"],
   );
+  assert.deepEqual(
+    bundle.getDirectory("java-crashes")?.listFilePaths(),
+    ["1788397206000.txt"],
+  );
 });
 
 test("diagnostics writer keeps crash-record optional", async () => {
@@ -205,6 +216,7 @@ test("diagnostics writer keeps crash-record optional", async () => {
 
   assert.ok(bundle);
   assert.ok(bundle.getDirectory("exit-traces"));
+  assert.ok(bundle.getDirectory("java-crashes"));
   assert.equal(bundle.listFilePaths().includes("crash-record.json"), false);
   assert.deepEqual(bundle.listFilePaths(), [
     "action_cards.json",

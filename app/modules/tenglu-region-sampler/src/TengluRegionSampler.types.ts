@@ -71,6 +71,12 @@ export type ExitTraceSaveResult = {
   string_count: number;
 };
 
+export type JavaCrashRecord = {
+  path: string;
+  timestamp: number;
+  head: string;
+};
+
 export type MemoryStats = {
   native_heap_kb: number;
   java_heap_kb: number;

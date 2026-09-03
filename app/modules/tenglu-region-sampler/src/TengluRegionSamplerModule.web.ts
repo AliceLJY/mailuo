@@ -3,6 +3,7 @@ import { registerWebModule, NativeModule } from 'expo';
 import type {
   ExitInfo,
   ExitTraceSaveResult,
+  JavaCrashRecord,
   MemoryStats,
 } from './TengluRegionSampler.types';
 
@@ -14,6 +15,10 @@ export async function readLastExitInfo(): Promise<ExitInfo[]> {
 }
 
 export async function saveLastExitTrace(): Promise<ExitTraceSaveResult | null> {
+  return null;
+}
+
+export async function readLatestJavaCrash(): Promise<JavaCrashRecord | null> {
   return null;
 }
 

@@ -9,8 +9,8 @@ import { crashStorage } from "./crash-storage";
 import {
   DiagnosticsExportError,
   writeDiagnosticsBundleToDirectory,
+  type DiagnosticsDirectoryExportSource,
   type DiagnosticsExportResult,
-  type ExitTraceExportSource,
 } from "./diagnostics-export";
 import { readEventLog } from "./event-log";
 import { readDeviceDiagnosticsTraces } from "./trace-storage-expo";
@@ -33,7 +33,8 @@ export async function exportLocalDiagnosticsBundle(input: {
     return await writeDiagnosticsBundleToDirectory(destination, {
       snapshot: await readDiagnosticsSnapshot(),
       traces: await readDeviceDiagnosticsTraces(),
-      exitTraceDirectory: openExitTraceExportSource(),
+      exitTraceDirectory: openDiagnosticsDirectoryExportSource("exit-traces"),
+      javaCrashDirectory: openDiagnosticsDirectoryExportSource("java-crashes"),
       eventLog: readEventLog(crashStorage),
       crashRecord: readCrashRecord(crashStorage),
       appVersion: Constants.expoConfig?.version ?? "unknown",
@@ -52,8 +53,10 @@ export async function exportLocalDiagnosticsBundle(input: {
   }
 }
 
-function openExitTraceExportSource(): ExitTraceExportSource | undefined {
-  const source = new Directory(Paths.document, "diagnostics", "exit-traces");
+function openDiagnosticsDirectoryExportSource(
+  directoryName: string,
+): DiagnosticsDirectoryExportSource | undefined {
+  const source = new Directory(Paths.document, "diagnostics", directoryName);
   if (!source.exists) {
     return undefined;
   }

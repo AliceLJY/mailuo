@@ -4,6 +4,7 @@ export const EVENT_LOG_KEY = "mailuo.eventlog.v1";
 export const MAX_EVENT_LOG_ENTRIES = 200;
 export const MAX_EVENT_DETAIL_CODE_POINTS = 120;
 export const MAX_DIAGNOSTIC_EVENT_DETAIL_CODE_POINTS = 200;
+export const MAX_JAVA_CRASH_EVENT_DETAIL_CODE_POINTS = 400;
 
 export const EVENT_KINDS = [
   "app_start",
@@ -19,6 +20,7 @@ export const EVENT_KINDS = [
   "app_background",
   "app_active",
   "crash",
+  "java_crash",
   "acknowledged",
   "exit_reason",
   "exit_trace",
@@ -227,6 +229,10 @@ function toEventLogEntry(value: unknown): EventLogEntry | null {
 }
 
 function eventDetailLimit(kind: EventKind) {
+  if (kind === "java_crash") {
+    return MAX_JAVA_CRASH_EVENT_DETAIL_CODE_POINTS;
+  }
+
   return kind === "exit_reason" || kind === "exit_trace" || kind === "mem"
     ? MAX_DIAGNOSTIC_EVENT_DETAIL_CODE_POINTS
     : MAX_EVENT_DETAIL_CODE_POINTS;
