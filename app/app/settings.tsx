@@ -74,8 +74,16 @@ export default function SettingsScreen() {
       const selfNames = parseSelfNamesInput(selfNamesInput);
       await saveConfig({ ...config, selfNames });
       setSelfNamesInput(selfNames.join("，"));
+      showToast(
+        selfNames.length > 0
+          ? `本人昵称已保存：${selfNames.join("，")}`
+          : "已清空本人昵称",
+        "info",
+      );
     } catch {
-      setMessage("本人昵称暂时没有保存成功，请再试一次。");
+      const reason = "本人昵称暂时没有保存成功，请再试一次。";
+      setMessage(reason);
+      showToast(reason, "error");
     } finally {
       setSavingPreference(false);
     }
