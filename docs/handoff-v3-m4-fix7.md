@@ -90,7 +90,7 @@ Goal 3 只作实验。
   `app/modules/tenglu-region-sampler/**`、`app/src/diagnostics/event-log.ts` / `previous-exit.ts`、
   `app/src/components/crash-boundary.tsx`、`app/app/_layout.tsx`（调用 saveLastExitTrace）、测试。
 - 可动（批 B）：与批 A 相同集合 + `app/src/diagnostics/*`
-- 可动（批 C）：`app/app/_layout.tsx`（animation）、`app/app/review/[screenshotId].tsx`、`app/app/(tabs)/index.tsx`、
+- 可动（批 C）：`app/src/diagnostics/event-log.ts`（仅新增 `transition_start` / `transition_done` 两个事件种类）、`app/app/_layout.tsx`（animation）、`app/app/review/[screenshotId].tsx`、`app/app/(tabs)/index.tsx`、
   `app/src/flow-context.tsx`（若需置空列表的 action）、测试。
 - 不可动：DB schema / migrations、fix1–fix6 已交付规则层行为、`app/app.json` 版本号、依赖。
 
