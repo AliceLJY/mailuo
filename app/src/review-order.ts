@@ -1,4 +1,9 @@
-import type { ActionCardRecord } from "./types";
+import type {
+  ActionCardRecord,
+  ActionCardStatus,
+} from "./types";
+
+export type ReviewCardStage = "current" | "upcoming" | "done";
 
 export type ReviewCardGroup = {
   index: number;
@@ -35,4 +40,28 @@ export function findCurrentPendingReviewCard(
   groups: ReviewCardGroup[],
 ) {
   return orderReviewCardSequence(groups).find((card) => card.status === "pending") ?? null;
+}
+
+export function isReviewCardEditable(
+  _stage: ReviewCardStage,
+  status: ActionCardStatus,
+) {
+  return status === "pending";
+}
+
+export function findReviewAutoFollowScreenshotId(
+  groups: ReviewCardGroup[],
+  currentScreenshotId: number | null,
+) {
+  const orderedCards = orderReviewCardSequence(groups);
+  const currentScreenshotHasPendingCard = orderedCards.some(
+    (card) =>
+      card.screenshot_id === currentScreenshotId && card.status === "pending",
+  );
+
+  if (currentScreenshotHasPendingCard) {
+    return null;
+  }
+
+  return orderedCards.find((card) => card.status === "pending")?.screenshot_id ?? null;
 }

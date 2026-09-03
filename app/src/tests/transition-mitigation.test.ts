@@ -91,6 +91,28 @@ test("review clears its rendered card groups one frame before opening insights",
   );
 });
 
+test("non-current review actions preserve the displayed screenshot", () => {
+  const confirmAction = sourceSection(
+    reviewSource,
+    "  async function handleConfirm(card: ActionCardRecord)",
+    "  async function handleReject(",
+  );
+  const rejectAction = sourceSection(
+    reviewSource,
+    "  async function handleReject(",
+    "  if (!isValidId)",
+  );
+
+  assert.doesNotMatch(confirmAction, /selectScreenshot\(card\.screenshot_id\)/u);
+  assert.doesNotMatch(rejectAction, /selectScreenshot\(card\.screenshot_id\)/u);
+  assert.match(confirmAction, /preserveScreenshotId: screenshotId/u);
+  assert.match(rejectAction, /preserveScreenshotId: screenshotId/u);
+  assert.match(
+    reviewSource,
+    /findReviewAutoFollowScreenshotId\(reviewCardGroups, screenshotId\)/u,
+  );
+});
+
 test("upload clears its thumbnail draft one frame before every review push", () => {
   const transitionRequest = sourceSection(
     uploadSource,

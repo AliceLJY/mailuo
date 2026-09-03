@@ -76,7 +76,7 @@ function interactionCard(
   } as ActionCardRecord;
 }
 
-test("review fields show and block a pending same-screenshot contact dependency", async () => {
+test("out-of-order interaction stays blocked while its contact anchor is pending", async () => {
   const {
     formatInteractionOwnership,
     getInteractionDependencyMessage,

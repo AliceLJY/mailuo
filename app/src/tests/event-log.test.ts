@@ -220,6 +220,21 @@ test("notice routing event detail is limited to 120 Unicode code points", () => 
   assert.equal(readEventLog(memory.storage).at(-1)?.detail, entry?.detail);
 });
 
+test("review out-of-order events survive the whitelist with ordinary detail limits", () => {
+  const memory = createMemoryStorage();
+  const detail = `card_id=999 type=record_interaction note=${"虚构乱序".repeat(30)}`;
+
+  assert.ok(EVENT_KINDS.includes("review_out_of_order"));
+  const entry = appendEvent(memory.storage, "review_out_of_order", detail);
+
+  assert.equal(entry?.kind, "review_out_of_order");
+  assert.equal(
+    Array.from(entry?.detail ?? "").length,
+    MAX_EVENT_DETAIL_CODE_POINTS,
+  );
+  assert.equal(readEventLog(memory.storage).at(-1)?.detail, entry?.detail);
+});
+
 test("exit-reason events retain the complete 80-code-point description", () => {
   const memory = createMemoryStorage();
   const description = "字".repeat(80);

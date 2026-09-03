@@ -3,7 +3,9 @@ import test from "node:test";
 
 import {
   buildOrderedReviewGroups,
+  findReviewAutoFollowScreenshotId,
   findCurrentPendingReviewCard,
+  isReviewCardEditable,
   orderReviewCardSequence,
   orderReviewCards,
   type ReviewCardGroup,
@@ -165,4 +167,42 @@ test("current review card is the first pending card in group and id order", () =
 
   assert.deepEqual(orderReviewCards(groups[1].cards).map((item) => item.id), [10, 11, 12]);
   assert.equal(findCurrentPendingReviewCard(groups)?.id, 11);
+});
+
+test("pending review cards stay editable while current only marks the highlight", () => {
+  assert.equal(isReviewCardEditable("upcoming", "pending"), true);
+  assert.equal(isReviewCardEditable("current", "pending"), true);
+  assert.equal(isReviewCardEditable("done", "confirmed"), false);
+  assert.equal(isReviewCardEditable("done", "rejected"), false);
+  assert.equal(isReviewCardEditable("current", "confirmed"), false);
+  assert.equal(isReviewCardEditable("upcoming", "rejected"), false);
+});
+
+test("review auto-follow stays on a screenshot that still has pending cards", () => {
+  const groups = threeScreenshotGroups();
+
+  assert.equal(findReviewAutoFollowScreenshotId(groups, 102), null);
+});
+
+test("review auto-follow moves when the displayed screenshot has no pending cards", () => {
+  const groups = threeScreenshotGroups().map((group) => ({
+    ...group,
+    cards: group.cards.map((item) =>
+      item.screenshot_id === 102 ? { ...item, status: "confirmed" as const } : item,
+    ),
+  }));
+
+  assert.equal(findReviewAutoFollowScreenshotId(groups, 102), 101);
+});
+
+test("review auto-follow stops when the batch has no pending cards", () => {
+  const groups = threeScreenshotGroups().map((group) => ({
+    ...group,
+    cards: group.cards.map((item) => ({
+      ...item,
+      status: "confirmed" as const,
+    })),
+  }));
+
+  assert.equal(findReviewAutoFollowScreenshotId(groups, 102), null);
 });

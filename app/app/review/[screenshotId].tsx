@@ -27,6 +27,7 @@ import { useFlow, type FlowBatchItem } from "@/flow-context";
 import {
   buildOrderedReviewGroups,
   findCurrentPendingReviewCard,
+  findReviewAutoFollowScreenshotId,
 } from "@/review-order";
 import { theme } from "@/theme";
 import { useToast } from "@/toast-context";
@@ -89,7 +90,10 @@ export default function ReviewScreen() {
   const id = Number(params.screenshotId);
   const [loadingCardId, setLoadingCardId] = useState<number | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<{
+    cardId: number;
+    message: string;
+  } | null>(null);
   const [drafts, setDrafts] = useState<Record<number, ReviewCardDraft>>({});
   const [reviewGroupsCleared, setReviewGroupsCleared] = useState(false);
   const mountedRef = useRef(true);
@@ -136,22 +140,26 @@ export default function ReviewScreen() {
     [orderedGroups],
   );
   const renderedReviewGroups = reviewGroupsCleared ? [] : orderedGroups;
-  const currentPendingCard = useMemo(
-    () => findCurrentPendingReviewCard(
-      orderedGroups.map((group) => ({ index: group.item.index, cards: group.cards })),
-    ),
+  const reviewCardGroups = useMemo(
+    () => orderedGroups.map((group) => ({ index: group.item.index, cards: group.cards })),
     [orderedGroups],
+  );
+  const currentPendingCard = useMemo(
+    () => findCurrentPendingReviewCard(reviewCardGroups),
+    [reviewCardGroups],
+  );
+  const autoFollowScreenshotId = useMemo(
+    () => findReviewAutoFollowScreenshotId(reviewCardGroups, screenshotId),
+    [reviewCardGroups, screenshotId],
   );
   const reviewBatchProgress = useMemo(() => {
     if (batchItems.length === 0) {
       return null;
     }
 
-    const activeGroup = currentPendingCard
-      ? orderedGroups.find((group) =>
-          group.cards.some((card) => card.id === currentPendingCard.id),
-        )
-      : orderedGroups.find((group) => group.item.screenshotId === screenshotId);
+    const activeGroup = orderedGroups.find(
+      (group) => group.item.screenshotId === screenshotId,
+    );
     if (!activeGroup) {
       return null;
     }
@@ -168,7 +176,7 @@ export default function ReviewScreen() {
       totalCount: batchItems.length,
       status: activeGroup.item.status,
     };
-  }, [batchItems, currentPendingCard, orderedGroups, screenshotId]);
+  }, [batchItems, orderedGroups, screenshotId]);
   const successfulScreenshotIds = useMemo(
     () => new Set(batchItems.flatMap((item) =>
       item.status === "success" && item.screenshotId != null ? [item.screenshotId] : [],
@@ -214,12 +222,12 @@ export default function ReviewScreen() {
   }, [orderedCards]);
 
   useEffect(() => {
-    if (!currentPendingCard || screenshotId === currentPendingCard.screenshot_id) {
+    if (autoFollowScreenshotId == null) {
       return;
     }
 
-    selectScreenshot(currentPendingCard.screenshot_id);
-  }, [currentPendingCard?.id]);
+    selectScreenshot(autoFollowScreenshotId);
+  }, [autoFollowScreenshotId]);
 
   useEffect(() => {
     if (!isValidId) {
@@ -365,7 +373,10 @@ export default function ReviewScreen() {
     generation: number,
     tokenRef: { current: number },
     runToken: number,
-    message?: string,
+    options: {
+      message?: string;
+      preserveScreenshotId?: number | null;
+    } = {},
   ) {
     const detail = await getScreenshotDetail(targetScreenshotId);
     if (
@@ -381,10 +392,16 @@ export default function ReviewScreen() {
     }
 
     setScreenshotDetail(detail);
+    if (
+      options.preserveScreenshotId != null &&
+      options.preserveScreenshotId !== targetScreenshotId
+    ) {
+      selectScreenshot(options.preserveScreenshotId);
+    }
     setPageError(null);
     setActionError(null);
-    if (message) {
-      showToast(message, "info");
+    if (options.message) {
+      showToast(options.message, "info");
     }
     return true;
   }
@@ -436,6 +453,9 @@ export default function ReviewScreen() {
       return;
     }
 
+    if (card.id !== currentPendingCard?.id) {
+      logEvent("review_out_of_order", `card_id=${card.id} type=${card.type}`);
+    }
     logEvent("confirm_start", `id=${card.id},type=${card.type}`);
     const draft = drafts[card.id] ?? cloneDraft(card);
     const localBatchAnchor = resolveReviewLocalBatchAnchor(
@@ -448,7 +468,7 @@ export default function ReviewScreen() {
     const dependencyMessage = getInteractionDependencyMessage(localBatchAnchor);
     if (dependencyMessage) {
       logEvent("confirm_error", dependencyMessage);
-      setActionError(dependencyMessage);
+      setActionError({ cardId: card.id, message: dependencyMessage });
       showToast(dependencyMessage, "error");
       return;
     }
@@ -457,7 +477,6 @@ export default function ReviewScreen() {
     const requestGeneration = flowGeneration;
     const runToken = actionRunTokenRef.current + 1;
     actionRunTokenRef.current = runToken;
-    selectScreenshot(card.screenshot_id);
     try {
       setLoadingCardId(card.id);
       setActionError(null);
@@ -507,7 +526,10 @@ export default function ReviewScreen() {
             requestGeneration,
             actionRunTokenRef,
             runToken,
-            "这张卡刚刚已经处理过，内容已刷新。",
+            {
+              message: "这张卡刚刚已经处理过，内容已刷新。",
+              preserveScreenshotId: screenshotId,
+            },
           );
         } catch (refreshError) {
           if (
@@ -522,13 +544,13 @@ export default function ReviewScreen() {
             return;
           }
           const message = getErrorMessage(refreshError, "刷新状态失败。");
-          setActionError(message);
+          setActionError({ cardId: card.id, message });
           showError(refreshError, "刷新状态失败。");
         }
         return;
       }
 
-      setActionError(message);
+      setActionError({ cardId: card.id, message });
       showError(error, "确认失败。");
     } finally {
       if (actionRunTokenRef.current === runToken) {
@@ -556,7 +578,6 @@ export default function ReviewScreen() {
     const requestGeneration = flowGeneration;
     const runToken = actionRunTokenRef.current + 1;
     actionRunTokenRef.current = runToken;
-    selectScreenshot(card.screenshot_id);
     try {
       setLoadingCardId(card.id);
       setActionError(null);
@@ -595,6 +616,9 @@ export default function ReviewScreen() {
         }
       }
 
+      if (card.id !== currentPendingCard?.id) {
+        logEvent("review_out_of_order", `card_id=${card.id} type=${card.type}`);
+      }
       logEvent("reject", `id=${card.id},type=${card.type}`);
       const result = await rejectCard(card.id);
       if (
@@ -630,7 +654,10 @@ export default function ReviewScreen() {
             requestGeneration,
             actionRunTokenRef,
             runToken,
-            "这张卡刚刚已经处理过，内容已刷新。",
+            {
+              message: "这张卡刚刚已经处理过，内容已刷新。",
+              preserveScreenshotId: screenshotId,
+            },
           );
         } catch (refreshError) {
           if (
@@ -645,14 +672,14 @@ export default function ReviewScreen() {
             return;
           }
           const message = getErrorMessage(refreshError, "刷新状态失败。");
-          setActionError(message);
+          setActionError({ cardId: card.id, message });
           showError(refreshError, "刷新状态失败。");
         }
         return;
       }
 
       const message = getErrorMessage(error, "跳过失败。");
-      setActionError(message);
+      setActionError({ cardId: card.id, message });
       showError(error, "跳过失败。");
     } finally {
       if (actionRunTokenRef.current === runToken) {
@@ -671,7 +698,7 @@ export default function ReviewScreen() {
   return (
     <Page
       title="确认卡片"
-      subtitle="按来源选择顺序处理；每个来源内按卡片生成顺序依次确认。"
+      subtitle="可先处理能判断的卡片；“当前这张”仅提示建议顺序。"
     >
       {pageError ? (
         <SectionCard title="加载失败">
@@ -798,8 +825,9 @@ export default function ReviewScreen() {
                 <ReviewCard
                   busy={loadingCardId === card.id}
                   card={card}
+                  disabled={targetMismatch}
                   draft={draft}
-                  errorText={stage === "current" ? actionError : null}
+                  errorText={actionError?.cardId === card.id ? actionError.message : null}
                   onConfirm={() => void handleConfirm(card)}
                   onDraftChange={(draft) =>
                     setDrafts((current) => ({

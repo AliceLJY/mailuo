@@ -17,6 +17,7 @@ export const EVENT_KINDS = [
   "confirm_start",
   "confirm_ok",
   "confirm_error",
+  "review_out_of_order",
   "reject",
   "clear_all",
   "app_background",

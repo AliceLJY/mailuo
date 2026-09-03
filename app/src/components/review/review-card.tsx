@@ -9,6 +9,10 @@ import {
   MeetingFields,
   UpdateFields,
 } from "@/components/review/review-fields";
+import {
+  isReviewCardEditable,
+  type ReviewCardStage,
+} from "@/review-order";
 import { getConfidenceColor, theme } from "@/theme";
 import type {
   ActionCardRecord,
@@ -19,14 +23,13 @@ import type {
   UpdateContactPayload,
 } from "@/types";
 
-type ReviewStage = "current" | "upcoming" | "done";
-
 type Props = {
   card: ActionCardRecord;
   draft: ReviewCardDraft;
-  stage: ReviewStage;
+  stage: ReviewCardStage;
   sourceLabels?: string[];
   busy?: boolean;
+  disabled?: boolean;
   errorText?: string | null;
   onDraftChange: (draft: ReviewCardDraft) => void;
   onConfirm: () => void;
@@ -59,6 +62,7 @@ function formatCandidate(candidate: { name: string; company?: string | null }) {
 export function ReviewCard({
   busy = false,
   card,
+  disabled = false,
   draft,
   errorText,
   onConfirm,
@@ -67,7 +71,7 @@ export function ReviewCard({
   sourceLabels = [],
   stage,
 }: Props) {
-  const editable = stage === "current" && card.status === "pending";
+  const editable = !disabled && isReviewCardEditable(stage, card.status);
   const isDuplicateMeeting =
     card.type === "create_meeting" && card.payload.duplicate_of_meeting_id != null;
   const isMeetingProgressUpdate =
@@ -80,7 +84,7 @@ export function ReviewCard({
       ? { icon: "事", label: "新事项" }
       : CARD_META[card.type];
   const stageText =
-    stage === "current" ? "当前这张" : stage === "upcoming" ? "后面还有" : STATUS_LABEL[card.status];
+    stage === "current" ? "当前这张" : stage === "upcoming" ? "待确认" : STATUS_LABEL[card.status];
   const confidenceColor = getConfidenceColor(card.confidence);
 
   function setPayload(payload: ReviewCardDraft["payload"]) {
@@ -92,7 +96,7 @@ export function ReviewCard({
   }
 
   return (
-    <View style={[styles.card, editable ? styles.currentCard : undefined]}>
+    <View style={[styles.card, stage === "current" ? styles.currentCard : undefined]}>
       <View style={styles.header}>
         <View style={styles.headerCopy}>
           <View style={styles.typeRow}>
