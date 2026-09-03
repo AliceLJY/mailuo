@@ -179,6 +179,7 @@ test("diagnostic event kinds survive the event-log read whitelist", () => {
     "insights_start",
     "insights_ok",
     "insights_error",
+    "notice_routed",
     "mem",
   ] as const;
 
@@ -203,6 +204,20 @@ test("diagnostic event kinds survive the event-log read whitelist", () => {
     entries.find((entry) => entry.kind === "java_crash")?.detail,
     javaCrashDetail,
   );
+});
+
+test("notice routing event detail is limited to 120 Unicode code points", () => {
+  const memory = createMemoryStorage();
+  const detail = `decision=dropped title=${"虚构通知".repeat(30)}`;
+
+  const entry = appendEvent(memory.storage, "notice_routed", detail);
+
+  assert.equal(entry?.kind, "notice_routed");
+  assert.equal(
+    Array.from(entry?.detail ?? "").length,
+    MAX_EVENT_DETAIL_CODE_POINTS,
+  );
+  assert.equal(readEventLog(memory.storage).at(-1)?.detail, entry?.detail);
 });
 
 test("exit-reason events retain the complete 80-code-point description", () => {

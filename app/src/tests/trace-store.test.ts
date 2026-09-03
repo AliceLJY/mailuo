@@ -83,6 +83,16 @@ test("diagnostics trace writes and idempotently rewrites the same content", asyn
     ...buildTrace(7),
     perception_path: "ocr->cloud",
     ocr_text: "王磊：方案已发",
+    batch_other_dedup: [{
+      title: "准备来访车辆",
+      matched_card_id: 19,
+      similarity: 0.93,
+    }],
+    notice_routing: [{
+      title: "通知邬导会议时间变更",
+      decision: "batch" as const,
+      target_title: "海棠项目碰头会",
+    }],
     error: { name: "Error", message: "视觉整理失败" },
   } satisfies DiagnosticsTrace;
   await writeDiagnosticsTrace(directory, trace);
@@ -93,6 +103,16 @@ test("diagnostics trace writes and idempotently rewrites the same content", asyn
     ...buildTrace(7),
     perception_path: "ocr->cloud",
     ocr_text: "王磊：方案已发",
+    batch_other_dedup: [{
+      title: "准备来访车辆",
+      matched_card_id: 19,
+      similarity: 0.93,
+    }],
+    notice_routing: [{
+      title: "通知邬导会议时间变更",
+      decision: "batch",
+      target_title: "海棠项目碰头会",
+    }],
     error: { name: "Error", message: "视觉整理失败" },
   }]);
 });

@@ -5,7 +5,10 @@ import {
   perceiveScreenshot,
 } from "../../../shared/core/agent/perceive.ts";
 import type { PerceptionResult } from "../../../shared/core/agent/perceive.ts";
-import { proposeCards } from "../../../shared/core/agent/propose.ts";
+import {
+  proposeCardsWithRouting,
+  type NoticeRouting,
+} from "../../../shared/core/agent/propose.ts";
 import {
   resolveMeetingProgress,
   resolveParticipants,
@@ -24,6 +27,7 @@ import {
   type DiagnosticsTrace,
   type DiagnosticsTraceWriter,
 } from "../diagnostics/trace-store";
+import { logEvent } from "../diagnostics/event-log";
 
 import { createLocalProviderFactory, type LocalProviderFactory } from "./providers";
 import {
@@ -110,6 +114,15 @@ function collectOcrTimestampHints(ocr: OcrPerceptionResult): string[] {
     .map((line) => line.text.trim());
 }
 
+function logNoticeRouting(routes: readonly NoticeRouting[]): void {
+  for (const route of routes) {
+    logEvent(
+      "notice_routed",
+      `decision=${route.decision} title=${route.title}`,
+    );
+  }
+}
+
 export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
   const providerFactory = options.providers ?? createLocalProviderFactory();
   const now = options.now ?? (() => new Date());
@@ -174,17 +187,19 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           meetings: existingMeetings,
           provider: textProvider,
         });
+        const proposal = proposeCardsWithRouting(
+          extraction,
+          resolutions,
+          contacts,
+          timestamp,
+          existingMeetings,
+          meetingProgressResolutions,
+        );
+        logNoticeRouting(proposal.noticeRouting);
         const cards = options.store.saveScreenshotAnalysis({
           screenshotId: screenshot.id,
           rawExtraction: extraction,
-          cards: proposeCards(
-            extraction,
-            resolutions,
-            contacts,
-            timestamp,
-            existingMeetings,
-            meetingProgressResolutions,
-          ),
+          cards: proposal.cards,
           createdAt: timestamp.toISOString(),
         });
 
@@ -217,6 +232,8 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
       let traceResolutions: DiagnosticsTrace["resolutions"] = [];
       let traceProposedCards: DiagnosticsTrace["proposed_cards"] = [];
       let traceMeetingDedup: DiagnosticsTrace["meeting_dedup"] = [];
+      let traceBatchOtherDedup: NonNullable<DiagnosticsTrace["batch_other_dedup"]> = [];
+      let traceNoticeRouting: NonNullable<DiagnosticsTrace["notice_routing"]> = [];
       const notices: string[] = [];
 
       const traceState = (): Omit<DiagnosticsTrace, "finished_at"> => ({
@@ -228,11 +245,20 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
         resolutions: traceResolutions,
         proposed_cards: traceProposedCards,
         meeting_dedup: traceMeetingDedup,
+        ...(traceBatchOtherDedup.length > 0
+          ? { batch_other_dedup: traceBatchOtherDedup }
+          : {}),
+        ...(traceNoticeRouting.length > 0
+          ? { notice_routing: traceNoticeRouting }
+          : {}),
         notices: [...notices],
       });
 
       try {
         batchSession?.reconcilePendingContacts((cardId) =>
+          options.store.getStoredActionCardById(cardId),
+        );
+        batchSession?.reconcileBatchOtherCards((cardId) =>
           options.store.getStoredActionCardById(cardId),
         );
         const processing = await getProcessingSettings();
@@ -349,7 +375,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           meetings: existingMeetings,
           provider: textProvider,
         });
-        const proposedCards = proposeCards(
+        const proposal = proposeCardsWithRouting(
           extraction,
           resolutions,
           contacts,
@@ -357,6 +383,9 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           existingMeetings,
           meetingProgressResolutions,
         );
+        const proposedCards = proposal.cards;
+        traceNoticeRouting = proposal.noticeRouting;
+        logNoticeRouting(proposal.noticeRouting);
         traceProposedCards = proposedCards.map((card) => ({
           type: card.type,
           payload: card.payload,
@@ -383,6 +412,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
             resolutions,
             cards: proposedCards,
           });
+          traceBatchOtherDedup = plan.batchOtherDedup;
           const savedCards = options.store.saveScreenshotAnalysis({
             screenshotId: screenshot.id,
             rawExtraction: extraction,

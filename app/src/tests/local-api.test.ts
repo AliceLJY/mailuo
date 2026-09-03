@@ -42,6 +42,11 @@ import type { LocalStore } from "../local/types";
 import type { LocalLlmSecretStore } from "../connection/secrets";
 import type { DiagnosticsTrace } from "../diagnostics/trace-store";
 import {
+  configureEventLogStorage,
+  readEventLog,
+  type SyncEventLogStorage,
+} from "../diagnostics/event-log";
+import {
   writeDiagnosticsBundleToDirectory,
   type DiagnosticsExportDirectory,
 } from "../diagnostics/diagnostics-export";
@@ -841,6 +846,354 @@ function collectContactIds(value: unknown): number[] {
   }
   return ids;
 }
+
+function eventExtraction(
+  events: PerceptionResult["events"],
+): PerceptionResult {
+  return {
+    participants: [],
+    events,
+    facts: [],
+    quotes: [],
+  };
+}
+
+function createBatchEventHarness(extractions: PerceptionResult[]) {
+  const store = new FakeLocalStore();
+  const pendingExtractions = [...extractions];
+  const qwen = new FakeStructuredOutputProvider(() => {
+    const extraction = pendingExtractions.shift();
+    if (!extraction) {
+      throw new Error("unexpected perception call");
+    }
+    return extraction;
+  });
+  const text = new FakeStructuredOutputProvider(
+    () => ({ insights: [] }),
+    () => JSON.stringify({ matches: [] }),
+  );
+  const traces: DiagnosticsTrace[] = [];
+  const createApi = () => createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async (asset) => ({
+      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+      imagePath: asset.uri,
+    }),
+    providers: {
+      async createQwenProvider() {
+        return qwen;
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    traceWriter(trace) {
+      traces.push(trace);
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  return { createApi, store, traces };
+}
+
+const damagedVehicleNotice =
+  "@小禾你和邬导联系一下,给他报损备明天上午过来集团开会的车牌号。中午给他打一份工作餐。";
+const correctedVehicleNotice =
+  "@小禾你和邬导联系一下,给他报备明天上午过来集团开会的车牌号。中午给他打一份工作餐。";
+
+function vehicleOtherExtraction(sourceQuote: string, title: string): PerceptionResult {
+  return eventExtraction([{
+    kind: "other",
+    title,
+    time_text: "明天 上午",
+    time_iso: null,
+    has_time_signal: true,
+    participant_names: ["小禾", "邬导"],
+    confidence: "high",
+    source_quote: sourceQuote,
+  }]);
+}
+
+test("local batch suppresses the second OCR-variant other item and records its trace match", async () => {
+  const harness = createBatchEventHarness([
+    vehicleOtherExtraction(damagedVehicleNotice, "报损备车及安排工作餐"),
+    vehicleOtherExtraction(correctedVehicleNotice, "报备邬导车辆信息及安排工作餐"),
+  ]);
+  const api = harness.createApi();
+  const session = new LocalBatchContactSession();
+  const first = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/vehicle-1.png", mimeType: "image/png" },
+    localBatch: { session, index: 0 },
+  });
+  const firstOther = first.cards.find((card) =>
+    card.type === "create_meeting" && card.payload.kind === "other");
+  assert.ok(firstOther);
+
+  const second = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/vehicle-2.png", mimeType: "image/png" },
+    localBatch: { session, index: 1 },
+  });
+
+  assert.equal(
+    second.cards.some((card) =>
+      card.type === "create_meeting" && card.payload.agenda_append != null),
+    false,
+  );
+  assert.deepEqual(second.cards, []);
+  assert.equal(session.listBatchOtherCards().length, 1);
+  assert.deepEqual(harness.traces[1]?.batch_other_dedup?.map((match) => ({
+    title: match.title,
+    matched_card_id: match.matched_card_id,
+  })), [{
+    title: "报备邬导车辆信息及安排工作餐",
+    matched_card_id: firstOther.id,
+  }]);
+  assert.ok(Math.abs(
+    (harness.traces[1]?.batch_other_dedup?.[0]?.similarity ?? 0) -
+      0.9743589743589743,
+  ) < Number.EPSILON);
+});
+
+test("identical other items in separate local batch sessions are both proposed", async () => {
+  const harness = createBatchEventHarness([
+    vehicleOtherExtraction(correctedVehicleNotice, "报备邬导车辆信息及安排工作餐"),
+    vehicleOtherExtraction(correctedVehicleNotice, "报备邬导车辆信息及安排工作餐"),
+  ]);
+  const api = harness.createApi();
+  const first = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/batch-a.png", mimeType: "image/png" },
+    localBatch: { session: new LocalBatchContactSession(), index: 0 },
+  });
+  const second = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/batch-b.png", mimeType: "image/png" },
+    localBatch: { session: new LocalBatchContactSession(), index: 0 },
+  });
+
+  assert.equal(first.cards.length, 1);
+  assert.equal(second.cards.length, 1);
+  assert.equal(harness.traces[1]?.batch_other_dedup, undefined);
+});
+
+test("a rejected local-batch other item remains a dedup tombstone after API recreation", async () => {
+  const harness = createBatchEventHarness([
+    vehicleOtherExtraction(damagedVehicleNotice, "报损备车及安排工作餐"),
+    vehicleOtherExtraction(correctedVehicleNotice, "报备邬导车辆信息及安排工作餐"),
+  ]);
+  const session = new LocalBatchContactSession();
+  const firstApi = harness.createApi();
+  const first = await firstApi.uploadScreenshot({
+    asset: { uri: "file:///fake/rejected-vehicle-1.png", mimeType: "image/png" },
+    localBatch: { session, index: 0 },
+  });
+  const firstOther = first.cards.find((card) =>
+    card.type === "create_meeting" && card.payload.kind === "other");
+  assert.ok(firstOther);
+
+  const rebuiltApi = harness.createApi();
+  const rejected = await rebuiltApi.rejectCard(firstOther.id);
+  assert.equal(rejected.card.status, "rejected");
+  const second = await rebuiltApi.uploadScreenshot({
+    asset: { uri: "file:///fake/rejected-vehicle-2.png", mimeType: "image/png" },
+    localBatch: { session, index: 1 },
+  });
+
+  assert.deepEqual(second.cards, []);
+  assert.equal(session.listBatchOtherCards()[0]?.status, "rejected");
+  assert.equal(
+    harness.traces[1]?.batch_other_dedup?.[0]?.matched_card_id,
+    firstOther.id,
+  );
+});
+
+test("same-screenshot timeless notice routing writes the batch trace and black-box event", async () => {
+  const meetingTitle = "海棠剧场舞台项目碰头会";
+  const noticeTitle = "通知海棠塔和邬导会议时间变更";
+  const noticeSource = "你们通知海棠塔和邬导这个时间。";
+  const harness = createBatchEventHarness([eventExtraction([
+    {
+      kind: "meeting",
+      title: meetingTitle,
+      time_text: "明天下午",
+      time_iso: null,
+      has_time_signal: true,
+      participant_names: ["小禾", "邬导", "海棠塔"],
+      agenda: "确认舞台方案",
+      confidence: "high",
+      source_quote: "明天下午开海棠剧场舞台项目碰头会。",
+    },
+    {
+      kind: "other",
+      title: noticeTitle,
+      time_text: "",
+      time_iso: null,
+      has_time_signal: false,
+      participant_names: ["邬导", "海棠塔"],
+      confidence: "high",
+      source_quote: noticeSource,
+    },
+  ])]);
+  const values = new Map<string, string>();
+  const eventStorage: SyncEventLogStorage = {
+    getItemSync(key) {
+      return values.get(key) ?? null;
+    },
+    setItemSync(key, value) {
+      values.set(key, value);
+    },
+  };
+  configureEventLogStorage(eventStorage);
+
+  try {
+    const upload = await harness.createApi().uploadScreenshot({
+      asset: { uri: "file:///fake/same-shot-notice.png", mimeType: "image/png" },
+      localBatch: { session: new LocalBatchContactSession(), index: 0 },
+    });
+    const meeting = upload.cards.find((card) => card.type === "create_meeting");
+    assert.ok(meeting);
+    assert.equal(meeting.payload.agenda, `确认舞台方案；${noticeSource}`);
+    assert.deepEqual(harness.traces[0]?.notice_routing, [{
+      title: noticeTitle,
+      decision: "batch",
+      target_title: meetingTitle,
+    }]);
+    assert.deepEqual(
+      readEventLog(eventStorage).filter((entry) => entry.kind === "notice_routed")
+        .map((entry) => ({ kind: entry.kind, detail: entry.detail })),
+      [{
+        kind: "notice_routed",
+        detail: `decision=batch title=${noticeTitle}`,
+      }],
+    );
+  } finally {
+    configureEventLogStorage(null);
+  }
+});
+
+test("pasted-text notice routing also writes the black-box event", async () => {
+  const meetingTitle = "青松展厅灯光项目碰头会";
+  const noticeTitle = "通知骆导会议时间变更";
+  const noticeSource = "请通知骆导这个时间。";
+  const extraction = eventExtraction([
+    {
+      kind: "meeting",
+      title: meetingTitle,
+      time_text: "明天下午",
+      time_iso: null,
+      has_time_signal: true,
+      participant_names: ["骆导"],
+      agenda: "确认灯光方案",
+      confidence: "high",
+      source_quote: "明天下午开青松展厅灯光项目碰头会。",
+    },
+    {
+      kind: "other",
+      title: noticeTitle,
+      time_text: "",
+      time_iso: null,
+      has_time_signal: false,
+      participant_names: ["骆导"],
+      confidence: "high",
+      source_quote: noticeSource,
+    },
+  ]);
+  const values = new Map<string, string>();
+  const eventStorage: SyncEventLogStorage = {
+    getItemSync(key) {
+      return values.get(key) ?? null;
+    },
+    setItemSync(key, value) {
+      values.set(key, value);
+    },
+  };
+  configureEventLogStorage(eventStorage);
+
+  try {
+    const store = new FakeLocalStore();
+    const text = new FakeStructuredOutputProvider(() => ({ insights: [] }));
+    const api = createLocalApi({
+      store,
+      keys: fakeKeys,
+      async loadImage() {
+        throw new Error("text upload must not load an image");
+      },
+      providers: {
+        async createQwenProvider() {
+          throw new Error("text upload must not create a vision provider");
+        },
+        async createTextProvider() {
+          return text;
+        },
+      },
+      async perceiveOcrText() {
+        return extraction;
+      },
+      now: () => new Date(FIXED_NOW),
+    });
+
+    const upload = await api.uploadText({ text: "明天下午开灯光项目碰头会，请通知骆导。" });
+    const meeting = upload.cards.find((card) => card.type === "create_meeting");
+    assert.ok(meeting);
+    assert.equal(meeting.payload.agenda, `确认灯光方案；${noticeSource}`);
+    assert.deepEqual(
+      readEventLog(eventStorage).filter((entry) => entry.kind === "notice_routed")
+        .map((entry) => ({ kind: entry.kind, detail: entry.detail })),
+      [{
+        kind: "notice_routed",
+        detail: `decision=batch title=${noticeTitle}`,
+      }],
+    );
+  } finally {
+    configureEventLogStorage(null);
+  }
+});
+
+test("a timeless notice cannot match a pending meeting from an earlier screenshot", async () => {
+  const meetingTitle = "梧桐展厅布展碰头会";
+  const noticeTitle = "通知邬导会议时间变更";
+  const harness = createBatchEventHarness([
+    eventExtraction([{
+      kind: "meeting",
+      title: meetingTitle,
+      time_text: "明天下午",
+      time_iso: null,
+      has_time_signal: true,
+      participant_names: ["邬导"],
+      confidence: "high",
+      source_quote: "明天下午开梧桐展厅布展碰头会。",
+    }]),
+    eventExtraction([{
+      kind: "other",
+      title: noticeTitle,
+      time_text: "",
+      time_iso: null,
+      has_time_signal: false,
+      participant_names: ["邬导"],
+      confidence: "high",
+      source_quote: "请通知邬导这个时间。",
+    }]),
+  ]);
+  const api = harness.createApi();
+  const session = new LocalBatchContactSession();
+  const first = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/meeting-shot.png", mimeType: "image/png" },
+    localBatch: { session, index: 0 },
+  });
+  const second = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/notice-shot.png", mimeType: "image/png" },
+    localBatch: { session, index: 1 },
+  });
+
+  assert.deepEqual(
+    first.cards.map((card) => card.type === "create_meeting" ? card.payload.title : null),
+    [meetingTitle],
+  );
+  assert.deepEqual(second.cards, []);
+  assert.deepEqual(harness.traces[1]?.notice_routing, [{
+    title: noticeTitle,
+    decision: "dropped",
+  }]);
+});
 
 test("local batch merges pending contacts and maps every deferred contact id before execution", async () => {
   const store = new FakeLocalStore();

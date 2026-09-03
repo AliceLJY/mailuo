@@ -29,6 +29,7 @@ export const EVENT_KINDS = [
   "insights_start",
   "insights_ok",
   "insights_error",
+  "notice_routed",
   "mem",
 ] as const;
 

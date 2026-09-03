@@ -39,6 +39,18 @@ const TraceMeetingDedupSchema = z.object({
   similarity: z.number().finite().min(0).max(1).optional(),
 }).strict();
 
+const TraceBatchOtherDedupSchema = z.object({
+  title: z.string(),
+  matched_card_id: safeInteger.positive(),
+  similarity: z.number().finite().min(0).max(1),
+}).strict();
+
+const TraceNoticeRoutingSchema = z.object({
+  title: z.string(),
+  decision: z.enum(["stored", "batch", "dropped", "timeless_dropped"]),
+  target_title: z.string().optional(),
+}).strict();
+
 export const DiagnosticsTraceSchema = z.object({
   screenshot_id: safeInteger.positive(),
   started_at: z.string().datetime({ offset: true }),
@@ -49,6 +61,8 @@ export const DiagnosticsTraceSchema = z.object({
   resolutions: z.array(TraceResolutionSchema),
   proposed_cards: z.array(TraceProposedCardSchema),
   meeting_dedup: z.array(TraceMeetingDedupSchema),
+  batch_other_dedup: z.array(TraceBatchOtherDedupSchema).optional(),
+  notice_routing: z.array(TraceNoticeRoutingSchema).optional(),
   notices: z.array(z.string()),
   error: z.object({
     name: z.string(),

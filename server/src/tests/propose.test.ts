@@ -8,7 +8,9 @@ import type {
   ResolvableContact,
 } from '../../../shared/core/agent/resolve.ts';
 import {
+  dedupeBatchOtherCards,
   proposeCards as baseProposeCards,
+  proposeCardsWithRouting as baseProposeCardsWithRouting,
   type ExistingMeeting,
 } from '../../../shared/core/agent/propose.ts';
 
@@ -23,6 +25,24 @@ function proposeCards(
   meetingProgressResolutions: MeetingProgressResolution[] = [],
 ) {
   return baseProposeCards(
+    extraction,
+    resolutions,
+    contacts,
+    now,
+    existingMeetings,
+    meetingProgressResolutions,
+  );
+}
+
+function proposeCardsWithRouting(
+  extraction: PerceptionResult,
+  resolutions?: ParticipantResolution[],
+  contacts: ResolvableContact[] = [],
+  now = proposalNow,
+  existingMeetings: ExistingMeeting[] = [],
+  meetingProgressResolutions: MeetingProgressResolution[] = [],
+) {
+  return baseProposeCardsWithRouting(
     extraction,
     resolutions,
     contacts,
@@ -2509,7 +2529,7 @@ function eventOnlyExtraction(
 
 test('proposeCards turns a stored-meeting time notice into a standard agenda-append card', () => {
   const noticeSource = '通知：星桥项目阶段评审会改到下午三点';
-  const cards = proposeCards(
+  const { cards, noticeRouting } = proposeCardsWithRouting(
     eventOnlyExtraction([
       {
         kind: 'other',
@@ -2559,6 +2579,11 @@ test('proposeCards turns a stored-meeting time notice into a standard agenda-app
       source_quote: noticeSource,
     },
   ]);
+  assert.deepEqual(noticeRouting, [{
+    title: '通知星桥项目参会人时间变更',
+    decision: 'stored',
+    target_title: storedProjectMeeting.title,
+  }]);
 });
 
 test('proposeCards matches a stored meeting by participants and an absolute date without a clock time', () => {
@@ -2682,7 +2707,7 @@ test('date-only meeting notice matching keeps the current year and honors an exp
 
 test('proposeCards merges a time notice into the agenda of its same-batch new meeting', () => {
   const noticeSource = '提醒：第三季度项目推进协调会改为线上举行';
-  const cards = proposeCards(
+  const { cards, noticeRouting } = proposeCardsWithRouting(
     eventOnlyExtraction([
       {
         kind: 'other',
@@ -2722,6 +2747,167 @@ test('proposeCards merges a time notice into the agenda of its same-batch new me
     cards[0].source_quote,
     `第三季度项目推进协调会定于9月10日上午10点召开\n\n${noticeSource}`,
   );
+  assert.deepEqual(noticeRouting, [{
+    title: '第三季度项目推进协同会',
+    decision: 'batch',
+    target_title: '第三季度项目推进协调会',
+  }]);
+});
+
+test('proposeCards merges a timeless notice into one same-screenshot meeting by participant overlap', () => {
+  const noticeTitle = '通知海棠塔和邬导会议时间变更';
+  const noticeSource = '你们通知海棠塔和邬导这个时间。';
+  const meetingTitle = '海棠剧场舞台项目碰头会';
+  const { cards, noticeRouting } = proposeCardsWithRouting(
+    eventOnlyExtraction([
+      {
+        kind: 'meeting',
+        title: meetingTitle,
+        time_text: '明天下午',
+        time_iso: null,
+        has_time_signal: true,
+        participant_names: ['小禾', '邬导', '海棠塔'],
+        agenda: '确认舞台方案',
+        confidence: 'high',
+        source_quote: '明天下午开海棠剧场舞台项目碰头会。',
+      },
+      {
+        kind: 'other',
+        title: noticeTitle,
+        time_text: '',
+        time_iso: null,
+        has_time_signal: false,
+        participant_names: ['邬导', '海棠塔'],
+        confidence: 'high',
+        source_quote: noticeSource,
+      },
+    ]),
+    [],
+    [],
+  );
+
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0]?.type, 'create_meeting');
+  if (cards[0]?.type !== 'create_meeting') {
+    throw new Error('expected one same-screenshot meeting card');
+  }
+  assert.equal(cards[0].payload.agenda, `确认舞台方案；${noticeSource}`);
+  assert.equal(cards[0].payload.agenda_append, undefined);
+  assert.deepEqual(noticeRouting, [{
+    title: noticeTitle,
+    decision: 'batch',
+    target_title: meetingTitle,
+  }]);
+});
+
+test('proposeCards drops a timeless same-screenshot notice without participant overlap', () => {
+  const meetingTitle = '梧桐展厅布展碰头会';
+  const noticeTitle = '通知邬导会议时间变更';
+  const { cards, noticeRouting } = proposeCardsWithRouting(
+    eventOnlyExtraction([
+      {
+        kind: 'meeting',
+        title: meetingTitle,
+        time_text: '明天下午',
+        time_iso: null,
+        has_time_signal: true,
+        participant_names: ['小谷'],
+        confidence: 'high',
+        source_quote: '明天下午开梧桐展厅布展碰头会。',
+      },
+      {
+        kind: 'other',
+        title: noticeTitle,
+        time_text: '',
+        time_iso: null,
+        has_time_signal: false,
+        participant_names: ['邬导'],
+        confidence: 'high',
+        source_quote: '请通知邬导这个时间。',
+      },
+    ]),
+    [],
+    [],
+  );
+
+  assert.deepEqual(
+    cards.map((card) => card.type === 'create_meeting' ? card.payload.title : null),
+    [meetingTitle],
+  );
+  assert.deepEqual(noticeRouting, [{
+    title: noticeTitle,
+    decision: 'dropped',
+  }]);
+});
+
+test('proposeCards keeps the same-day gate for a timeless notice against a stored meeting', () => {
+  const noticeTitle = '通知邬导会议时间变更';
+  const { cards, noticeRouting } = proposeCardsWithRouting(
+    eventOnlyExtraction([{
+      kind: 'other',
+      title: noticeTitle,
+      time_text: '',
+      time_iso: null,
+      has_time_signal: false,
+      participant_names: ['邬导'],
+      confidence: 'high',
+      source_quote: '请通知邬导这个时间。',
+    }]),
+    [],
+    [],
+    proposalNow,
+    [{
+      ...storedProjectMeeting,
+      title: '梧桐展厅布展碰头会',
+      participants: [{ name: '邬导' }],
+    }],
+  );
+
+  assert.deepEqual(cards, []);
+  assert.deepEqual(noticeRouting, [{
+    title: noticeTitle,
+    decision: 'dropped',
+  }]);
+});
+
+test('proposeCards drops a timeless notice when two same-screenshot meetings overlap participants', () => {
+  const noticeTitle = '通知邬导会议时间变更';
+  const meetingTitles = ['梧桐展厅布展碰头会', '海棠剧场设备协调会'];
+  const { cards, noticeRouting } = proposeCardsWithRouting(
+    eventOnlyExtraction([
+      ...meetingTitles.map((title) => ({
+        kind: 'meeting' as const,
+        title,
+        time_text: '明天下午',
+        time_iso: null,
+        has_time_signal: true,
+        participant_names: ['邬导'],
+        confidence: 'high' as const,
+        source_quote: `明天下午召开${title}。`,
+      })),
+      {
+        kind: 'other',
+        title: noticeTitle,
+        time_text: '',
+        time_iso: null,
+        has_time_signal: false,
+        participant_names: ['邬导'],
+        confidence: 'high',
+        source_quote: '请通知邬导这个时间。',
+      },
+    ]),
+    [],
+    [],
+  );
+
+  assert.deepEqual(
+    cards.map((card) => card.type === 'create_meeting' ? card.payload.title : null),
+    meetingTitles,
+  );
+  assert.deepEqual(noticeRouting, [{
+    title: noticeTitle,
+    decision: 'dropped',
+  }]);
 });
 
 test('proposeCards drops a meeting-time notice when no meeting can be identified', () => {
@@ -2790,7 +2976,7 @@ test('proposeCards preserves unrelated progress when dropping an unmatched speci
 
 test('proposeCards drops timeless communication actions but keeps ones with time or location', () => {
   const timelessSource = '已确认';
-  const cards = proposeCards(
+  const { cards, noticeRouting } = proposeCardsWithRouting(
     eventOnlyExtraction([
       {
         kind: 'other',
@@ -2841,6 +3027,54 @@ test('proposeCards drops timeless communication actions but keeps ones with time
     cards.map((card) => card.type === 'create_meeting' ? card.payload.title : null),
     ['准备车辆及工作餐安排', '场地对接'],
   );
+  assert.deepEqual(noticeRouting, [{
+    title: '星桥项目参会人员确认',
+    decision: 'timeless_dropped',
+  }]);
+});
+
+test('batch other dedup keeps two low-similarity other items with the same normalized time', () => {
+  const cards = proposeCards(eventOnlyExtraction([{
+    kind: 'other',
+    title: '准备来访证',
+    time_text: '明天 上午',
+    time_iso: null,
+    has_time_signal: true,
+    participant_names: ['小谷'],
+    confidence: 'high',
+    source_quote: '请小谷准备两张来访证。',
+  }]), [], []);
+  const result = dedupeBatchOtherCards(cards, [{
+    card_id: 301,
+    source_quote: '请邬导把舞台灯光清单发给小禾。',
+    time_text: '明天上午！',
+    status: 'pending',
+  }]);
+
+  assert.deepEqual(result.cards, cards);
+  assert.deepEqual(result.matches, []);
+});
+
+test('batch other dedup never filters a meeting even when source and time match an other item', () => {
+  const cards = proposeCards(eventOnlyExtraction([{
+    kind: 'meeting',
+    title: '海棠项目碰头会',
+    time_text: '明天上午',
+    time_iso: null,
+    has_time_signal: true,
+    participant_names: ['邬导'],
+    confidence: 'high',
+    source_quote: '明天上午和邬导碰一下海棠项目。',
+  }]), [], []);
+  const result = dedupeBatchOtherCards(cards, [{
+    card_id: 302,
+    source_quote: '明天上午和邬导碰一下海棠项目。',
+    time_text: '明天 上午',
+    status: 'pending',
+  }]);
+
+  assert.deepEqual(result.cards, cards);
+  assert.deepEqual(result.matches, []);
 });
 
 const existingItem: ExistingMeeting = {

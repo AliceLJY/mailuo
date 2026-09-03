@@ -1,4 +1,9 @@
 import type { PerceptionResult } from "../../../shared/core/agent/perceive.ts";
+import {
+  dedupeBatchOtherCards,
+  type BatchOtherCardReference,
+  type BatchOtherDedupMatch,
+} from "../../../shared/core/agent/propose.ts";
 import type {
   ParticipantResolution,
   ResolvableContact,
@@ -84,6 +89,7 @@ export type LocalBatchPendingCardUpdate = {
 
 export type LocalBatchScreenshotPlan = {
   cards: ActionCard[];
+  batchOtherDedup: BatchOtherDedupMatch[];
   pendingCardUpdates: LocalBatchPendingCardUpdate[];
   dependenciesByCardIndex: Map<number, CardDependency[]>;
   pendingContactUpdates: PendingContactUpdate[];
@@ -152,6 +158,26 @@ function cloneContact(contact: ResolvableContact): ResolvableContact {
   return {
     ...contact,
     aliases: [...contact.aliases],
+  };
+}
+
+function toBatchOtherCardReference(
+  card: ActionCardRecord | null,
+): BatchOtherCardReference | null {
+  if (
+    !card ||
+    card.type !== "create_meeting" ||
+    card.payload.kind !== "other" ||
+    (card.status !== "pending" && card.status !== "rejected")
+  ) {
+    return null;
+  }
+
+  return {
+    card_id: card.id,
+    source_quote: card.source_quote,
+    time_text: card.payload.time_text,
+    status: card.status,
   };
 }
 
@@ -892,6 +918,7 @@ export class LocalBatchContactSession {
   private readonly temporaryIdByAnchorCardId = new Map<number, number>();
   private readonly realContactIdByTemporaryId = new Map<number, number>();
   private readonly dependenciesByCardId = new Map<number, CardDependency[]>();
+  private readonly batchOtherCardsById = new Map<number, BatchOtherCardReference>();
 
   listPendingContacts(): ResolvableContact[] {
     return [...this.pendingByTemporaryId.values()]
@@ -922,6 +949,21 @@ export class LocalBatchContactSession {
     }
   }
 
+  reconcileBatchOtherCards(getCard: AnchorCardLookup) {
+    for (const cardId of this.batchOtherCardsById.keys()) {
+      const reference = toBatchOtherCardReference(getCard(cardId));
+      if (reference) {
+        this.batchOtherCardsById.set(cardId, reference);
+      } else {
+        this.batchOtherCardsById.delete(cardId);
+      }
+    }
+  }
+
+  listBatchOtherCards(): BatchOtherCardReference[] {
+    return [...this.batchOtherCardsById.values()].map((card) => ({ ...card }));
+  }
+
   prepareScreenshot(input: {
     screenshotId: number;
     batchIndex: number;
@@ -933,6 +975,10 @@ export class LocalBatchContactSession {
       throw new TypeError(`Expected a non-negative batch index, received ${input.batchIndex}`);
     }
 
+    const batchOtherDedup = dedupeBatchOtherCards(
+      input.cards,
+      this.listBatchOtherCards(),
+    );
     const workingPending = new Map<number, PendingContactUpdate>();
     const changedTemporaryIds = new Set<number>();
 
@@ -1043,7 +1089,7 @@ export class LocalBatchContactSession {
       }
     };
 
-    for (const proposedCard of input.cards) {
+    for (const proposedCard of batchOtherDedup.cards) {
       if (proposedCard.type === "update_contact" && proposedCard.payload.contact_id < 0) {
         const temporaryId = assertTemporaryId(proposedCard.payload.contact_id);
         const pending = workingPending.get(temporaryId);
@@ -1196,6 +1242,7 @@ export class LocalBatchContactSession {
 
     return {
       cards,
+      batchOtherDedup: batchOtherDedup.matches,
       pendingCardUpdates,
       dependenciesByCardIndex,
       pendingContactUpdates: [...changedTemporaryIds].map((temporaryId) => workingPending.get(temporaryId)!),
@@ -1336,6 +1383,16 @@ export class LocalBatchContactSession {
       } as ActionCardRecord;
     });
 
+    for (const card of input.savedCards) {
+      const reference = toBatchOtherCardReference(card);
+      if (!reference) {
+        continue;
+      }
+
+      this.batchOtherCardsById.set(card.id, reference);
+      trackedCardIds.add(card.id);
+    }
+
     return {
       cards,
       merges,
@@ -1395,6 +1452,14 @@ export class LocalBatchContactSession {
   }
 
   registerRejectedAnchor(anchorCardId: number) {
+    const batchOtherCard = this.batchOtherCardsById.get(anchorCardId);
+    if (batchOtherCard) {
+      this.batchOtherCardsById.set(anchorCardId, {
+        ...batchOtherCard,
+        status: "rejected",
+      });
+    }
+
     const temporaryId = this.temporaryIdByAnchorCardId.get(anchorCardId);
     if (temporaryId != null) {
       this.removePendingContact(temporaryId);
@@ -1402,7 +1467,9 @@ export class LocalBatchContactSession {
   }
 
   hasTrackedCard(cardId: number): boolean {
-    return this.temporaryIdByAnchorCardId.has(cardId) || this.dependenciesByCardId.has(cardId);
+    return this.temporaryIdByAnchorCardId.has(cardId) ||
+      this.dependenciesByCardId.has(cardId) ||
+      this.batchOtherCardsById.has(cardId);
   }
 
   private requireRealContactId(temporaryId: number): number {

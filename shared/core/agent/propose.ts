@@ -1,6 +1,7 @@
 import {
   MEETING_CHANGE_FIELDS,
   type ActionCard,
+  type ActionCardStatus,
   type ContactCandidate,
   type CreateContactPayload,
   type CreateMeetingPayload,
@@ -50,9 +51,37 @@ export type ExistingMeeting = {
   agenda: string | null;
 };
 
+export type BatchOtherCardReference = {
+  card_id: number;
+  source_quote: string;
+  time_text: string;
+  status: ActionCardStatus;
+};
+
+export type BatchOtherDedupMatch = {
+  title: string;
+  matched_card_id: number;
+  similarity: number;
+};
+
+export type NoticeRouting = {
+  title: string;
+  decision: 'stored' | 'batch' | 'dropped' | 'timeless_dropped';
+  target_title?: string;
+};
+
+export type ProposedCardsWithRouting = {
+  cards: ProposedCard[];
+  noticeRouting: NoticeRouting[];
+};
+
 export const MEETING_DUPLICATE_RULES = {
   similarTitleThreshold: 0.9,
   minimumSimilarTitleLength: 8,
+} as const;
+
+export const BATCH_OTHER_DEDUP_RULES = {
+  sourceQuoteSimilarityThreshold: 0.85,
 } as const;
 
 const selfParticipantName = '我';
@@ -991,6 +1020,53 @@ function normalizeChineseTimeText(value: string): string {
     .replace(/\s+/gu, '');
 }
 
+function normalizeBatchOtherTimeText(value: string): string {
+  return normalizeContactText(normalizeChineseTimeText(value));
+}
+
+export function dedupeBatchOtherCards(
+  cards: ProposedCard[],
+  priorCards: readonly BatchOtherCardReference[],
+): { cards: ProposedCard[]; matches: BatchOtherDedupMatch[] } {
+  const candidates = priorCards.filter(
+    (card) => card.status === 'pending' || card.status === 'rejected',
+  );
+  const matches: BatchOtherDedupMatch[] = [];
+  const retainedCards = cards.filter((card) => {
+    if (card.type !== 'create_meeting' || card.payload.kind !== 'other') {
+      return true;
+    }
+
+    const normalizedSourceQuote = normalizeContactText(card.source_quote);
+    const normalizedTimeText = normalizeBatchOtherTimeText(card.payload.time_text);
+    const match = candidates
+      .map((candidate) => ({
+        candidate,
+        similarity: normalizedEditSimilarity(
+          normalizedSourceQuote,
+          normalizeContactText(candidate.source_quote),
+        ),
+      }))
+      .find(({ candidate, similarity }) => (
+        similarity >= BATCH_OTHER_DEDUP_RULES.sourceQuoteSimilarityThreshold &&
+        normalizeBatchOtherTimeText(candidate.time_text) === normalizedTimeText
+      ));
+
+    if (!match) {
+      return true;
+    }
+
+    matches.push({
+      title: card.payload.title,
+      matched_card_id: match.candidate.card_id,
+      similarity: match.similarity,
+    });
+    return false;
+  });
+
+  return { cards: retainedCards, matches };
+}
+
 function buildAbsoluteDateAnchor(explicitYearToken: string | undefined, now: Date): Date {
   const currentYear = Number(new Intl.DateTimeFormat('en', {
     timeZone: 'Asia/Shanghai',
@@ -1039,6 +1115,7 @@ function findMeetingNoticeCandidate<T>(
   toCandidate: (candidate: T) => MeetingNoticeCandidate,
   now: Date,
   selfParticipantNames: ReadonlySet<string>,
+  options: { allowTimelessParticipantMatch?: boolean } = {},
 ): T | undefined {
   const normalizedNoticeTitle = normalizeMeetingTitle(notice.title);
   const titleMatches = candidates.filter((candidate) => {
@@ -1052,7 +1129,7 @@ function findMeetingNoticeCandidate<T>(
   }
 
   const noticeDay = meetingCalendarDay(notice, now);
-  if (!noticeDay) {
+  if (!noticeDay && !options.allowTimelessParticipantMatch) {
     return undefined;
   }
 
@@ -1067,11 +1144,11 @@ function findMeetingNoticeCandidate<T>(
 
   const contextMatches = candidates.filter((candidate) => {
     const reference = toCandidate(candidate);
-    return meetingCalendarDay(reference, now) === noticeDay && reference.participantNames.some(
-      (name) => noticeParticipantNames.has(
-        normalizeMeetingParticipantName(name, selfParticipantNames),
-      ),
-    );
+    return (!noticeDay || meetingCalendarDay(reference, now) === noticeDay) &&
+      reference.participantNames.some((name) =>
+        noticeParticipantNames.has(
+          normalizeMeetingParticipantName(name, selfParticipantNames),
+        ));
   });
 
   return contextMatches.length === 1 ? contextMatches[0] : undefined;
@@ -1095,11 +1172,16 @@ function routeSpecialOtherEvents(
   meetingProgressResolutions: MeetingProgressResolution[],
   now: Date,
   selfParticipantNames: ReadonlySet<string>,
-): { events: ProposeEvent[]; meetingProgressResolutions: MeetingProgressResolution[] } {
+): {
+  events: ProposeEvent[];
+  meetingProgressResolutions: MeetingProgressResolution[];
+  noticeRouting: NoticeRouting[];
+} {
   const routedEvents = events.map((event) => ({ ...event }));
   const discardedIndexes = new Set<number>();
   const discardedSourceQuotes = new Set<string>();
   const noticeProgressResolutions: MeetingProgressResolution[] = [];
+  const noticeRouting: NoticeRouting[] = [];
   const storedMeetingCandidates = existingMeetings.filter((meeting) => meeting.kind === 'meeting');
   const batchMeetingIndexes = routedEvents
     .map((event, index) => event.kind === 'meeting' ? index : -1)
@@ -1110,6 +1192,10 @@ function routeSpecialOtherEvents(
       if (isTimelessCommunicationEvent(event)) {
         discardedIndexes.add(index);
         discardedSourceQuotes.add(event.source_quote.trim());
+        noticeRouting.push({
+          title: event.title,
+          decision: 'timeless_dropped',
+        });
       }
       continue;
     }
@@ -1130,6 +1216,11 @@ function routeSpecialOtherEvents(
     );
 
     if (storedTarget) {
+      noticeRouting.push({
+        title: event.title,
+        decision: 'stored',
+        target_title: storedTarget.title,
+      });
       noticeProgressResolutions.push({
         meeting_id: storedTarget.id,
         fragments: [{ content: event.source_quote, source_quote: event.source_quote }],
@@ -1151,13 +1242,23 @@ function routeSpecialOtherEvents(
       },
       now,
       selfParticipantNames,
+      { allowTimelessParticipantMatch: true },
     );
 
     if (batchTargetIndex == null) {
+      noticeRouting.push({
+        title: event.title,
+        decision: 'dropped',
+      });
       continue;
     }
 
     const batchTarget = routedEvents[batchTargetIndex];
+    noticeRouting.push({
+      title: event.title,
+      decision: 'batch',
+      target_title: batchTarget.title,
+    });
     const duplicate = findDuplicateMeeting(meetingEventPayload(batchTarget), existingMeetings);
 
     if (duplicate) {
@@ -1230,6 +1331,7 @@ function routeSpecialOtherEvents(
       ...retainedProgressResolutions,
       ...noticeProgressResolutions,
     ],
+    noticeRouting,
   };
 }
 
@@ -1516,13 +1618,14 @@ function mergeConfidence(values: CardConfidence[]): CardConfidence {
   return 'low';
 }
 
-export function proposeCards(
+function proposeCardsInternal(
   extraction: PerceptionResult,
   resolutions?: ParticipantResolution[],
   contacts: ResolvableContact[] = [],
   now = new Date(),
   existingMeetings: ExistingMeeting[] = [],
   meetingProgressResolutions: MeetingProgressResolution[] = [],
+  noticeRoutingOutput: NoticeRouting[] = [],
 ): ProposedCard[] {
   const cards: ProposedCard[] = [];
   const participants = extraction.participants as ProposeParticipant[];
@@ -1571,6 +1674,7 @@ export function proposeCards(
   const {
     events,
     meetingProgressResolutions: routedMeetingProgressResolutions,
+    noticeRouting,
   } = routeSpecialOtherEvents(
     normalizedEvents,
     existingMeetings,
@@ -1578,6 +1682,7 @@ export function proposeCards(
     now,
     selfParticipantNames,
   );
+  noticeRoutingOutput.push(...noticeRouting);
   const factsBySubject = indexFactsBySubject(extraction.facts);
   const quotesBySpeaker = indexQuotesBySpeaker(extraction.quotes);
 
@@ -1793,4 +1898,44 @@ export function proposeCards(
   }
 
   return cards;
+}
+
+export function proposeCardsWithRouting(
+  extraction: PerceptionResult,
+  resolutions?: ParticipantResolution[],
+  contacts: ResolvableContact[] = [],
+  now = new Date(),
+  existingMeetings: ExistingMeeting[] = [],
+  meetingProgressResolutions: MeetingProgressResolution[] = [],
+): ProposedCardsWithRouting {
+  const noticeRouting: NoticeRouting[] = [];
+  const cards = proposeCardsInternal(
+    extraction,
+    resolutions,
+    contacts,
+    now,
+    existingMeetings,
+    meetingProgressResolutions,
+    noticeRouting,
+  );
+
+  return { cards, noticeRouting };
+}
+
+export function proposeCards(
+  extraction: PerceptionResult,
+  resolutions?: ParticipantResolution[],
+  contacts: ResolvableContact[] = [],
+  now = new Date(),
+  existingMeetings: ExistingMeeting[] = [],
+  meetingProgressResolutions: MeetingProgressResolution[] = [],
+): ProposedCard[] {
+  return proposeCardsWithRouting(
+    extraction,
+    resolutions,
+    contacts,
+    now,
+    existingMeetings,
+    meetingProgressResolutions,
+  ).cards;
 }
