@@ -50,6 +50,8 @@ const TraceNoticeRoutingSchema = z.object({
   title: z.string(),
   decision: z.enum(["stored", "batch", "dropped", "timeless_dropped"]),
   target_title: z.string().optional(),
+  // fix14 goal 1: set only when a notice was dropped for lacking a meeting-change signal.
+  reason: z.enum(["no_change_signal"]).optional(),
 }).strict();
 
 export const DiagnosticsTraceSchema = z.object({

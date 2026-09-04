@@ -964,9 +964,14 @@ test('POST /api/screenshots keeps interaction cards while only high-confidence p
       {
         name: '荀导',
         is_self: false,
-        interaction_summary: '荀导已到',
+        // fix14 goal 2 turns a bare "already there" report (the original "荀导已到") into an
+        // acknowledgement that never reaches an interaction card. This fixture uses a
+        // substantive remark instead so the test keeps exercising what it is actually about:
+        // an interaction card persisting across both the high- and medium-confidence
+        // meeting-progress branches below.
+        interaction_summary: '材料已经交付',
         confidence: 'high' as const,
-        source_quote: '荀导已到',
+        source_quote: '材料已经交付',
       },
     ],
     events: [],
@@ -1041,10 +1046,10 @@ test('POST /api/screenshots keeps interaction cards while only high-confidence p
 
     assert.ok(progressCard);
     assert.equal(progressCard.payload.duplicate_of_meeting_id, meeting.id);
-    assert.equal(progressCard.payload.agenda_append, '荀导已到');
+    assert.equal(progressCard.payload.agenda_append, '材料已经交付');
     assert.ok(highInteraction);
     assert.equal(highInteraction.payload.contact_id, contact.id);
-    assert.equal(highInteraction.payload.summary, '荀导已到');
+    assert.equal(highInteraction.payload.summary, '材料已经交付');
 
     const mediumResponse = await upload();
     assert.equal(mediumResponse.statusCode, 201);
@@ -1054,7 +1059,7 @@ test('POST /api/screenshots keeps interaction cards while only high-confidence p
     assert.equal(mediumCards.some((card) => card.type === 'create_meeting'), false);
     assert.ok(mediumInteraction);
     assert.equal(mediumInteraction.payload.contact_id, contact.id);
-    assert.equal(mediumInteraction.payload.summary, '荀导已到');
+    assert.equal(mediumInteraction.payload.summary, '材料已经交付');
     assert.equal(completeCalls, 2);
   } finally {
     await app.close();
