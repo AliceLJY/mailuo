@@ -723,6 +723,104 @@ export class ExpoSqliteLocalStore implements LocalStore, DiagnosticsDataSource {
     return this.getContactById(contactId);
   }
 
+  // fix16: covers the three contact columns updateContactFields deliberately doesn't touch
+  // (canonical_name/aliases/tags aren't in CONTACT_EDITABLE_FIELDS — that list is scoped to
+  // what confirm-card update_contact payloads can change). Kept separate from
+  // updateContactFields rather than widening it, so the existing confirm-card path is
+  // untouched.
+  updateContactIdentity(
+    contactId: number,
+    updates: { canonical_name?: string; aliases?: string[]; tags?: string[] },
+    updatedAt = new Date().toISOString(),
+  ): ContactRecord | null {
+    const setClauses: string[] = [];
+    const values: Array<string | number> = [];
+
+    if (updates.canonical_name !== undefined) {
+      const canonicalName = normalizeOptionalString(updates.canonical_name);
+
+      if (!canonicalName) {
+        throw new TypeError("canonicalName must be a non-empty string");
+      }
+
+      setClauses.push("canonical_name = ?");
+      values.push(canonicalName);
+    }
+
+    if (updates.aliases !== undefined) {
+      setClauses.push("aliases = ?");
+      values.push(JSON.stringify(dedupeStrings(updates.aliases)));
+    }
+
+    if (updates.tags !== undefined) {
+      setClauses.push("tags = ?");
+      values.push(JSON.stringify(dedupeStrings(updates.tags)));
+    }
+
+    if (setClauses.length === 0) {
+      return this.getContactById(contactId);
+    }
+
+    setClauses.push("updated_at = ?");
+    values.push(updatedAt, contactId);
+
+    this.db.runSync(
+      `UPDATE contacts SET ${setClauses.join(", ")} WHERE id = ?`,
+      ...values,
+    );
+    return this.getContactById(contactId);
+  }
+
+  // fix16: no FK points at meetings.id, so a direct delete is enough — see
+  // docs/handoff-v3-m4-fix16.md for why the agenda_append duplicate_of_meeting_id
+  // reference (payload JSON, not a DB column) needs no extra handling here.
+  deleteMeeting(meetingId: number): boolean {
+    const result = this.db.runSync("DELETE FROM meetings WHERE id = ?", meetingId);
+    return result.changes > 0;
+  }
+
+  // fix16: contacts is referenced by observations/insights (NOT NULL, no ON DELETE) and
+  // action_cards.resolved_contact_id / meetings.participants[].contact_id (nullable FK /
+  // JSON-only respectively) — PRAGMA foreign_keys=ON (constructor) means the child rows
+  // must be cleared before the parent delete or SQLite throws SQLITE_CONSTRAINT_FOREIGNKEY.
+  deleteContact(contactId: number): boolean {
+    return this.withTransaction(() => {
+      this.db.runSync("DELETE FROM insights WHERE contact_id = ?", contactId);
+      this.db.runSync("DELETE FROM observations WHERE contact_id = ?", contactId);
+      this.db.runSync(
+        "UPDATE action_cards SET resolved_contact_id = NULL WHERE resolved_contact_id = ?",
+        contactId,
+      );
+
+      const meetingRows = this.db.getAllSync<{ id: number; participants: string }>(
+        "SELECT id, participants FROM meetings",
+      );
+
+      for (const row of meetingRows) {
+        const participants = parseJsonArray<MeetingParticipant>(row.participants);
+        const hasContact = participants.some(
+          (participant) => participant.contact_id === contactId,
+        );
+
+        if (!hasContact) {
+          continue;
+        }
+
+        const strippedParticipants = participants.map((participant) =>
+          participant.contact_id === contactId ? { name: participant.name } : participant,
+        );
+        this.db.runSync(
+          "UPDATE meetings SET participants = ? WHERE id = ?",
+          JSON.stringify(strippedParticipants),
+          row.id,
+        );
+      }
+
+      const result = this.db.runSync("DELETE FROM contacts WHERE id = ?", contactId);
+      return result.changes > 0;
+    });
+  }
+
   listContacts(): ContactListItem[] {
     const rows = this.db.getAllSync<ContactRow & {
       observation_count: number;

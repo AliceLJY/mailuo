@@ -33,6 +33,10 @@ export const EVENT_KINDS = [
   "insights_error",
   "notice_routed",
   "mem",
+  "meeting_edited",
+  "meeting_deleted",
+  "contact_edited",
+  "contact_deleted",
 ] as const;
 
 export type EventKind = (typeof EVENT_KINDS)[number];

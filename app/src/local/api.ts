@@ -1,11 +1,14 @@
 import {
+  CONTACT_EDITABLE_FIELDS,
   executeCard,
   rejectCard as rejectActionCard,
   reopenCard as reopenActionCard,
+  type ContactFieldUpdates,
 } from "../../../shared/core/agent/execute.ts";
 import { generateInsights } from "../../../shared/core/agent/insight.ts";
 import {
   applySelfNames,
+  isSelfName,
   perceiveScreenshot,
 } from "../../../shared/core/agent/perceive.ts";
 import type { PerceptionResult } from "../../../shared/core/agent/perceive.ts";
@@ -26,7 +29,11 @@ import type {
   LocalBatchContactMerge,
   UploadImageAsset,
 } from "../types";
-import type { RoutedApi } from "../connection/dispatch";
+import type {
+  ContactEditPatch,
+  MeetingEditPatch,
+  RoutedApi,
+} from "../connection/dispatch";
 import {
   writeConfiguredDiagnosticsTrace,
   type DiagnosticsTrace,
@@ -617,6 +624,135 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
             (anchorCardId) => options.store.getStoredActionCardById(anchorCardId),
           )),
       };
+    },
+    async updateMeeting(meetingId, patch: MeetingEditPatch) {
+      const current = options.store.listMeetings().find((meeting) => meeting.id === meetingId);
+
+      if (!current) {
+        throw notFound("Meeting", meetingId);
+      }
+
+      const title = patch.title !== undefined ? patch.title.trim() : current.title;
+
+      if (!title) {
+        throw new Error("标题不能为空。");
+      }
+
+      let timeIso = current.time_iso;
+
+      if (patch.time_iso !== undefined) {
+        if (patch.time_iso !== null && Number.isNaN(new Date(patch.time_iso).getTime())) {
+          throw new Error("确认时间不是合法的时间格式，请检查后重试。");
+        }
+
+        timeIso = patch.time_iso;
+      }
+
+      const timeText = patch.time_text !== undefined ? patch.time_text : current.time_text;
+      const location = patch.location !== undefined ? patch.location : current.location;
+      const agenda = patch.agenda !== undefined ? patch.agenda : current.agenda;
+      // A blanked-out participant name leaves a `name: ""` entry rather than removing the
+      // row (no dedicated remove affordance) — same UX fix12 already established for the
+      // confirm form (review-order.ts's normalizeMeetingParticipantsForConfirm). Filter it
+      // out here instead of rejecting the whole edit.
+      const participants = patch.participants !== undefined
+        ? patch.participants.filter((participant) => participant.name.trim() !== "")
+        : current.participants;
+
+      const updated = options.store.updateMeeting(meetingId, {
+        kind: current.kind,
+        title,
+        timeIso,
+        timeText,
+        location,
+        participants,
+        agenda,
+        sourceScreenshotId: current.source_screenshot_id,
+      });
+
+      if (!updated) {
+        throw notFound("Meeting", meetingId);
+      }
+
+      logEvent("meeting_edited", `id=${meetingId}`);
+
+      return { meeting: updated };
+    },
+    async deleteMeeting(meetingId) {
+      const deleted = options.store.deleteMeeting(meetingId);
+
+      if (!deleted) {
+        throw notFound("Meeting", meetingId);
+      }
+
+      logEvent("meeting_deleted", `id=${meetingId}`);
+    },
+    async updateContact(contactId, patch: ContactEditPatch) {
+      const current = options.store.getContactById(contactId);
+
+      if (!current) {
+        throw notFound("Contact", contactId);
+      }
+
+      let canonicalName: string | undefined;
+
+      if (patch.canonical_name !== undefined) {
+        canonicalName = patch.canonical_name.trim();
+
+        if (!canonicalName) {
+          throw new Error("姓名不能为空。");
+        }
+
+        if (isSelfName(canonicalName)) {
+          throw new Error("姓名不能是「我」。");
+        }
+      }
+
+      const fieldUpdates: ContactFieldUpdates = {};
+      for (const field of CONTACT_EDITABLE_FIELDS) {
+        if (patch[field] !== undefined) {
+          fieldUpdates[field] = patch[field];
+        }
+      }
+
+      const updatedAt = now().toISOString();
+
+      options.store.withTransaction(() => {
+        if (Object.keys(fieldUpdates).length > 0) {
+          options.store.updateContactFields(contactId, fieldUpdates, updatedAt);
+        }
+
+        if (canonicalName !== undefined || patch.aliases !== undefined || patch.tags !== undefined) {
+          options.store.updateContactIdentity(
+            contactId,
+            {
+              ...(canonicalName !== undefined ? { canonical_name: canonicalName } : {}),
+              ...(patch.aliases !== undefined ? { aliases: patch.aliases } : {}),
+              ...(patch.tags !== undefined ? { tags: patch.tags } : {}),
+            },
+            updatedAt,
+          );
+        }
+      });
+
+      const detail = options.store.getContactDetail(contactId);
+
+      if (!detail) {
+        throw notFound("Contact", contactId);
+      }
+
+      logEvent("contact_edited", `id=${contactId}`);
+
+      return { contact: detail };
+    },
+    async deleteContact(contactId) {
+      const deleted = options.store.deleteContact(contactId);
+
+      if (!deleted) {
+        throw notFound("Contact", contactId);
+      }
+
+      logEvent("contact_deleted", `id=${contactId}`);
     },
   };
 }

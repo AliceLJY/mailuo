@@ -1,4 +1,8 @@
-import type { ExecuteStore } from "../../../shared/core/agent/execute.ts";
+import type {
+  ContactFieldUpdates,
+  ExecuteStore,
+  MeetingWriteInput,
+} from "../../../shared/core/agent/execute.ts";
 import type { InsightGenerationDb } from "../../../shared/core/agent/insight.ts";
 import type { ActionCard } from "../../../shared/types.ts";
 import type {
@@ -63,6 +67,29 @@ export interface LocalStore extends ExecuteStore, InsightGenerationDb, Diagnosti
   getContactDetail(contactId: number): ContactDetail | null;
   listMeetings(): MeetingRecord[];
   getScreenshotDetail(screenshotId: number): ScreenshotDetail | null;
+  // ExecuteStore already declares updateMeeting/updateContactFields, but with narrower
+  // return types ({id:number}|null / execute.ts's own tags-less ContactRecord) that only
+  // cover what the confirm-card flow needs. The concrete store already returns the fuller
+  // app-level record at runtime (fix16 v3-M4); these overrides just expose that existing
+  // return shape through the LocalStore interface so callers here get the full record
+  // back without a second read.
+  updateMeeting(meetingId: number, input: MeetingWriteInput): MeetingRecord | null;
+  updateContactFields(
+    contactId: number,
+    updates: ContactFieldUpdates,
+    updatedAt?: string,
+  ): ContactRecord | null;
+  // fix16: ContactEditPatch also lets callers rename a contact or replace its aliases/tags,
+  // none of which CONTACT_EDITABLE_FIELDS covers (it's confirm-card scoped to
+  // company/title/phone/wechat_id/notes). New, narrowly-scoped method rather than widening
+  // updateContactFields, so that existing method stays untouched.
+  updateContactIdentity(
+    contactId: number,
+    updates: { canonical_name?: string; aliases?: string[]; tags?: string[] },
+    updatedAt?: string,
+  ): ContactRecord | null;
+  deleteMeeting(meetingId: number): boolean;
+  deleteContact(contactId: number): boolean;
 }
 
 export type LoadedScreenshotImage = {

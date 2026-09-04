@@ -27,6 +27,30 @@ export type UploadTextInput = {
 
 type UploadTextFn = (input: UploadTextInput) => Promise<ScreenshotUploadResponse>;
 
+// fix16: patch shapes for the two edit endpoints. Nullable fields (location/agenda for
+// meetings; company/title/phone/wechat_id/notes for contacts) mirror the existing DB
+// columns they write to — omit a key to leave it untouched, send null to clear it.
+// title/time_text/canonical_name aren't nullable (NOT NULL columns); omit to leave as-is.
+export type MeetingEditPatch = {
+  title?: string;
+  time_text?: string;
+  time_iso?: string | null;
+  location?: string | null;
+  agenda?: string | null;
+  participants?: Array<{ contact_id?: number; name: string }>;
+};
+
+export type ContactEditPatch = {
+  canonical_name?: string;
+  company?: string | null;
+  title?: string | null;
+  phone?: string | null;
+  wechat_id?: string | null;
+  notes?: string | null;
+  aliases?: string[];
+  tags?: string[];
+};
+
 export interface RoutedApi {
   uploadScreenshot(input: {
     asset: UploadImageAsset;
@@ -48,6 +72,10 @@ export interface RoutedApi {
   getContactDetail(contactId: number): Promise<ContactDetail>;
   getMeetings(): Promise<MeetingRecord[]>;
   getScreenshotDetail(screenshotId: number): Promise<ScreenshotDetail>;
+  updateMeeting(meetingId: number, patch: MeetingEditPatch): Promise<{ meeting: MeetingRecord }>;
+  deleteMeeting(meetingId: number): Promise<void>;
+  updateContact(contactId: number, patch: ContactEditPatch): Promise<{ contact: ContactDetail }>;
+  deleteContact(contactId: number): Promise<void>;
 }
 
 export type ApiPlatform = "android" | "ios" | "web";
@@ -160,6 +188,18 @@ export function createApiDispatcher(options: ApiDispatcherOptions): RoutedApi {
     },
     async getScreenshotDetail(screenshotId) {
       return (await selectedApi()).getScreenshotDetail(screenshotId);
+    },
+    async updateMeeting(meetingId, patch) {
+      return (await selectedApi()).updateMeeting(meetingId, patch);
+    },
+    async deleteMeeting(meetingId) {
+      return (await selectedApi()).deleteMeeting(meetingId);
+    },
+    async updateContact(contactId, patch) {
+      return (await selectedApi()).updateContact(contactId, patch);
+    },
+    async deleteContact(contactId) {
+      return (await selectedApi()).deleteContact(contactId);
     },
   };
 }

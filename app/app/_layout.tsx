@@ -178,6 +178,7 @@ function AppStack() {
             options={{ title: "洞察结果", animation: "none" }}
           />
           <Stack.Screen name="contacts/[id]" options={{ title: "联系人详情" }} />
+          <Stack.Screen name="meetings/[id]" options={{ title: "会议详情" }} />
         </Stack>
       </CrashBoundary>
     </>

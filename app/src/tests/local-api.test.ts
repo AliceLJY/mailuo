@@ -442,6 +442,68 @@ class FakeLocalStore implements LocalStore {
     return updated;
   }
 
+  updateContactIdentity(
+    contactId: number,
+    updates: { canonical_name?: string; aliases?: string[]; tags?: string[] },
+    updatedAt = FIXED_NOW.toISOString(),
+  ): ContactRecord | null {
+    const contact = this.contacts.get(contactId);
+
+    if (!contact) {
+      return null;
+    }
+
+    const updated: ContactRecord = {
+      ...contact,
+      ...(updates.canonical_name !== undefined
+        ? { canonical_name: updates.canonical_name }
+        : {}),
+      ...(updates.aliases !== undefined ? { aliases: [...new Set(updates.aliases)] } : {}),
+      ...(updates.tags !== undefined ? { tags: [...new Set(updates.tags)] } : {}),
+      updated_at: updatedAt,
+    };
+    this.contacts.set(contactId, updated);
+    return updated;
+  }
+
+  deleteContact(contactId: number): boolean {
+    if (!this.contacts.has(contactId)) {
+      return false;
+    }
+
+    for (let index = this.insights.length - 1; index >= 0; index -= 1) {
+      if (this.insights[index]?.contact_id === contactId) {
+        this.insights.splice(index, 1);
+      }
+    }
+
+    for (let index = this.observations.length - 1; index >= 0; index -= 1) {
+      if (this.observations[index]?.contact_id === contactId) {
+        this.observations.splice(index, 1);
+      }
+    }
+
+    for (const [id, card] of this.cards) {
+      if (card.resolved_contact_id === contactId) {
+        this.cards.set(id, { ...card, resolved_contact_id: null });
+      }
+    }
+
+    this.meetings.forEach((meeting, index) => {
+      if (meeting.participants.some((participant) => participant.contact_id === contactId)) {
+        this.meetings[index] = {
+          ...meeting,
+          participants: meeting.participants.map((participant) =>
+            participant.contact_id === contactId ? { name: participant.name } : participant,
+          ),
+        };
+      }
+    });
+
+    this.contacts.delete(contactId);
+    return true;
+  }
+
   listContacts(): ContactListItem[] {
     return [...this.contacts.values()].map((contact) => {
       const related = this.observations.filter((item) => item.contact_id === contact.id);
@@ -574,6 +636,17 @@ class FakeLocalStore implements LocalStore {
     };
     this.meetings[index] = meeting;
     return meeting;
+  }
+
+  deleteMeeting(meetingId: number): boolean {
+    const index = this.meetings.findIndex((meeting) => meeting.id === meetingId);
+
+    if (index === -1) {
+      return false;
+    }
+
+    this.meetings.splice(index, 1);
+    return true;
   }
 
   listMeetings(): MeetingRecord[] {
@@ -4130,4 +4203,192 @@ test("trace writer failures never replace screenshot success or the original pro
     },
   );
   assert.equal(failedStore.tableCounts().screenshots, 0);
+});
+
+// fix16: Goal 1 tests for the four new write operations (updateMeeting/deleteMeeting/
+// updateContact/deleteContact). deleteContact's real-SQLite foreign-key-safety proof lives in
+// local-store.test.ts — FakeLocalStore has no concept of foreign keys, so it can only exercise
+// the local/api.ts orchestration (validation, merge-with-current, event logging) here.
+function createMinimalApi(store: FakeLocalStore) {
+  return createLocalApi({
+    store,
+    keys: fakeKeys,
+    async loadImage() {
+      throw new Error("this test must not load an image");
+    },
+  });
+}
+
+function withEventLog<T>(run: (eventStorage: SyncEventLogStorage) => T): T {
+  const values = new Map<string, string>();
+  const eventStorage: SyncEventLogStorage = {
+    getItemSync(key) {
+      return values.get(key) ?? null;
+    },
+    setItemSync(key, value) {
+      values.set(key, value);
+    },
+  };
+  configureEventLogStorage(eventStorage);
+
+  try {
+    return run(eventStorage);
+  } finally {
+    configureEventLogStorage(null);
+  }
+}
+
+test("updateMeeting persists title/time_iso/agenda/participants changes, reflected via getMeetings, and logs meeting_edited", async () => {
+  await withEventLog(async (eventStorage) => {
+    const store = new FakeLocalStore();
+    const contact = store.createContact({ canonicalName: "张三" });
+    const meeting = store.insertMeeting({
+      kind: "meeting",
+      title: "旧标题",
+      timeIso: "2026-09-01T10:00:00+08:00",
+      timeText: "周二上午十点",
+      location: "旧地点",
+      participants: [{ name: "李四" }, { name: "王五" }],
+      agenda: "旧议程",
+    });
+    const api = createMinimalApi(store);
+
+    const result = await api.updateMeeting(meeting.id, {
+      title: "新标题",
+      time_iso: "2026-09-02T14:00:00+08:00",
+      agenda: "新议程",
+      // Clearing a participant's name removes it (fix12's established UX); the surviving
+      // row's contact_id is preserved even though only the name is being edited here.
+      participants: [{ contact_id: contact.id, name: "张三" }, { name: "" }],
+    });
+
+    assert.equal(result.meeting.title, "新标题");
+    assert.equal(result.meeting.time_iso, "2026-09-02T14:00:00+08:00");
+    assert.equal(result.meeting.time_text, "周二上午十点");
+    assert.equal(result.meeting.location, "旧地点");
+    assert.equal(result.meeting.agenda, "新议程");
+    assert.deepEqual(result.meeting.participants, [{ contact_id: contact.id, name: "张三" }]);
+
+    const [reflected] = await api.getMeetings();
+    assert.equal(reflected?.title, "新标题");
+    assert.deepEqual(reflected?.participants, [{ contact_id: contact.id, name: "张三" }]);
+
+    assert.deepEqual(
+      readEventLog(eventStorage).map((entry) => ({ kind: entry.kind, detail: entry.detail })),
+      [{ kind: "meeting_edited", detail: `id=${meeting.id}` }],
+    );
+  });
+});
+
+test("updateMeeting rejects an empty title and an invalid time_iso with Chinese error messages", async () => {
+  const store = new FakeLocalStore();
+  const meeting = store.insertMeeting({
+    kind: "meeting",
+    title: "会议标题",
+    timeIso: null,
+    timeText: "下周",
+    participants: [],
+  });
+  const api = createMinimalApi(store);
+
+  await assert.rejects(
+    api.updateMeeting(meeting.id, { title: "   " }),
+    /^Error: 标题不能为空。$/u,
+  );
+  await assert.rejects(
+    api.updateMeeting(meeting.id, { time_iso: "不是一个日期" }),
+    /^Error: 确认时间不是合法的时间格式，请检查后重试。$/u,
+  );
+  // A null time_iso explicitly clears the confirmed time rather than being rejected.
+  const cleared = await api.updateMeeting(meeting.id, { time_iso: null });
+  assert.equal(cleared.meeting.time_iso, null);
+  // The meeting itself is untouched by the two rejected calls above.
+  assert.equal((await api.getMeetings())[0]?.title, "会议标题");
+});
+
+test("deleteMeeting removes the meeting, logs meeting_deleted, and a second delete reports not found", async () => {
+  await withEventLog(async (eventStorage) => {
+    const store = new FakeLocalStore();
+    const meeting = store.insertMeeting({
+      kind: "other",
+      title: "待删除事项",
+      timeIso: null,
+      timeText: "",
+      participants: [],
+    });
+    const api = createMinimalApi(store);
+
+    await api.deleteMeeting(meeting.id);
+    assert.deepEqual(await api.getMeetings(), []);
+    assert.deepEqual(
+      readEventLog(eventStorage).map((entry) => entry.kind),
+      ["meeting_deleted"],
+    );
+
+    await assert.rejects(api.deleteMeeting(meeting.id), /Meeting .* not found/u);
+  });
+});
+
+test("updateContact persists canonical_name/aliases/company changes, reflected via getContactDetail, and logs contact_edited", async () => {
+  await withEventLog(async (eventStorage) => {
+    const store = new FakeLocalStore();
+    const contact = store.createContact({
+      canonicalName: "旧名字",
+      aliases: ["老张"],
+      company: "旧公司",
+    });
+    const api = createMinimalApi(store);
+
+    const result = await api.updateContact(contact.id, {
+      canonical_name: "新名字",
+      aliases: ["小张", "单总"],
+      company: "新公司",
+    });
+
+    assert.equal(result.contact.contact.canonical_name, "新名字");
+    assert.deepEqual(result.contact.contact.aliases, ["小张", "单总"]);
+    assert.equal(result.contact.contact.company, "新公司");
+
+    const detail = await api.getContactDetail(contact.id);
+    assert.equal(detail.contact.canonical_name, "新名字");
+    assert.equal(detail.contact.company, "新公司");
+
+    assert.deepEqual(
+      readEventLog(eventStorage).map((entry) => ({ kind: entry.kind, detail: entry.detail })),
+      [{ kind: "contact_edited", detail: `id=${contact.id}` }],
+    );
+  });
+});
+
+test("updateContact rejects an empty canonical_name and a canonical_name of 我", async () => {
+  const store = new FakeLocalStore();
+  const contact = store.createContact({ canonicalName: "张三" });
+  const api = createMinimalApi(store);
+
+  await assert.rejects(
+    api.updateContact(contact.id, { canonical_name: "   " }),
+    /^Error: 姓名不能为空。$/u,
+  );
+  await assert.rejects(
+    api.updateContact(contact.id, { canonical_name: "我" }),
+    /^Error: 姓名不能是「我」。$/u,
+  );
+  assert.equal((await api.getContactDetail(contact.id)).contact.canonical_name, "张三");
+});
+
+test("deleteContact deletes the contact, logs contact_deleted, and a second delete reports not found", async () => {
+  await withEventLog(async (eventStorage) => {
+    const store = new FakeLocalStore();
+    const contact = store.createContact({ canonicalName: "王五" });
+    const api = createMinimalApi(store);
+
+    await api.deleteContact(contact.id);
+    assert.deepEqual(await api.getContacts(), []);
+    assert.deepEqual(
+      readEventLog(eventStorage).map((entry) => entry.kind),
+      ["contact_deleted"],
+    );
+
+    await assert.rejects(api.deleteContact(contact.id), /Contact .* not found/u);
+  });
 });
