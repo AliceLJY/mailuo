@@ -4,21 +4,29 @@ Chinese Version: [README_CN.md](README_CN.md)
 
 Mailuo turns chat screenshots into structured action cards, contact memory, and grounded relationship insights.
 
+**Download**: the latest Android APK (BYOK standalone) is on [GitHub Releases](https://github.com/AliceLJY/mailuo/releases/latest).
+
 v3 separates reading from understanding: Android native BYOK mode uses on-device OCR to read screenshots, then sends annotated text to the configured text model for structured understanding; the vision model is a fallback unless cloud vision is explicitly forced.
 
 Current item workflows support independent items without contacts or a meeting time, conservative duplicate prompts before user-confirmed updates, progress fragments attached to existing items, and relative dates anchored only by explicit absolute timestamps visible in the screenshot.
 
-| Upload | Contacts | Schedule |
-|---|---|---|
-| ![Upload](docs/screenshots/web-upload.png) | ![Contacts](docs/screenshots/web-contacts.png) | ![Meetings](docs/screenshots/web-meetings.png) |
+**Android native UI on a real device** (BYOK standalone, captured on v3.1.15). The upload and settings pages are full-page scroll captures, each shown in two segments:
 
-> Screenshots show the web build (Expo web output); the Android native UI is identical. All people and companies shown are synthetic test data.
+| Upload, top | Upload, bottom | Settings, top | Settings, bottom |
+|---|---|---|---|
+| ![Upload page, top](docs/screenshots/device-upload-1.jpg) | ![Upload page, bottom](docs/screenshots/device-upload-2.jpg) | ![Settings page, top](docs/screenshots/device-settings-1.jpg) | ![Settings page, bottom](docs/screenshots/device-settings-2.jpg) |
 
-**Native dual-mode UI on a real device** (Android, BYOK standalone):
+| Contacts | Schedule |
+|---|---|
+| <img src="docs/screenshots/web-contacts.png" width="220" alt="Contacts"> | <img src="docs/screenshots/web-meetings.png" width="220" alt="Schedule"> |
 
-| First-launch chooser | Model key management | Settings |
-|---|---|---|
-| ![Onboarding](docs/screenshots/device-onboarding.jpg) | ![Key management](docs/screenshots/device-api-key.jpg) | ![Settings](docs/screenshots/device-settings.jpg) |
+> Contacts and schedule are shown from the web build (Expo web output) with synthetic test data; the native UI is identical.
+
+| First-launch chooser | Model key management |
+|---|---|
+| <img src="docs/screenshots/device-onboarding.jpg" width="330" alt="First-launch chooser"> | <img src="docs/screenshots/device-api-key.jpg" width="330" alt="Model key management"> |
+
+> Captured on v2.0; later versions only adjusted labels and added a text-model-name field.
 
 ## Architecture
 
@@ -43,10 +51,10 @@ In the healthy Android local path, the raw screenshot stays on the phone: the co
 
 1. Recognition: Android local mode reads screenshots with ML Kit OCR and falls back to Qwen-VL only when the text path is unusable or cloud vision is forced. Pasted text skips image recognition; web and server screenshot uploads use Qwen-VL perception.
 2. Understanding: the configured text model turns annotated OCR or pasted text into structured people, items, facts, and quotes.
-3. Resolution: match people against canonical names and aliases first, then ask the text model to decide `same_as`, `new`, or `unsure` only when exact matching fails. Confirmed name variants are written back as aliases for later local matches.
-4. Proposal: create editable cards for contact changes, meetings, appointments, independent items, item updates, and interactions. Similar existing items prompt a user-confirmed update instead of automatic deduplication.
-5. Human confirmation: let the user edit fields, resolve ambiguities, confirm, or reject each card.
-6. Execution: write confirmed contacts, meetings and items, aliases, and observations back to SQLite.
+3. Resolution: match people against canonical names and aliases first, then ask the text model to decide `same_as`, `new`, or `unsure` only when exact matching fails. Confirmed name variants are written back as aliases for later local matches. Your own group nicknames can be registered in Settings so that your own messages are never turned into a contact.
+4. Proposal: create editable cards for contact changes, meetings, appointments, independent items, item updates, and interactions. Similar existing items prompt a user-confirmed update instead of automatic deduplication. Interaction cards record only what a person actually initiated: pure acknowledgements, being @-mentioned by others, arrival notices, and logistics around a meeting that already has a card are not recorded.
+5. Human confirmation: let the user edit fields, resolve ambiguities, confirm, skip, or reject each card. A batch can be reviewed in any order, skipped cards can be restored, and skipping a new contact warns about the interaction cards that depend on it.
+6. Execution: write confirmed contacts, meetings and items, aliases, and observations back to SQLite. Confirmed meetings and contacts stay editable and deletable afterwards; deleting a contact also removes its observations and insights and detaches it from cards and meetings.
 7. Grounded insights: generate relationship reads, suggested actions, and conversation hooks that must cite `based_on` observation evidence.
 
 Three signals that this is not a thin wrapper:
@@ -79,6 +87,7 @@ The project is hardened through automated suites, live-provider checks, and devi
 - Automated coverage spans schema migrations, OCR and visual fallback, ordered batches, proposal and resolution, independent items, duplicate updates, timestamp anchors, route behavior, and grounded insights.
 - Live-provider checks exposed prompt-layer failures that mocks had not covered, including self-side messages becoming contacts, company changes falling into notes, vague time phrases becoming meetings, and truncated insight JSON.
 - iOS and Android testing exposed platform issues in native file uploads and OCR runtime loading; web testing also caught cross-origin and same-origin deployment differences.
+- Real-device iteration: v3.1.7 through v3.1.15 were driven by diagnostics bundles that the app exports to a folder the user picks (action cards, per-screenshot traces, event log, exit reasons, Java crash traces), with nothing uploaded. The interaction-card rules were tightened round by round against the cards the user actually rejected.
 
 ## Quickstart
 
@@ -154,6 +163,7 @@ Build and deployment assets live in [deploy/README.md](deploy/README.md) and [sc
 - In the default Android OCR path, the raw screenshot stays on the phone. Annotated recognized text is sent to the configured text model for extraction and resolution.
 - If OCR cannot produce reliable text, if text interpretation fails, or if cloud vision is explicitly forced, the raw screenshot is sent to Qwen-VL for visual fallback. It is never sent to DeepSeek.
 - In self-hosted server mode, app data is stored in SQLite on the server host and screenshot files are stored under `server/data/screenshots/`; screenshot perception uses Qwen-VL.
+- Diagnostics bundles and raw OCR exports are written only to a folder you choose on the device; they are never uploaded.
 - **Text submitted through the paste-text entry is sent verbatim to the configured text model** (DeepSeek, or the DashScope Qwen text model when DeepSeek is not configured) for extraction; no vision model is involved. Whatever you paste is what gets sent — judge the sensitivity of the content yourself.
 - DeepSeek receives only the text needed for extraction, entity resolution, or grounded insights, such as `source_quote`, `facts`, `quotes`, `events`, and minimum profile or observation context. When DeepSeek is not configured, these text tasks use the Qwen text model through DashScope instead, and no data is sent to DeepSeek.
 - **Plainly put**: storage is local, but during inference OCR-derived or pasted text reaches the configured text provider. Raw screenshots reach Alibaba Cloud only on visual fallback, forced cloud vision, or server-mode visual perception. Provider data policies apply.
@@ -166,6 +176,8 @@ Build and deployment assets live in [deploy/README.md](deploy/README.md) and [sc
 
 - On-device OCR can still misread characters, so important fields should be checked on the confirmation cards.
 - Item duplicate detection is deliberately conservative and may miss matches. Whole-screenshot deduplication is not implemented, so repeated uploads may still duplicate observations.
+- Names that OCR reads as look-alike characters are not auto-corrected; register the variants as aliases, or as your own group nicknames in Settings.
+- Splitting and merging of items across screenshots is not fully deterministic. Same-batch duplicates are merged conservatively by source-quote similarity, keeping the first card and carrying over the other card's date.
 
 ## Distribution Modes
 
