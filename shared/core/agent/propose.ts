@@ -113,6 +113,41 @@ const pureAcknowledgementTexts = new Set([
   '收到谢谢',
   '好的收到',
 ]);
+// fix13 goal 1: waiting/stalling replies ("give me a second", "on my way") are not the
+// participant's own substantive speech any more than "OK"/"noted" is — they carry no
+// content that should surface as an interaction. Deliberately excludes "到了/已到" wording
+// (e.g. "荀导已到"), which fix11 protects as a status report, not a wait request.
+const waitingReplyTexts = new Set([
+  '稍等',
+  '稍等一下',
+  '稍等片刻',
+  '等下',
+  '等一下',
+  '等我一下',
+  '你们等下',
+  '你们等一下',
+  '马上',
+  '马上到',
+  '马上来',
+  '马上过来',
+  '一会',
+  '一会儿',
+  '一会出来',
+  '一会儿出来',
+  '我一会出来',
+  '我一会儿出来',
+  '在路上',
+  '快到了',
+  '稍后',
+  '稍后回复',
+  '稍后回',
+  '晚点回',
+]);
+// Fuzzy fallback for both word lists, to absorb OCR noise (e.g. "我一会ル出来" for
+// "我一会儿出来"). Only applied to fragments long enough that a one-edit slip is
+// unambiguous; the existing "<=2 code points counts as acknowledgement" shortcut in
+// isPureAcknowledgement is exact-only and untouched by this.
+const acknowledgementAndWaitingTexts = [...pureAcknowledgementTexts, ...waitingReplyTexts];
 const genericMentionNames = new Set([
   '大家',
   '各位',
@@ -797,6 +832,16 @@ function buildMeetingCard(
 
   if (event.agenda) {
     payload.agenda = event.agenda;
+  } else if (event.kind === 'other') {
+    // fix13 goal 3: when the model left agenda blank for a kind=other item, fall back to
+    // the OCR source_quote (multi-line breaks joined directly, since Chinese reads fine
+    // without a separator) rather than leaving the user to retype it by hand. meeting/
+    // appointment are deliberately excluded — their title/time already cover this ground.
+    const fallbackAgenda = event.source_quote.replace(/\s*\n\s*/g, '').trim();
+
+    if (fallbackAgenda) {
+      payload.agenda = fallbackAgenda;
+    }
   }
 
   const duplicate = findDuplicateMeeting(payload, existingMeetings);
@@ -1355,8 +1400,63 @@ function codePointLength(value: string): number {
 
 function isPureAcknowledgement(value: string): boolean {
   const normalized = value.replace(acknowledgementNoisePattern, '');
+  const normalizedLength = codePointLength(normalized);
 
-  return codePointLength(normalized) <= 2 || pureAcknowledgementTexts.has(normalized);
+  if (normalizedLength <= 2) {
+    return true;
+  }
+
+  if (pureAcknowledgementTexts.has(normalized) || waitingReplyTexts.has(normalized)) {
+    return true;
+  }
+
+  // fix13 goal 1: absorb OCR noise (e.g. "我一会ル出来") via a tight edit-distance match
+  // against both word lists. Gated to code-point length >= 4 so short real content (e.g.
+  // "荀导已到") is never close enough to collide.
+  return normalizedLength >= 4 && acknowledgementAndWaitingTexts.some(
+    (text) => editDistance(normalized, text) <= 1,
+  );
+}
+
+// fix13 goal 2: a participant evidence fragment that is really just the source_quote of
+// some event on the same screenshot (meeting/appointment/other alike, and regardless of
+// whether that event survived routing/dedup — a merged or discarded item's original text
+// still "has somewhere to go") carries no independent interaction signal; the event card
+// already surfaces it. Containment requires a meaningful overlap rather than any short
+// common substring, with a similarity fallback for near-identical OCR renderings of the
+// same sentence. Same shape as isDiscardedSourceQuote above, kept separate since that one
+// also matches on a stripped evidence label, which does not apply here.
+function isEvidenceCoveredByEvents(
+  fragment: string,
+  events: ReadonlyArray<{ source_quote: string }>,
+): boolean {
+  const normalizedFragment = normalizeContactText(fragment);
+
+  if (normalizedFragment.length === 0) {
+    return false;
+  }
+
+  return events.some((event) => {
+    const normalizedSourceQuote = normalizeContactText(event.source_quote);
+
+    if (normalizedSourceQuote.length === 0) {
+      return false;
+    }
+
+    const shorterLength = Math.min(
+      codePointLength(normalizedFragment),
+      codePointLength(normalizedSourceQuote),
+    );
+
+    if (
+      shorterLength >= 8 &&
+      (normalizedFragment.includes(normalizedSourceQuote) || normalizedSourceQuote.includes(normalizedFragment))
+    ) {
+      return true;
+    }
+
+    return normalizedEditSimilarity(normalizedFragment, normalizedSourceQuote) >= 0.85;
+  });
 }
 
 const participantPrefixSeparatorPattern = /[\p{P}\p{White_Space}]/u;
@@ -1974,7 +2074,25 @@ function proposeCardsInternal(
             stripParticipantPrefix(fragment, { name: candidate.participantName })),
         );
 
-    if (sourceEvidence.length === 0 || sourceEvidence.every(isPureAcknowledgement)) {
+    if (sourceEvidence.length === 0) {
+      continue;
+    }
+
+    // fix13 goal 1: drop pure-acknowledgement/waiting fragments first, then (goal 2) check
+    // whether every fragment left is really just the source_quote of some event already
+    // surfaced on this screenshot — if so this participant has no independent interaction
+    // signal, the event card already carries it. Any single fragment surviving both filters
+    // is enough to keep the candidate, with the full original evidence set unchanged below.
+    const nonAcknowledgementEvidence = sourceEvidence.filter(
+      (fragment) => !isPureAcknowledgement(fragment),
+    );
+
+    if (
+      nonAcknowledgementEvidence.length === 0 ||
+      nonAcknowledgementEvidence.every(
+        (fragment) => isEvidenceCoveredByEvents(fragment, extraction.events),
+      )
+    ) {
       continue;
     }
 
