@@ -10,23 +10,21 @@ v3 separates reading from understanding: Android native BYOK mode uses on-device
 
 Current item workflows support independent items without contacts or a meeting time, conservative duplicate prompts before user-confirmed updates, progress fragments attached to existing items, and relative dates anchored only by explicit absolute timestamps visible in the screenshot.
 
-**Android native UI on a real device** (BYOK standalone, captured on v3.1.15). The upload and settings pages are full-page scroll captures, each shown in two segments:
+**Android native UI on a real device** (BYOK standalone, captured on v3.1.15). Upload, settings, and model-key pages are full-page scroll captures shown in segments:
 
 | Upload, top | Upload, bottom | Settings, top | Settings, bottom |
 |---|---|---|---|
 | ![Upload page, top](docs/screenshots/device-upload-1.jpg) | ![Upload page, bottom](docs/screenshots/device-upload-2.jpg) | ![Settings page, top](docs/screenshots/device-settings-1.jpg) | ![Settings page, bottom](docs/screenshots/device-settings-2.jpg) |
+
+| First-launch chooser | Model key, top | Model key, bottom |
+|---|---|---|
+| ![First-launch chooser](docs/screenshots/device-onboarding.jpg) | ![Model key page, top](docs/screenshots/device-api-key-1.jpg) | ![Model key page, bottom](docs/screenshots/device-api-key-2.jpg) |
 
 | Contacts | Schedule |
 |---|---|
 | <img src="docs/screenshots/web-contacts.png" width="220" alt="Contacts"> | <img src="docs/screenshots/web-meetings.png" width="220" alt="Schedule"> |
 
 > Contacts and schedule are shown from the web build (Expo web output) with synthetic test data; the native UI is identical.
-
-| First-launch chooser | Model key management |
-|---|---|
-| <img src="docs/screenshots/device-onboarding.jpg" width="330" alt="First-launch chooser"> | <img src="docs/screenshots/device-api-key.jpg" width="330" alt="Model key management"> |
-
-> Captured on v2.0; later versions only adjusted labels and added a text-model-name field.
 
 ## Architecture
 

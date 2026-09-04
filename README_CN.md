@@ -10,23 +10,21 @@ v3 把识字与理解分开：Android 原生 BYOK 模式先由本地 OCR 读取�
 
 当前事项流程支持四件事：无联系人或会议时间也能独立成事项；相似事项先给查重提示，再由用户确认更新；群聊推进碎片可保守挂靠到已有事项；相对时间只在截图中有明确绝对时间戳时锚定，否则留空。
 
-**Android 真机界面**（BYOK 单机版，截自 v3.1.15）。上传页与设置页是整页滚动截图，各分两段展示：
+**Android 真机界面**（BYOK 单机版，截自 v3.1.15）。上传、设置与模型 Key 页是整页滚动截图，分段展示：
 
 | 上传 · 上半 | 上传 · 下半 | 设置 · 上半 | 设置 · 下半 |
 |---|---|---|---|
 | ![上传页上半](docs/screenshots/device-upload-1.jpg) | ![上传页下半](docs/screenshots/device-upload-2.jpg) | ![设置页上半](docs/screenshots/device-settings-1.jpg) | ![设置页下半](docs/screenshots/device-settings-2.jpg) |
+
+| 首次启动选择 | 模型 Key · 上半 | 模型 Key · 下半 |
+|---|---|---|
+| ![首次启动选择](docs/screenshots/device-onboarding.jpg) | ![模型 Key 页上半](docs/screenshots/device-api-key-1.jpg) | ![模型 Key 页下半](docs/screenshots/device-api-key-2.jpg) |
 
 | 人脉档案 | 日程 |
 |---|---|
 | <img src="docs/screenshots/web-contacts.png" width="220" alt="人脉档案"> | <img src="docs/screenshots/web-meetings.png" width="220" alt="日程"> |
 
 > 人脉与日程为 web 版界面（Expo web 输出），图中人物、公司均为合成测试数据；原生版界面一致。
-
-| 首次启动选择 | 模型 Key 管理 |
-|---|---|
-| <img src="docs/screenshots/device-onboarding.jpg" width="330" alt="首次启动选择"> | <img src="docs/screenshots/device-api-key.jpg" width="330" alt="模型 Key 管理"> |
-
-> 截自 v2.0；之后只调整过文案，并多了一栏文本模型名。
 
 ## 架构
 
