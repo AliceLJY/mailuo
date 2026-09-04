@@ -2,6 +2,7 @@ import { createContext, type ReactNode, useContext } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { theme } from "@/theme";
+import { formatConfirmTime } from "@/time-format";
 import type {
   ActionCardRecord,
   CreateContactPayload,
@@ -388,10 +389,16 @@ export function MeetingFields({
           <FieldInput editable={editable} label="聊天里的时间" value={payload.time_text} onChangeText={(time_text) => setPayload({ ...payload, time_text })} />
         </View>
         <View style={styles.dualColumn}>
+          {formatConfirmTime(payload.time_iso, payload.time_text) ? (
+            <Text style={styles.confirmTimeHint}>
+              {formatConfirmTime(payload.time_iso, payload.time_text)}
+            </Text>
+          ) : null}
           <FieldInput
             editable={editable}
             emphasis
             label="确认时间"
+            multiline
             value={payload.time_iso ?? ""}
             onChangeText={(time_iso) => setPayload({ ...payload, time_iso: time_iso || null })}
             placeholder="看起来不对就手动改"
@@ -569,6 +576,7 @@ const styles = StyleSheet.create({
   fieldLabel: { color: theme.colors.textMuted, fontSize: 12, fontWeight: "700" },
   input: { backgroundColor: theme.colors.surfaceMuted, borderColor: theme.colors.border, borderRadius: 14, borderWidth: 1, color: theme.colors.textPrimary, fontSize: 15, minHeight: 46, paddingHorizontal: 12, paddingVertical: 11 },
   emphasisInput: { backgroundColor: "#F3FFF8", borderColor: theme.colors.primary },
+  confirmTimeHint: { color: theme.colors.primary, fontSize: 13, fontWeight: "700", marginBottom: 4 },
   multiline: { minHeight: 90, textAlignVertical: "top" },
   staticValue: { color: theme.colors.textSecondary, fontSize: 15, lineHeight: 21 },
   emphasisText: { color: theme.colors.primary, fontWeight: "700" },

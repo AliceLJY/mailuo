@@ -553,6 +553,32 @@ export class ExpoSqliteLocalStore implements LocalStore, DiagnosticsDataSource {
     });
   }
 
+  reopenActionCardIfRejected(cardId: number): StoredActionCardRecord | null {
+    const current = this.getStoredActionCardById(cardId);
+
+    if (!current || current.status !== "rejected") {
+      return null;
+    }
+
+    const result = this.db.runSync(
+      `UPDATE action_cards
+       SET status = 'pending', resolved_at = NULL, resolved_contact_id = NULL
+       WHERE id = ? AND status = 'rejected'`,
+      cardId,
+    );
+
+    if (result.changes === 0) {
+      return null;
+    }
+
+    return {
+      ...current,
+      status: "pending",
+      resolved_contact_id: null,
+      resolved_at: null,
+    } as StoredActionCardRecord;
+  }
+
   private updateActionCardResolution(input: {
     cardId: number;
     status: "confirmed" | "rejected";

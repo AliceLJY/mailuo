@@ -34,6 +34,7 @@ type Props = {
   onDraftChange: (draft: ReviewCardDraft) => void;
   onConfirm: () => void;
   onReject: () => void;
+  onReopen: () => void;
 };
 
 const CARD_META = {
@@ -68,10 +69,12 @@ export function ReviewCard({
   onConfirm,
   onDraftChange,
   onReject,
+  onReopen,
   sourceLabels = [],
   stage,
 }: Props) {
   const editable = !disabled && isReviewCardEditable(stage, card.status);
+  const canReopen = !disabled && card.status === "rejected";
   const isDuplicateMeeting =
     card.type === "create_meeting" && card.payload.duplicate_of_meeting_id != null;
   const isMeetingProgressUpdate =
@@ -188,6 +191,18 @@ export function ReviewCard({
               tone="secondary"
             />
           </View>
+          {errorText ? <Text style={styles.errorText}>{errorText}</Text> : null}
+        </View>
+      ) : null}
+
+      {canReopen ? (
+        <View style={styles.actions}>
+          <AppButton
+            disabled={busy}
+            label={busy ? "处理中..." : "恢复为待确认"}
+            onPress={onReopen}
+            tone="secondary"
+          />
           {errorText ? <Text style={styles.errorText}>{errorText}</Text> : null}
         </View>
       ) : null}

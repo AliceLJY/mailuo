@@ -1404,3 +1404,39 @@ export function rejectCard({ db, cardId }: RejectCardInput): StoredActionCardRec
     return rejectedCard;
   });
 }
+
+export type ReopenCardInput = {
+  db: ExecuteStore & {
+    reopenActionCardIfRejected(cardId: number): StoredActionCardRecord | null;
+  };
+  cardId: number;
+};
+
+// Symmetric with rejectCard: only a previously-rejected card can be reopened back to
+// pending. Deliberately typed with a narrow intersection (ExecuteStore + the one new
+// method) instead of widening the shared ExecuteStore interface itself, so servers
+// backed by a store that doesn't support reopening (no client calls it there; that path
+// answers with a "not supported" placeholder instead) keep type-checking unchanged.
+export function reopenCard({ db, cardId }: ReopenCardInput): StoredActionCardRecord {
+  ensurePositiveSafeInteger(cardId, "cardId");
+
+  return db.withTransaction(() => {
+    const card = db.getStoredActionCardById(cardId);
+
+    if (!card) {
+      throw new ExecuteNotFoundError(`Action card ${cardId} not found`);
+    }
+
+    if (card.status !== "rejected") {
+      throw new ActionCardConflictError(`Action card ${cardId} is already ${card.status}`);
+    }
+
+    const reopenedCard = db.reopenActionCardIfRejected(cardId);
+
+    if (!reopenedCard) {
+      throw new ActionCardConflictError(`Action card ${cardId} is no longer rejected`);
+    }
+
+    return reopenedCard;
+  });
+}

@@ -52,6 +52,10 @@ export interface LocalStore extends ExecuteStore, InsightGenerationDb, Diagnosti
     sourceQuote?: string;
     disambiguation?: ActionCardDisambiguation | null;
   }): ActionCardRecord | null;
+  // Restores a rejected card back to pending, clearing its resolution — the inverse of
+  // rejectActionCardIfPending (inherited from ExecuteStore). Returns null when the card
+  // is missing or not currently rejected, matching that method's null-on-mismatch contract.
+  reopenActionCardIfRejected(cardId: number): ActionCardRecord | null;
   countPendingLocalBatchInteractionCards(anchorCardId: number): number;
   clearAllData(): void;
   deleteScreenshotUploadArtifacts(screenshotId: number): void;

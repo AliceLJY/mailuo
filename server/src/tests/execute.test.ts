@@ -7,9 +7,11 @@ import test from "node:test";
 import {
   ActionCardConflictError,
   ExecuteDependencyError,
+  ExecuteNotFoundError,
   ExecuteValidationError,
   executeCard,
   rejectCard,
+  reopenCard,
 } from "../agent/execute.ts";
 import {
   MailuoDb,
@@ -118,6 +120,38 @@ function countRows(db: MailuoDb, table: string) {
     .get() as { count: number };
 
   return row.count;
+}
+
+// MailuoDb doesn't implement reopenActionCardIfRejected (fix15 keeps reopen support out of
+// server/src entirely — the server transport answers reopen requests with a "not supported"
+// placeholder instead). This test-only augmentation adds just that one method directly onto
+// a real MailuoDb instance (Object.assign, not object-spread, so its prototype methods like
+// withTransaction/getStoredActionCardById stay intact) so reopenCard's shared orchestration
+// logic can be exercised against real SQLite persistence.
+type ReopenableMailuoDb = MailuoDb & {
+  reopenActionCardIfRejected(cardId: number): StoredActionCardRecord | null;
+};
+
+function attachReopen(db: MailuoDb): ReopenableMailuoDb {
+  return Object.assign(db, {
+    reopenActionCardIfRejected(cardId: number): StoredActionCardRecord | null {
+      const current = db.getStoredActionCardById(cardId);
+
+      if (!current || current.status !== "rejected") {
+        return null;
+      }
+
+      db.getNativeDatabase()
+        .prepare(
+          `UPDATE action_cards
+           SET status = 'pending', resolved_at = NULL, resolved_contact_id = NULL
+           WHERE id = ? AND status = 'rejected'`,
+        )
+        .run(cardId);
+
+      return db.getStoredActionCardById(cardId);
+    },
+  });
 }
 
 test("executeCard creates a contact and stores related fact/preference observations", () => {
@@ -2096,6 +2130,150 @@ test("rejectCard updates status only and returns 409 on repeat rejection", () =>
       (error) => {
         assert.ok(error instanceof ActionCardConflictError);
         assert.equal(error.statusCode, 409);
+        return true;
+      },
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("reopenActionCardIfRejected flips a rejected card back to pending and returns null for pending or confirmed cards", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const reopenableDb = attachReopen(db);
+    const stillPendingCard = createPendingCard({
+      db,
+      rawExtraction: { participants: [], events: [], facts: [], quotes: [] },
+      card: {
+        type: "create_contact",
+        payload: { name: "冯雪" },
+        confidence: "medium",
+        source_quote: "我是冯雪",
+      },
+    });
+    assert.equal(reopenableDb.reopenActionCardIfRejected(stillPendingCard.id), null);
+
+    const confirmedCard = createPendingCard({
+      db,
+      rawExtraction: { participants: [], events: [], facts: [], quotes: [] },
+      card: {
+        type: "create_contact",
+        payload: { name: "许朗" },
+        confidence: "medium",
+        source_quote: "我是许朗",
+      },
+    });
+    executeCard({ db, cardId: confirmedCard.id });
+    assert.equal(reopenableDb.reopenActionCardIfRejected(confirmedCard.id), null);
+
+    const rejectedCard = createPendingCard({
+      db,
+      rawExtraction: { participants: [], events: [], facts: [], quotes: [] },
+      card: {
+        type: "create_contact",
+        payload: { name: "周宁", company: "山川设计" },
+        confidence: "medium",
+        source_quote: "我是山川设计的周宁",
+      },
+    });
+    rejectCard({ db, cardId: rejectedCard.id });
+
+    const reopened = reopenableDb.reopenActionCardIfRejected(rejectedCard.id);
+    assert.ok(reopened);
+    assert.equal(reopened.status, "pending");
+    assert.equal(reopened.resolved_at, null);
+    assert.equal(reopened.resolved_contact_id, null);
+  } finally {
+    cleanup();
+  }
+});
+
+test("reopenCard reopens a rejected card and returns 409 for cards that are not rejected", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const reopenableDb = attachReopen(db);
+    const pendingCard = createPendingCard({
+      db,
+      rawExtraction: { participants: [], events: [], facts: [], quotes: [] },
+      card: {
+        type: "create_contact",
+        payload: { name: "冯雪" },
+        confidence: "medium",
+        source_quote: "我是冯雪",
+      },
+    });
+    assert.throws(
+      () => reopenCard({ db: reopenableDb, cardId: pendingCard.id }),
+      (error) => {
+        assert.ok(error instanceof ActionCardConflictError);
+        assert.equal(error.statusCode, 409);
+        return true;
+      },
+    );
+
+    const confirmedCard = createPendingCard({
+      db,
+      rawExtraction: { participants: [], events: [], facts: [], quotes: [] },
+      card: {
+        type: "create_contact",
+        payload: { name: "许朗" },
+        confidence: "medium",
+        source_quote: "我是许朗",
+      },
+    });
+    executeCard({ db, cardId: confirmedCard.id });
+    assert.throws(
+      () => reopenCard({ db: reopenableDb, cardId: confirmedCard.id }),
+      (error) => {
+        assert.ok(error instanceof ActionCardConflictError);
+        assert.equal(error.statusCode, 409);
+        return true;
+      },
+    );
+
+    const rejectedCard = createPendingCard({
+      db,
+      rawExtraction: { participants: [], events: [], facts: [], quotes: [] },
+      card: {
+        type: "create_contact",
+        payload: { name: "周宁", company: "山川设计" },
+        confidence: "medium",
+        source_quote: "我是山川设计的周宁",
+      },
+    });
+    rejectCard({ db, cardId: rejectedCard.id });
+
+    const reopened = reopenCard({ db: reopenableDb, cardId: rejectedCard.id });
+    assert.equal(reopened.status, "pending");
+    assert.equal(reopened.resolved_at, null);
+
+    assert.throws(
+      () => reopenCard({ db: reopenableDb, cardId: rejectedCard.id }),
+      (error) => {
+        assert.ok(error instanceof ActionCardConflictError);
+        assert.equal(error.statusCode, 409);
+        return true;
+      },
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("reopenCard throws NotFound for a missing card id", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const reopenableDb = attachReopen(db);
+
+    assert.throws(
+      () => reopenCard({ db: reopenableDb, cardId: 999999 }),
+      (error) => {
+        assert.ok(error instanceof ExecuteNotFoundError);
+        assert.equal(error.statusCode, 404);
         return true;
       },
     );

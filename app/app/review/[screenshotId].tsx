@@ -11,6 +11,7 @@ import {
   getScreenshotDetail,
   isConflictError,
   rejectCard,
+  reopenCard,
 } from "@/api";
 import { AppButton } from "@/components/button";
 import { EmptyHint, Page, SectionCard } from "@/components/page";
@@ -704,6 +705,103 @@ export default function ReviewScreen() {
     }
   }
 
+  async function handleReopen(card: ActionCardRecord) {
+    if (
+      actionRunningRef.current ||
+      targetMismatch ||
+      !successfulScreenshotIds.has(card.screenshot_id)
+    ) {
+      return;
+    }
+
+    actionRunningRef.current = true;
+    const requestGeneration = flowGeneration;
+    const runToken = actionRunTokenRef.current + 1;
+    actionRunTokenRef.current = runToken;
+    try {
+      setLoadingCardId(card.id);
+      setActionError(null);
+      await reopenCard(card.id);
+      if (
+        !canCommitReviewAsync(
+          mountedRef,
+          actionRunTokenRef,
+          runToken,
+          requestGeneration,
+          isFlowGenerationCurrent,
+        )
+      ) {
+        return;
+      }
+
+      await refreshScreenshot(
+        card.screenshot_id,
+        requestGeneration,
+        actionRunTokenRef,
+        runToken,
+        {
+          message: "已恢复，可以重新确认",
+          preserveScreenshotId: screenshotId,
+        },
+      );
+      logEvent("card_reopened", `id=${card.id},type=${card.type}`);
+    } catch (error) {
+      if (
+        !canCommitReviewAsync(
+          mountedRef,
+          actionRunTokenRef,
+          runToken,
+          requestGeneration,
+          isFlowGenerationCurrent,
+        )
+      ) {
+        return;
+      }
+
+      if (isConflictError(error)) {
+        try {
+          await refreshScreenshot(
+            card.screenshot_id,
+            requestGeneration,
+            actionRunTokenRef,
+            runToken,
+            {
+              message: "这张卡刚刚已经处理过，内容已刷新。",
+              preserveScreenshotId: screenshotId,
+            },
+          );
+        } catch (refreshError) {
+          if (
+            !canCommitReviewAsync(
+              mountedRef,
+              actionRunTokenRef,
+              runToken,
+              requestGeneration,
+              isFlowGenerationCurrent,
+            )
+          ) {
+            return;
+          }
+          const message = getErrorMessage(refreshError, "刷新状态失败。");
+          setActionError({ cardId: card.id, message });
+          showError(refreshError, "刷新状态失败。");
+        }
+        return;
+      }
+
+      const message = getErrorMessage(error, "恢复失败。");
+      setActionError({ cardId: card.id, message });
+      showError(error, "恢复失败。");
+    } finally {
+      if (actionRunTokenRef.current === runToken) {
+        actionRunningRef.current = false;
+        if (mountedRef.current) {
+          setLoadingCardId((current) => (current === card.id ? null : current));
+        }
+      }
+    }
+  }
+
   if (!isValidId) {
     return <Page title="确认卡片"><EmptyHint text="页面地址无效。" /></Page>;
   }
@@ -849,6 +947,7 @@ export default function ReviewScreen() {
                     }))
                   }
                   onReject={() => void handleReject(card)}
+                  onReopen={() => void handleReopen(card)}
                   sourceLabels={cardSourceLabelsById[card.id] ?? [item.label]}
                   stage={stage}
                 />
