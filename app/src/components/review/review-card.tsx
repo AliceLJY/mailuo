@@ -168,7 +168,7 @@ export function ReviewCard({
       ) : null}
 
       <DisclosurePanel title="依据原文" hint="点开查看">
-        <Text style={styles.quoteText}>{card.source_quote}</Text>
+        <Text selectable style={styles.quoteText}>{card.source_quote}</Text>
       </DisclosurePanel>
 
       {editable ? (

@@ -1202,6 +1202,172 @@ test('proposeCards keeps an interaction from a bare name-prefixed label when the
   assert.ok(interactionCard);
 });
 
+test('proposeCards drops an interaction when every quote is a waiting/short-reply phrase, including one only matched after OCR-noise fuzzy correction (fix13 goal 1)', () => {
+  const extraction = singleParticipantExtraction({
+    name: '柏贝',
+    role: 'speaker',
+    source_quote: '柏贝',
+  });
+  extraction.quotes = [
+    { speaker_name: '柏贝', text: '稍等一下', source_quote: '稍等一下' },
+    // OCR noise turned "儿" into the visually similar katakana "ル"; edit distance 1 from
+    // the waiting-reply list entry "我一会儿出来" should still fuzzy-match it.
+    { speaker_name: '柏贝', text: '我一会ル出来', source_quote: '我一会ル出来' },
+    { speaker_name: '柏贝', text: '你们等下', source_quote: '你们等下' },
+  ];
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '柏贝',
+    normalized_name: '柏贝',
+    status: 'same_as',
+    contact_id: 401,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 401,
+    canonical_name: '柏贝',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+
+  assert.deepEqual(proposeCards(extraction, resolutions, contacts), []);
+});
+
+test('proposeCards drops an interaction when the only quote is a bare waiting-reply phrase (fix13 goal 1)', () => {
+  const extraction = singleParticipantExtraction({
+    name: '沈青岚',
+    role: 'speaker',
+    source_quote: '沈青岚',
+  });
+  extraction.quotes = [{ speaker_name: '沈青岚', text: '马上到', source_quote: '马上到' }];
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '沈青岚',
+    normalized_name: '沈青岚',
+    status: 'same_as',
+    contact_id: 402,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 402,
+    canonical_name: '沈青岚',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+
+  assert.deepEqual(proposeCards(extraction, resolutions, contacts), []);
+});
+
+test('proposeCards keeps an interaction for an arrival status report even though it starts with the "already there" wording fix11 protects (fix13 goal 1 regression)', () => {
+  const extraction = singleParticipantExtraction({
+    name: '荀导',
+    role: 'speaker',
+    source_quote: '荀导',
+  });
+  extraction.quotes = [{ speaker_name: '荀导', text: '荀导已到', source_quote: '荀导已到' }];
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '荀导',
+    normalized_name: '荀导',
+    status: 'same_as',
+    contact_id: 403,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 403,
+    canonical_name: '荀导',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+  const interactionCard = proposeCards(extraction, resolutions, contacts)
+    .find((card) => card.type === 'record_interaction');
+
+  assert.ok(interactionCard);
+});
+
+test('proposeCards keeps an interaction when a waiting-reply quote is mixed with a substantive one (fix13 goal 1)', () => {
+  const extraction = singleParticipantExtraction({
+    name: '郝明川',
+    role: 'speaker',
+    source_quote: '郝明川',
+  });
+  extraction.quotes = [
+    { speaker_name: '郝明川', text: '稍等一下', source_quote: '稍等一下' },
+    { speaker_name: '郝明川', text: '明天上午10点开会', source_quote: '明天上午10点开会' },
+  ];
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '郝明川',
+    normalized_name: '郝明川',
+    status: 'same_as',
+    contact_id: 404,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 404,
+    canonical_name: '郝明川',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+  const interactionCard = proposeCards(extraction, resolutions, contacts)
+    .find((card) => card.type === 'record_interaction');
+
+  assert.ok(interactionCard);
+});
+
+test('proposeCards fuzzy-matches a waiting reply within edit distance 1 but not edit distance 2 (fix13 goal 1)', () => {
+  const buildExtraction = (quoteText: string): PerceptionResult => {
+    const extraction = singleParticipantExtraction({
+      name: '王磊',
+      role: 'speaker',
+      source_quote: '王磊',
+    });
+    extraction.quotes = [{ speaker_name: '王磊', text: quoteText, source_quote: quoteText }];
+    return extraction;
+  };
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '王磊',
+    normalized_name: '王磊',
+    status: 'same_as',
+    contact_id: 405,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 405,
+    canonical_name: '王磊',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+
+  // "稍等一下下" is one inserted character away from the list entry "稍等一下" (edit distance 1).
+  assert.deepEqual(
+    proposeCards(buildExtraction('稍等一下下'), resolutions, contacts),
+    [],
+  );
+
+  // "稍等一下下下" is two characters away (edit distance 2) and should not fuzzy-match.
+  const keptInteractionCard = proposeCards(buildExtraction('稍等一下下下'), resolutions, contacts)
+    .find((card) => card.type === 'record_interaction');
+
+  assert.ok(keptInteractionCard);
+});
+
 test('proposeCards drops the interaction candidate when the only evidence is someone else at-mentioning the participant (fix12 goal 2)', () => {
   const extraction = singleParticipantExtraction({
     name: '柏贝',
@@ -1235,10 +1401,13 @@ test('proposeCards keeps the interaction and excludes the at-mention line from t
     role: 'speaker',
     source_quote: '@柏贝@沈青岚明天28日的会议调整为10:30开。',
   });
+  // fix13 goal 1 turned "稍等一下" into a waiting-reply acknowledgement, so this fix12 goal 2
+  // regression (real quote beats the at-mention label line) now uses substantive content
+  // that stays unaffected by that change.
   extraction.quotes = [{
     speaker_name: '柏贝',
-    text: '稍等一下',
-    source_quote: '稍等一下',
+    text: '开会地点改在三楼会议室',
+    source_quote: '开会地点改在三楼会议室',
   }];
   const resolutions: ParticipantResolution[] = [{
     participant_name: '柏贝',
@@ -1261,7 +1430,7 @@ test('proposeCards keeps the interaction and excludes the at-mention line from t
     .find((card) => card.type === 'record_interaction');
 
   assert.ok(interactionCard);
-  assert.equal(interactionCard.payload.summary, '稍等一下');
+  assert.equal(interactionCard.payload.summary, '开会地点改在三楼会议室');
   assert.doesNotMatch(interactionCard.payload.summary, /@柏贝/u);
 });
 
@@ -1319,6 +1488,353 @@ test('proposeCards leaves a fragment at-mentioning someone else unaffected (fix1
     .find((card) => card.type === 'record_interaction');
 
   assert.ok(interactionCard);
+});
+
+test('proposeCards drops an interaction when every quote is itself the source_quote of a same-screenshot event (fix13 goal 2)', () => {
+  const extraction: PerceptionResult = {
+    participants: [{
+      name: '郝明川',
+      is_self: false,
+      role: 'speaker',
+      confidence: 'high',
+      source_quote: '郝明川',
+    }],
+    events: [
+      {
+        kind: 'other',
+        title: '报损备车及工作餐安排',
+        time_text: '',
+        time_iso: null,
+        has_time_signal: false,
+        participant_names: [],
+        confidence: 'high',
+        source_quote: '你联系一下钱进，把报损备车的车牌号发他一下。',
+      },
+      {
+        kind: 'meeting',
+        title: '花城号筹备会',
+        time_text: '8月27日上午9点半',
+        time_iso: '2026-08-27T09:30:00+08:00',
+        has_time_signal: true,
+        participant_names: [],
+        confidence: 'high',
+        source_quote: '8月27日上午9点半在1512会议室召开花城号筹备会。',
+      },
+    ],
+    facts: [],
+    quotes: [
+      {
+        speaker_name: '郝明川',
+        text: '你联系一下钱进，把报损备车的车牌号发他一下。',
+        source_quote: '你联系一下钱进，把报损备车的车牌号发他一下。',
+      },
+      {
+        speaker_name: '郝明川',
+        text: '8月27日上午9点半在1512会议室召开花城号筹备会。',
+        source_quote: '8月27日上午9点半在1512会议室召开花城号筹备会。',
+      },
+    ],
+  };
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '郝明川',
+    normalized_name: '郝明川',
+    status: 'same_as',
+    contact_id: 501,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 501,
+    canonical_name: '郝明川',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+
+  const cards = proposeCards(extraction, resolutions, contacts);
+
+  assert.equal(cards.filter((card) => card.type === 'create_meeting').length, 2);
+  assert.equal(cards.some((card) => card.type === 'record_interaction'), false);
+});
+
+test('proposeCards drops an interaction when its single quote equals a same-screenshot other item\'s source_quote (fix13 goal 2)', () => {
+  const extraction: PerceptionResult = {
+    participants: [{
+      name: '沈青岚',
+      is_self: false,
+      role: 'speaker',
+      confidence: 'high',
+      source_quote: '沈青岚',
+    }],
+    events: [{
+      kind: 'other',
+      title: '会议参会人员请示',
+      time_text: '',
+      time_iso: null,
+      has_time_signal: false,
+      participant_names: [],
+      confidence: 'medium',
+      source_quote: '请示一下明天上午的会议除了郝总参加以外，市场部是否还要有人参会。',
+    }],
+    facts: [],
+    quotes: [{
+      speaker_name: '沈青岚',
+      text: '请示一下明天上午的会议除了郝总参加以外，市场部是否还要有人参会。',
+      source_quote: '请示一下明天上午的会议除了郝总参加以外，市场部是否还要有人参会。',
+    }],
+  };
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '沈青岚',
+    normalized_name: '沈青岚',
+    status: 'same_as',
+    contact_id: 502,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 502,
+    canonical_name: '沈青岚',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+
+  assert.equal(
+    proposeCards(extraction, resolutions, contacts).some((card) => card.type === 'record_interaction'),
+    false,
+  );
+});
+
+test('proposeCards keeps an interaction when the substantive quote is not any same-screenshot event\'s source_quote (fix13 goal 2 control)', () => {
+  const extraction: PerceptionResult = {
+    participants: [{
+      name: '柏贝',
+      is_self: false,
+      role: 'speaker',
+      confidence: 'high',
+      source_quote: '柏贝',
+    }],
+    events: [{
+      kind: 'other',
+      title: '车辆安排确认',
+      time_text: '',
+      time_iso: null,
+      has_time_signal: false,
+      participant_names: [],
+      confidence: 'medium',
+      source_quote: '请确认一下接送车辆的具体安排和时间。',
+    }],
+    facts: [],
+    quotes: [
+      // Not any event's source_quote — a genuine reply of her own, so the candidate must
+      // survive even though the same screenshot also has an unrelated other item.
+      { speaker_name: '柏贝', text: '郝总，我要晚一点参会，明早9点半到公司。', source_quote: '郝总，我要晚一点参会，明早9点半到公司。' },
+      // fix13 goal 1 strips this pure-acknowledgement fragment before the coverage check.
+      { speaker_name: '柏贝', text: '好的，收到', source_quote: '好的，收到' },
+    ],
+  };
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '柏贝',
+    normalized_name: '柏贝',
+    status: 'same_as',
+    contact_id: 503,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 503,
+    canonical_name: '柏贝',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+  const interactionCard = proposeCards(extraction, resolutions, contacts)
+    .find((card) => card.type === 'record_interaction');
+
+  assert.ok(interactionCard);
+});
+
+test('proposeCards keeps an interaction when only one of several quotes is not covered by a same-screenshot event (fix13 goal 2)', () => {
+  const extraction: PerceptionResult = {
+    participants: [{
+      name: '郝明川',
+      is_self: false,
+      role: 'speaker',
+      confidence: 'high',
+      source_quote: '郝明川',
+    }],
+    events: [
+      {
+        kind: 'other',
+        title: '报损备车及工作餐安排',
+        time_text: '',
+        time_iso: null,
+        has_time_signal: false,
+        participant_names: [],
+        confidence: 'high',
+        source_quote: '你联系一下钱进，把报损备车的车牌号发他一下。',
+      },
+      {
+        kind: 'meeting',
+        title: '花城号筹备会',
+        time_text: '8月27日上午9点半',
+        time_iso: '2026-08-27T09:30:00+08:00',
+        has_time_signal: true,
+        participant_names: [],
+        confidence: 'high',
+        source_quote: '8月27日上午9点半在1512会议室召开花城号筹备会。',
+      },
+    ],
+    facts: [],
+    quotes: [
+      {
+        speaker_name: '郝明川',
+        text: '你联系一下钱进，把报损备车的车牌号发他一下。',
+        source_quote: '你联系一下钱进，把报损备车的车牌号发他一下。',
+      },
+      {
+        speaker_name: '郝明川',
+        text: '8月27日上午9点半在1512会议室召开花城号筹备会。',
+        source_quote: '8月27日上午9点半在1512会议室召开花城号筹备会。',
+      },
+      // Not any event's source_quote — 郝明川's own instruction, so the candidate survives.
+      {
+        speaker_name: '郝明川',
+        text: '你先谈完话，过来我办公室参加海棠塔剧场会议。',
+        source_quote: '你先谈完话，过来我办公室参加海棠塔剧场会议。',
+      },
+    ],
+  };
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '郝明川',
+    normalized_name: '郝明川',
+    status: 'same_as',
+    contact_id: 504,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 504,
+    canonical_name: '郝明川',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+  const interactionCard = proposeCards(extraction, resolutions, contacts)
+    .find((card) => card.type === 'record_interaction');
+
+  assert.ok(interactionCard);
+});
+
+test('proposeCards does not treat a short fragment as covered merely because it is a substring of a longer event source_quote (fix13 goal 2)', () => {
+  const extraction: PerceptionResult = {
+    participants: [{
+      name: '邬明',
+      is_self: false,
+      role: 'speaker',
+      confidence: 'high',
+      source_quote: '邬明',
+    }],
+    events: [{
+      kind: 'meeting',
+      title: '合作洽谈',
+      time_text: '下周三下午三点',
+      time_iso: null,
+      has_time_signal: true,
+      participant_names: [],
+      confidence: 'high',
+      source_quote: '下周三下午三点到公司开会，请准时。',
+    }],
+    facts: [],
+    quotes: [
+      // 4 code points, textually contained in the event's source_quote, but under the
+      // 8-code-point minimum overlap and far below the 0.85 similarity fallback.
+      { speaker_name: '邬明', text: '下午三点', source_quote: '下午三点' },
+    ],
+  };
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '邬明',
+    normalized_name: '邬明',
+    status: 'same_as',
+    contact_id: 505,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 505,
+    canonical_name: '邬明',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+  const interactionCard = proposeCards(extraction, resolutions, contacts)
+    .find((card) => card.type === 'record_interaction');
+
+  assert.ok(interactionCard);
+});
+
+test('proposeCards keeps coverage against an event dropped by same-screenshot routing, using raw extraction.events rather than the routed subset (fix13 goal 2)', () => {
+  const extraction: PerceptionResult = {
+    participants: [{
+      name: '邬明',
+      is_self: false,
+      role: 'speaker',
+      confidence: 'high',
+      source_quote: '邬明',
+    }],
+    events: [{
+      // A timeless "please confirm/contact" other item with no location is routed away by
+      // routeSpecialOtherEvents (isTimelessCommunicationEvent) and never becomes its own
+      // create_meeting card. Its source_quote must still count as "already has somewhere
+      // to go" for the coverage check, which is why it has to read extraction.events
+      // (the raw perception input) rather than the post-routing events list.
+      kind: 'other',
+      title: '联系确认车辆安排',
+      time_text: '',
+      time_iso: null,
+      has_time_signal: false,
+      participant_names: [],
+      confidence: 'medium',
+      source_quote: '麻烦联系一下钱进，确认一下车辆安排。',
+    }],
+    facts: [],
+    quotes: [{
+      speaker_name: '邬明',
+      text: '麻烦联系一下钱进，确认一下车辆安排。',
+      source_quote: '麻烦联系一下钱进，确认一下车辆安排。',
+    }],
+  };
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '邬明',
+    normalized_name: '邬明',
+    status: 'same_as',
+    contact_id: 506,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 506,
+    canonical_name: '邬明',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+
+  // The routed other item never surfaces its own card, and the participant's only
+  // evidence is fully covered by it, so no card at all should be proposed.
+  assert.deepEqual(proposeCards(extraction, resolutions, contacts), []);
 });
 
 test('proposeCards skips generic mentioned contacts in the no-resolution branch but keeps item names', () => {
@@ -2296,6 +2812,8 @@ test('proposeCards creates a standalone no-time item with no participants and no
     quotes: [],
   };
 
+  // fix13 goal 3: this other item has no model agenda, so it now backfills from its
+  // (single-line) source_quote; time/participants/interaction absence is unaffected.
   assert.deepEqual(proposeCards(extraction, [], []), [
     {
       type: 'create_meeting',
@@ -2305,11 +2823,82 @@ test('proposeCards creates a standalone no-time item with no participants and no
         time_iso: null,
         time_text: '',
         participants: [],
+        agenda: '报名要带身份证复印件和两张照片',
       },
       confidence: 'medium',
       source_quote: '报名要带身份证复印件和两张照片',
     },
   ]);
+});
+
+test('proposeCards backfills a blank other-item agenda from a multi-line source_quote, joined without a separator (fix13 goal 3)', () => {
+  const extraction: PerceptionResult = {
+    participants: [],
+    events: [{
+      kind: 'other',
+      title: '提交证明材料或情况说明',
+      time_text: '',
+      time_iso: null,
+      has_time_signal: false,
+      participant_names: [],
+      confidence: 'medium',
+      source_quote: '有正式且现成证明材料的，请立即提供\n没有直接证明材料的，可写情况说明 \n以上事项，完成一项提供一项',
+    }],
+    facts: [],
+    quotes: [],
+  };
+  const card = proposeCards(extraction, [], []).find((card) => card.type === 'create_meeting');
+
+  assert.ok(card);
+  assert.equal(
+    card.payload.agenda,
+    '有正式且现成证明材料的，请立即提供没有直接证明材料的，可写情况说明以上事项，完成一项提供一项',
+  );
+});
+
+test('proposeCards leaves an other-item agenda untouched when the model already filled it (fix13 goal 3)', () => {
+  const extraction: PerceptionResult = {
+    participants: [],
+    events: [{
+      kind: 'other',
+      title: '车辆安排',
+      time_text: '',
+      time_iso: null,
+      has_time_signal: false,
+      participant_names: [],
+      agenda: '已确认租车公司和车型',
+      confidence: 'medium',
+      source_quote: '第一行\n第二行',
+    }],
+    facts: [],
+    quotes: [],
+  };
+  const card = proposeCards(extraction, [], []).find((card) => card.type === 'create_meeting');
+
+  assert.ok(card);
+  assert.equal(card.payload.agenda, '已确认租车公司和车型');
+});
+
+test('proposeCards does not backfill agenda for a meeting-kind item even when agenda is blank (fix13 goal 3)', () => {
+  const extraction: PerceptionResult = {
+    participants: [],
+    events: [{
+      kind: 'meeting',
+      title: '项目周会',
+      time_text: '周五下午两点',
+      time_iso: '2026-08-28T14:00:00+08:00',
+      has_time_signal: true,
+      participant_names: [],
+      confidence: 'high',
+      source_quote: '周五下午两点开项目周会',
+    }],
+    facts: [],
+    quotes: [],
+  };
+  const card = proposeCards(extraction, [], []).find((card) => card.type === 'create_meeting');
+
+  assert.ok(card);
+  assert.equal('agenda' in card.payload, false);
 });
 
 test('proposeCards preserves appointment kind and its existing scheduled-card behavior', () => {
