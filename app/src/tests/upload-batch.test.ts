@@ -87,6 +87,18 @@ function apiWithUpload(
     async getScreenshotDetail() {
       throw new Error("unused");
     },
+    async updateMeeting() {
+      throw new Error("unused");
+    },
+    async deleteMeeting() {
+      throw new Error("unused");
+    },
+    async updateContact() {
+      throw new Error("unused");
+    },
+    async deleteContact() {
+      throw new Error("unused");
+    },
   };
 }
 

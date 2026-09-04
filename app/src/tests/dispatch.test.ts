@@ -70,6 +70,20 @@ function fakeApi(label: string, calls: string[]): RoutedApi {
     async getScreenshotDetail() {
       throw new Error("unused");
     },
+    async updateMeeting(meetingId) {
+      calls.push(`${label}:update-meeting:${meetingId}`);
+      throw new Error("unused");
+    },
+    async deleteMeeting(meetingId) {
+      calls.push(`${label}:delete-meeting:${meetingId}`);
+    },
+    async updateContact(contactId) {
+      calls.push(`${label}:update-contact:${contactId}`);
+      throw new Error("unused");
+    },
+    async deleteContact(contactId) {
+      calls.push(`${label}:delete-contact:${contactId}`);
+    },
   };
 }
 
@@ -122,11 +136,15 @@ test("local utility operations route through the selected API", async () => {
     insights: [],
   });
   await api.clearAllData();
+  await api.deleteMeeting(7);
+  await api.deleteContact(9);
 
   assert.deepEqual(calls, [
     "local:dependent-count",
     "local:diagnostics-snapshot",
     "local:clear",
+    "local:delete-meeting:7",
+    "local:delete-contact:9",
   ]);
 });
 

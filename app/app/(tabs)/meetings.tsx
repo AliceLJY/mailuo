@@ -1,6 +1,6 @@
-import { useFocusEffect } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { useCallback, useRef, useState } from "react";
-import { ActivityIndicator, FlatList, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { getMeetings } from "@/api";
 import { AppButton } from "@/components/button";
@@ -86,7 +86,14 @@ export default function MeetingsScreen() {
         }
         onRefresh={() => void loadMeetings("refresh")}
         refreshing={refreshing}
-        renderItem={({ item }) => <MeetingListCard meeting={item} />}
+        renderItem={({ item }) => (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => router.push(`/meetings/${item.id}`)}
+          >
+            <MeetingListCard meeting={item} />
+          </Pressable>
+        )}
         showsVerticalScrollIndicator={false}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
       />

@@ -229,6 +229,18 @@ function createServerApi(serverUrl?: string): RoutedApi {
     getMeetings: () => getMeetingsFromServer(serverUrl),
     getScreenshotDetail: (screenshotId) =>
       getScreenshotDetailFromServer(screenshotId, serverUrl),
+    async updateMeeting() {
+      throw new ApiError("服务器模式暂不支持编辑会议。", 501, "NOT_SUPPORTED");
+    },
+    async deleteMeeting() {
+      throw new ApiError("服务器模式暂不支持删除会议。", 501, "NOT_SUPPORTED");
+    },
+    async updateContact() {
+      throw new ApiError("服务器模式暂不支持编辑联系人。", 501, "NOT_SUPPORTED");
+    },
+    async deleteContact() {
+      throw new ApiError("服务器模式暂不支持删除联系人。", 501, "NOT_SUPPORTED");
+    },
   };
 }
 
@@ -264,6 +276,10 @@ export const getContacts = apiDispatcher.getContacts;
 export const getContactDetail = apiDispatcher.getContactDetail;
 export const getMeetings = apiDispatcher.getMeetings;
 export const getScreenshotDetail = apiDispatcher.getScreenshotDetail;
+export const updateMeeting = apiDispatcher.updateMeeting;
+export const deleteMeeting = apiDispatcher.deleteMeeting;
+export const updateContact = apiDispatcher.updateContact;
+export const deleteContact = apiDispatcher.deleteContact;
 
 export async function getHealth() {
   return request<HealthResponse>("/api/health");

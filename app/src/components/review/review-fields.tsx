@@ -516,7 +516,7 @@ export function ChoiceRow({
   );
 }
 
-function FieldInput({
+export function FieldInput({
   editable,
   emphasis = false,
   label,
