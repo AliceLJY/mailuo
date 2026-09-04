@@ -56,12 +56,23 @@ export type BatchOtherCardReference = {
   source_quote: string;
   time_text: string;
   status: ActionCardStatus;
+  // Optional: callers that can cheaply snapshot the full stored payload (e.g. the local
+  // batch session) attach it here so a later merge can reconstruct the complete payload of
+  // the retained/anchor card. Absent in older or hand-built references; treat as unknown.
+  payload?: CreateMeetingPayload;
 };
 
 export type BatchOtherDedupMatch = {
   title: string;
   matched_card_id: number;
   similarity: number;
+  // The cut (newly proposed, filtered-out) card's own time fields, carried forward so a
+  // caller can backfill them onto the retained card when the retained one still lacks a
+  // resolved date. dedupeBatchOtherCards always fills these in from the cut card; it does
+  // not itself decide whether a merge should happen.
+  time_iso: string | null;
+  time_text: string;
+  agenda?: string;
 };
 
 export type NoticeRouting = {
@@ -1060,6 +1071,9 @@ export function dedupeBatchOtherCards(
       title: card.payload.title,
       matched_card_id: match.candidate.card_id,
       similarity: match.similarity,
+      time_iso: card.payload.time_iso,
+      time_text: card.payload.time_text,
+      ...(card.payload.agenda ? { agenda: card.payload.agenda } : {}),
     });
     return false;
   });
@@ -1380,6 +1394,43 @@ function stripParticipantPrefix(
   }
 
   return cutEnd === -1 ? fragment : fragment.slice(cutEnd);
+}
+
+// An "@name" mention inside a fragment means someone else addressed this participant in
+// that message; it is not evidence of what the participant themselves said. Scan every
+// "@" occurrence (skipping whitespace right after it, e.g. "@ 柏贝") and check whether the
+// participant's own name or any alias starts right there.
+function containsAtMentionOfParticipant(
+  fragment: string,
+  participant: { name: string; aliases?: string[] },
+): boolean {
+  const identifiers = [participant.name, ...(participant.aliases ?? [])].filter(
+    (identifier): identifier is string => Boolean(identifier),
+  );
+
+  if (identifiers.length === 0) {
+    return false;
+  }
+
+  let atIndex = fragment.indexOf('@');
+
+  while (atIndex !== -1) {
+    let cursor = atIndex + 1;
+
+    while (cursor < fragment.length && /\s/u.test(fragment.charAt(cursor))) {
+      cursor += 1;
+    }
+
+    const remainder = fragment.slice(cursor);
+
+    if (identifiers.some((identifier) => remainder.startsWith(identifier))) {
+      return true;
+    }
+
+    atIndex = fragment.indexOf('@', atIndex + 1);
+  }
+
+  return false;
 }
 
 function shouldSkipMentionedContactCreation(
@@ -1796,6 +1847,9 @@ function proposeCardsInternal(
         resolution.status === 'same_as'
           ? `contact:${resolution.contact_id}`
           : `pending:${resolution.normalized_name}`;
+      // An OCR label line that is really someone else "@"-ing this participant (e.g. a
+      // notifier's broadcast "@柏贝@沈青岚...") is not this participant's own evidence.
+      const isOwnSourceQuote = !containsAtMentionOfParticipant(participant.source_quote, participant);
 
       if (!interactionCandidates.has(interactionKey)) {
         interactionCandidates.set(interactionKey, {
@@ -1807,7 +1861,7 @@ function proposeCardsInternal(
           confidence: [participant.confidence],
           relatedFacts: [...relatedFacts],
           relatedQuotes: [...relatedQuotes],
-          participantSourceQuotes: [participant.source_quote],
+          participantSourceQuotes: isOwnSourceQuote ? [participant.source_quote] : [],
           interactionSummaries: dedupeStrings([participant.interaction_summary]),
           requiresCreateCard: resolution.status !== 'same_as',
         });
@@ -1816,7 +1870,9 @@ function proposeCardsInternal(
         existing.confidence.push(participant.confidence);
         existing.relatedFacts.push(...relatedFacts);
         existing.relatedQuotes.push(...relatedQuotes);
-        existing.participantSourceQuotes.push(participant.source_quote);
+        if (isOwnSourceQuote) {
+          existing.participantSourceQuotes.push(participant.source_quote);
+        }
         existing.interactionSummaries.push(...dedupeStrings([participant.interaction_summary]));
       }
     }
@@ -1908,17 +1964,17 @@ function proposeCardsInternal(
       continue;
     }
 
-    const sourceEvidence = dedupeStrings([
-      ...candidate.participantSourceQuotes,
-      ...candidate.relatedQuotes.map((quote) => quote.text),
-    ]);
+    // Quotes are the model's citation of what the participant actually said, so they take
+    // priority over the raw OCR source-quote label line whenever any exist; the label line
+    // (participantSourceQuotes) is only a fallback, and still needs the fix11 prefix strip.
+    const sourceEvidence = candidate.relatedQuotes.length > 0
+      ? dedupeStrings(candidate.relatedQuotes.map((quote) => quote.text))
+      : dedupeStrings(
+          candidate.participantSourceQuotes.map((fragment) =>
+            stripParticipantPrefix(fragment, { name: candidate.participantName })),
+        );
 
-    if (
-      sourceEvidence.length > 0 &&
-      sourceEvidence
-        .map((fragment) => stripParticipantPrefix(fragment, { name: candidate.participantName }))
-        .every(isPureAcknowledgement)
-    ) {
+    if (sourceEvidence.length === 0 || sourceEvidence.every(isPureAcknowledgement)) {
       continue;
     }
 

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { MEETING_KINDS } from '../../types.ts';
 import { buildPerceptionSystemPrompt, buildPerceptionUserPrompt } from '../llm/prompts.ts';
 import type { StructuredOutputProvider } from '../llm/provider.ts';
+import { normalizeContactText } from '../text/compare.ts';
 
 const ConfidenceSchema = z.enum(['high', 'medium', 'low']);
 const IsoDateTimeWithOffsetSchema = z.string().datetime({ offset: true });
@@ -88,18 +89,59 @@ export type PerceptionResult = z.infer<typeof PerceptionResultSchema>;
 export function applySelfNames(
   extraction: PerceptionResult,
   selfNames: readonly string[],
+  knownContactNames: ReadonlySet<string> = new Set(),
 ): PerceptionResult {
-  if (selfNames.length === 0) {
+  if (selfNames.length === 0 && knownContactNames.size === 0) {
     return extraction;
   }
 
+  const participants = extraction.participants.map((participant) => {
+    if (!participant.is_self) {
+      return isSelfName(participant.name, selfNames)
+        ? { ...participant, is_self: true }
+        : participant;
+    }
+
+    // Reverse case: the model marked this participant as "me", but it is neither the
+    // literal "我" nor one of the registered self-nicknames, and it matches an already
+    // known contact — that is someone else's account, not a self-name mismatch. Names that
+    // are not known contacts (e.g. Alice's own account name under a different app/company)
+    // are left alone so a correct self-judgment is never flipped.
+    if (
+      participant.name !== '我' &&
+      !isSelfName(participant.name, selfNames) &&
+      knownContactNames.has(normalizeContactText(participant.name))
+    ) {
+      return { ...participant, is_self: false };
+    }
+
+    return participant;
+  });
+
+  // Nicknames only ever land on extraction.participants[].is_self above; an event's own
+  // participant_names is a separate list that the model free-writes, so a registered
+  // nickname that only shows up there (no mirrored participants[] entry) would otherwise
+  // never resolve to "我". Collapse every self-name hit within one event into a single "我".
+  const events = selfNames.length === 0 ? extraction.events : extraction.events.map((event) => {
+    const hasSelfHit = event.participant_names.some((name) => isSelfName(name, selfNames));
+
+    if (!hasSelfHit) {
+      return event;
+    }
+
+    return {
+      ...event,
+      participant_names: [
+        ...event.participant_names.filter((name) => !isSelfName(name, selfNames)),
+        '我',
+      ],
+    };
+  });
+
   return {
     ...extraction,
-    participants: extraction.participants.map((participant) => (
-      participant.is_self || !isSelfName(participant.name, selfNames)
-        ? participant
-        : { ...participant, is_self: true }
-    )),
+    participants,
+    events,
   };
 }
 

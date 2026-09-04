@@ -43,6 +43,7 @@ const TraceBatchOtherDedupSchema = z.object({
   title: z.string(),
   matched_card_id: safeInteger.positive(),
   similarity: z.number().finite().min(0).max(1),
+  merged_time: z.boolean().optional(),
 }).strict();
 
 const TraceNoticeRoutingSchema = z.object({

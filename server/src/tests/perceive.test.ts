@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  applySelfNames,
   PerceptionEventSchema,
   PerceptionParticipantSchema,
   parseStoredPerceptionResult,
+  type PerceptionResult,
 } from '../../../shared/core/agent/perceive.ts';
 import {
   buildPerceptionSystemPrompt,
@@ -387,4 +389,106 @@ test('parseStoredPerceptionResult restores legacy missing booleans without dropp
   assert.equal(Object.hasOwn(result.participants[1] ?? {}, 'speech_act'), false);
   assert.equal(result.events[0]?.has_time_signal, false);
   assert.equal(result.events[1]?.has_time_signal, true);
+});
+
+function eventOnlyResult(participantNames: string[]): PerceptionResult {
+  return {
+    participants: [],
+    events: [{
+      kind: 'meeting',
+      title: '项目周会',
+      time_text: '',
+      time_iso: null,
+      has_time_signal: false,
+      participant_names: participantNames,
+      confidence: 'high',
+      source_quote: '项目周会安排',
+    }],
+    facts: [],
+    quotes: [],
+  };
+}
+
+function singleSelfParticipantResult(name: string, isSelf: boolean): PerceptionResult {
+  return {
+    participants: [{
+      name,
+      is_self: isSelf,
+      confidence: 'high',
+      source_quote: `${name}：好的`,
+    }],
+    events: [],
+    facts: [],
+    quotes: [],
+  };
+}
+
+test('applySelfNames rewrites a self-nickname hit inside event participant_names to 我 (fix12 goal 5)', () => {
+  const result = applySelfNames(eventOnlyResult(['柏贝', '林知夏']), ['林知夏']);
+
+  assert.deepEqual(result.events[0]?.participant_names, ['柏贝', '我']);
+});
+
+test('applySelfNames collapses multiple self-name hits within one event into a single 我 (fix12 goal 5)', () => {
+  const result = applySelfNames(eventOnlyResult(['知夏', '林知夏']), ['知夏', '林知夏']);
+
+  assert.deepEqual(result.events[0]?.participant_names, ['我']);
+});
+
+test('applySelfNames leaves event participant_names untouched when no self names are configured (fix12 goal 5)', () => {
+  const result = applySelfNames(eventOnlyResult(['柏贝', '林知夏']), []);
+
+  assert.deepEqual(result.events[0]?.participant_names, ['柏贝', '林知夏']);
+});
+
+test('applySelfNames still promotes a matching participant to is_self without a third argument (fix12 goal 5 regression)', () => {
+  const result = applySelfNames(singleSelfParticipantResult('林知夏', false), ['林知夏']);
+
+  assert.equal(result.participants[0]?.is_self, true);
+});
+
+test('applySelfNames flips a wrongly self-judged known contact back to is_self=false (fix12 goal 6)', () => {
+  const result = applySelfNames(
+    singleSelfParticipantResult('沈青岚', true),
+    ['林知夏'],
+    new Set(['沈青岚']),
+  );
+
+  assert.equal(result.participants[0]?.is_self, false);
+});
+
+test('applySelfNames keeps is_self=true for a self-judged name that is not a known contact (fix12 goal 6)', () => {
+  const result = applySelfNames(
+    singleSelfParticipantResult('安闲静雅', true),
+    ['林知夏'],
+    new Set(['沈青岚']),
+  );
+
+  assert.equal(result.participants[0]?.is_self, true);
+});
+
+test('applySelfNames keeps or promotes a name that is itself a registered self name even if it also matches a known contact (fix12 goal 6)', () => {
+  const alreadySelf = applySelfNames(
+    singleSelfParticipantResult('林知夏', true),
+    ['林知夏'],
+    new Set(['林知夏']),
+  );
+  const notYetSelf = applySelfNames(
+    singleSelfParticipantResult('林知夏', false),
+    ['林知夏'],
+    new Set(['林知夏']),
+  );
+
+  assert.equal(alreadySelf.participants[0]?.is_self, true);
+  assert.equal(notYetSelf.participants[0]?.is_self, true);
+});
+
+test('applySelfNames does not flip anything when knownContactNames is empty (fix12 goal 6)', () => {
+  const result = applySelfNames(
+    singleSelfParticipantResult('沈青岚', true),
+    ['林知夏'],
+    new Set(),
+  );
+
+  assert.equal(result.participants[0]?.is_self, true);
 });
