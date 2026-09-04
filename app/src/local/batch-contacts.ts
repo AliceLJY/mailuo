@@ -2,7 +2,6 @@ import type { PerceptionResult } from "../../../shared/core/agent/perceive.ts";
 import {
   dedupeBatchOtherCards,
   type BatchOtherCardReference,
-  type BatchOtherDedupMatch,
 } from "../../../shared/core/agent/propose.ts";
 import type {
   ParticipantResolution,
@@ -83,13 +82,24 @@ type NewPendingContact = {
 
 export type LocalBatchPendingCardUpdate = {
   cardId: number;
-  payload: CreateContactPayload;
+  // Widened from CreateContactPayload (contact field merges) to also carry
+  // CreateMeetingPayload updates (batch-other dedup time backfill); the store layer
+  // (LocalStore.saveScreenshotAnalysis / updatePendingActionCard) already types this
+  // generically as ActionCard["payload"], so this only widens the local plan shape to match.
+  payload: ActionCard["payload"];
   sourceQuote: string;
+};
+
+export type LocalBatchOtherDedupResult = {
+  title: string;
+  matched_card_id: number;
+  similarity: number;
+  merged_time: boolean;
 };
 
 export type LocalBatchScreenshotPlan = {
   cards: ActionCard[];
-  batchOtherDedup: BatchOtherDedupMatch[];
+  batchOtherDedup: LocalBatchOtherDedupResult[];
   pendingCardUpdates: LocalBatchPendingCardUpdate[];
   dependenciesByCardIndex: Map<number, CardDependency[]>;
   pendingContactUpdates: PendingContactUpdate[];
@@ -178,6 +188,7 @@ function toBatchOtherCardReference(
     source_quote: card.source_quote,
     time_text: card.payload.time_text,
     status: card.status,
+    payload: card.payload,
   };
 }
 
@@ -1197,7 +1208,7 @@ export class LocalBatchContactSession {
       pushCard(clonePayload(proposedCard));
     }
 
-    const pendingCardUpdates = [...changedTemporaryIds].map((temporaryId) => {
+    const pendingCardUpdates: LocalBatchPendingCardUpdate[] = [...changedTemporaryIds].map((temporaryId) => {
       const pending = workingPending.get(temporaryId)!;
       const anchor = this.pendingByTemporaryId.get(temporaryId)!;
       return {
@@ -1206,6 +1217,46 @@ export class LocalBatchContactSession {
         sourceQuote: sourceQuoteFromEvidence(pending.evidence),
       };
     });
+
+    // Backfill the retained (kept-first) batch-other card's time_iso/time_text from the
+    // card that just got deduped away, when the retained one never resolved a date and the
+    // cut one did (fix9's keep-first otherwise silently drops the better date forever).
+    const priorOtherCardsById = new Map(
+      this.listBatchOtherCards().map((card) => [card.card_id, card]),
+    );
+    const meetingTimeMergeUpdates: LocalBatchPendingCardUpdate[] = [];
+    const batchOtherDedupWithMergeFlags: LocalBatchOtherDedupResult[] = batchOtherDedup.matches.map(
+      (match) => {
+        const anchor = priorOtherCardsById.get(match.matched_card_id);
+        const shouldMergeTime = Boolean(
+          anchor &&
+          anchor.status === "pending" &&
+          anchor.payload != null &&
+          anchor.payload.time_iso == null &&
+          match.time_iso != null,
+        );
+
+        if (shouldMergeTime && anchor && anchor.payload) {
+          meetingTimeMergeUpdates.push({
+            cardId: anchor.card_id,
+            payload: {
+              ...anchor.payload,
+              time_iso: match.time_iso,
+              time_text: match.time_text,
+              ...(anchor.payload.agenda ? {} : match.agenda ? { agenda: match.agenda } : {}),
+            },
+            sourceQuote: anchor.source_quote,
+          });
+        }
+
+        return {
+          title: match.title,
+          matched_card_id: match.matched_card_id,
+          similarity: match.similarity,
+          merged_time: shouldMergeTime,
+        };
+      },
+    );
 
     const candidateResolutions = input.resolutions.filter(
       (resolution) => resolution.status === "new" || resolution.status === "unsure",
@@ -1242,8 +1293,8 @@ export class LocalBatchContactSession {
 
     return {
       cards,
-      batchOtherDedup: batchOtherDedup.matches,
-      pendingCardUpdates,
+      batchOtherDedup: batchOtherDedupWithMergeFlags,
+      pendingCardUpdates: [...pendingCardUpdates, ...meetingTimeMergeUpdates],
       dependenciesByCardIndex,
       pendingContactUpdates: [...changedTemporaryIds].map((temporaryId) => workingPending.get(temporaryId)!),
       newPendingContacts,

@@ -28,11 +28,13 @@ import {
   buildOrderedReviewGroups,
   findCurrentPendingReviewCard,
   findReviewAutoFollowScreenshotId,
+  normalizeMeetingParticipantsForConfirm,
 } from "@/review-order";
 import { theme } from "@/theme";
 import { useToast } from "@/toast-context";
 import type {
   ActionCardRecord,
+  CreateMeetingPayload,
   RecordInteractionPayload,
   ReviewCardDraft,
 } from "@/types";
@@ -480,8 +482,19 @@ export default function ReviewScreen() {
     try {
       setLoadingCardId(card.id);
       setActionError(null);
+      // A blanked-out "related person" row has no dedicated "remove" affordance; it just
+      // leaves name: "" in the draft. Drop those before confirming instead of sending an
+      // invalid create_meeting payload (an empty participants array is itself valid).
+      const payloadForConfirm = card.type === "create_meeting"
+        ? {
+            ...(draft.payload as CreateMeetingPayload),
+            participants: normalizeMeetingParticipantsForConfirm(
+              (draft.payload as CreateMeetingPayload).participants,
+            ),
+          }
+        : draft.payload;
       const result = await confirmCard(card.id, {
-        payload: draft.payload,
+        payload: payloadForConfirm,
         ...(draft.resolved_contact_id != null
           ? { resolved_contact_id: draft.resolved_contact_id }
           : {}),

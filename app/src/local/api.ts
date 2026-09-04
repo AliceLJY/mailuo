@@ -14,6 +14,7 @@ import {
   resolveParticipants,
   type ResolvableContact,
 } from "../../../shared/core/agent/resolve.ts";
+import { normalizeContactText } from "../../../shared/core/text/compare.ts";
 import type { LocalLlmSecretStore } from "../connection/secrets";
 import type { LocalProcessingSettings } from "../connection/config";
 import type {
@@ -87,6 +88,19 @@ function listResolvableContacts(store: LocalStore): ResolvableContact[] {
     ({ observation_count: _observationCount, last_interaction_at: _lastInteractionAt, ...contact }) =>
       contact,
   );
+}
+
+function buildKnownContactNames(contacts: readonly ResolvableContact[]): Set<string> {
+  const names = new Set<string>();
+
+  for (const contact of contacts) {
+    names.add(normalizeContactText(contact.canonical_name));
+    for (const alias of contact.aliases) {
+      names.add(normalizeContactText(alias));
+    }
+  }
+
+  return names;
 }
 
 function notFound(entity: string, id: number): Error {
@@ -166,6 +180,7 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
       });
 
       try {
+        const contacts = listResolvableContacts(options.store);
         const extraction = applySelfNames(
           await (options.perceiveOcrText ?? perceiveSharedOcrText)({
             ocr: createPastedTextOcrResult(text),
@@ -174,8 +189,8 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
             now: timestamp,
           }),
           processing.selfNames,
+          buildKnownContactNames(contacts),
         );
-        const contacts = listResolvableContacts(options.store);
         const resolutions = await resolveParticipants({
           extraction,
           contacts,
@@ -346,13 +361,13 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
         } else {
           extraction = await perceiveVisually();
         }
-        extraction = applySelfNames(extraction, processing.selfNames);
-        traceExtraction = extraction;
-
         const contacts = [
           ...listResolvableContacts(options.store),
           ...(batchSession?.listPendingContacts() ?? []),
         ];
+        extraction = applySelfNames(extraction, processing.selfNames, buildKnownContactNames(contacts));
+        traceExtraction = extraction;
+
         const resolutions = await resolveParticipants({
           extraction,
           contacts,

@@ -19,6 +19,7 @@ import type {
   ContactDetail,
   ContactListItem,
   ContactRecord,
+  CreateContactPayload,
   InsightRecord,
   MeetingRecord,
   ObservationRecord,
@@ -1006,6 +1007,134 @@ test("a rejected local-batch other item remains a dedup tombstone after API recr
   );
 });
 
+function vehicleOtherExtractionWithTime(
+  sourceQuote: string,
+  title: string,
+  timeIso: string | null,
+): PerceptionResult {
+  return eventExtraction([{
+    kind: "other",
+    title,
+    time_text: "明天 上午",
+    time_iso: timeIso,
+    has_time_signal: true,
+    participant_names: ["小禾", "邬导"],
+    confidence: "high",
+    source_quote: sourceQuote,
+  }]);
+}
+
+test("local batch backfills the retained other card's time_iso from a later duplicate that resolved a date (fix12 goal 3)", async () => {
+  const harness = createBatchEventHarness([
+    vehicleOtherExtractionWithTime(damagedVehicleNotice, "报损备车及安排工作餐", null),
+    vehicleOtherExtractionWithTime(
+      correctedVehicleNotice,
+      "报备邬导车辆信息及安排工作餐",
+      "2026-08-26T00:00:00+08:00",
+    ),
+  ]);
+  const api = harness.createApi();
+  const session = new LocalBatchContactSession();
+  const first = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/vehicle-time-1.png", mimeType: "image/png" },
+    localBatch: { session, index: 0 },
+  });
+  const firstOther = first.cards.find((card) =>
+    card.type === "create_meeting" && card.payload.kind === "other");
+  assert.ok(firstOther);
+
+  const second = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/vehicle-time-2.png", mimeType: "image/png" },
+    localBatch: { session, index: 1 },
+  });
+
+  assert.deepEqual(second.cards, []);
+  const updatedAnchor = harness.store.getStoredActionCardById(firstOther.id);
+  assert.equal(updatedAnchor?.type, "create_meeting");
+  if (updatedAnchor?.type === "create_meeting") {
+    assert.equal(updatedAnchor.payload.time_iso, "2026-08-26T00:00:00+08:00");
+    assert.equal(updatedAnchor.payload.time_text, "明天 上午");
+    // Only the time fields backfill; the retained card's own title must survive untouched.
+    assert.equal(updatedAnchor.payload.title, "报损备车及安排工作餐");
+  }
+  assert.equal(harness.traces[1]?.batch_other_dedup?.[0]?.merged_time, true);
+});
+
+test("local batch does not overwrite a retained other card's time_iso when it is already resolved (fix12 goal 3)", async () => {
+  const harness = createBatchEventHarness([
+    vehicleOtherExtractionWithTime(
+      damagedVehicleNotice,
+      "报损备车及安排工作餐",
+      "2026-08-25T00:00:00+08:00",
+    ),
+    vehicleOtherExtractionWithTime(
+      correctedVehicleNotice,
+      "报备邬导车辆信息及安排工作餐",
+      "2026-08-26T00:00:00+08:00",
+    ),
+  ]);
+  const api = harness.createApi();
+  const session = new LocalBatchContactSession();
+  const first = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/vehicle-time-3.png", mimeType: "image/png" },
+    localBatch: { session, index: 0 },
+  });
+  const firstOther = first.cards.find((card) =>
+    card.type === "create_meeting" && card.payload.kind === "other");
+  assert.ok(firstOther);
+
+  const second = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/vehicle-time-4.png", mimeType: "image/png" },
+    localBatch: { session, index: 1 },
+  });
+
+  assert.deepEqual(second.cards, []);
+  const updatedAnchor = harness.store.getStoredActionCardById(firstOther.id);
+  assert.equal(updatedAnchor?.type, "create_meeting");
+  if (updatedAnchor?.type === "create_meeting") {
+    assert.equal(updatedAnchor.payload.time_iso, "2026-08-25T00:00:00+08:00");
+  }
+  assert.equal(harness.traces[1]?.batch_other_dedup?.[0]?.merged_time, false);
+});
+
+test("local batch does not backfill time onto a rejected other card even when the duplicate resolved a date (fix12 goal 3)", async () => {
+  const harness = createBatchEventHarness([
+    vehicleOtherExtractionWithTime(damagedVehicleNotice, "报损备车及安排工作餐", null),
+    vehicleOtherExtractionWithTime(
+      correctedVehicleNotice,
+      "报备邬导车辆信息及安排工作餐",
+      "2026-08-26T00:00:00+08:00",
+    ),
+  ]);
+  const session = new LocalBatchContactSession();
+  const firstApi = harness.createApi();
+  const first = await firstApi.uploadScreenshot({
+    asset: { uri: "file:///fake/vehicle-time-5.png", mimeType: "image/png" },
+    localBatch: { session, index: 0 },
+  });
+  const firstOther = first.cards.find((card) =>
+    card.type === "create_meeting" && card.payload.kind === "other");
+  assert.ok(firstOther);
+
+  const rebuiltApi = harness.createApi();
+  const rejected = await rebuiltApi.rejectCard(firstOther.id);
+  assert.equal(rejected.card.status, "rejected");
+
+  const second = await rebuiltApi.uploadScreenshot({
+    asset: { uri: "file:///fake/vehicle-time-6.png", mimeType: "image/png" },
+    localBatch: { session, index: 1 },
+  });
+
+  assert.deepEqual(second.cards, []);
+  const updatedAnchor = harness.store.getStoredActionCardById(firstOther.id);
+  assert.equal(updatedAnchor?.status, "rejected");
+  assert.equal(updatedAnchor?.type, "create_meeting");
+  if (updatedAnchor?.type === "create_meeting") {
+    assert.equal(updatedAnchor.payload.time_iso, null);
+  }
+  assert.equal(harness.traces[1]?.batch_other_dedup?.[0]?.merged_time, false);
+});
+
 test("same-screenshot timeless notice routing writes the batch trace and black-box event", async () => {
   const meetingTitle = "海棠剧场舞台项目碰头会";
   const noticeTitle = "通知海棠塔和邬导会议时间变更";
@@ -1600,7 +1729,10 @@ test("local batch only merges aliases approved by update cards", () => {
     }],
     cards: [],
   });
-  assert.deepEqual(filteredPlan.pendingCardUpdates[0]?.payload.aliases, undefined);
+  assert.deepEqual(
+    (filteredPlan.pendingCardUpdates[0]?.payload as CreateContactPayload | undefined)?.aliases,
+    undefined,
+  );
 
   const acceptedPlan = session.prepareScreenshot({
     screenshotId: 3,
@@ -1634,7 +1766,10 @@ test("local batch only merges aliases approved by update cards", () => {
       source_quote: "王总已确认",
     }],
   });
-  assert.deepEqual(acceptedPlan.pendingCardUpdates[0]?.payload.aliases, ["王总"]);
+  assert.deepEqual(
+    (acceptedPlan.pendingCardUpdates[0]?.payload as CreateContactPayload | undefined)?.aliases,
+    ["王总"],
+  );
 });
 
 test("local batch preserves mixed participant candidate order", () => {

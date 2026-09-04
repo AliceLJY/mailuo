@@ -1,9 +1,20 @@
 import type {
   ActionCardRecord,
   ActionCardStatus,
+  CreateMeetingPayload,
 } from "./types";
 
 export type ReviewCardStage = "current" | "upcoming" | "done";
+
+// A blanked-out "related person" field in the confirm form leaves a name: "" entry rather
+// than removing the row (there is no dedicated "remove" affordance); MeetingParticipantSchema
+// requires a non-empty name, so an empty participants array confirms fine but a
+// blank-named one would otherwise be rejected as an invalid create_meeting payload.
+export function normalizeMeetingParticipantsForConfirm(
+  participants: CreateMeetingPayload["participants"],
+): CreateMeetingPayload["participants"] {
+  return participants.filter((participant) => participant.name.trim() !== "");
+}
 
 export type ReviewCardGroup = {
   index: number;

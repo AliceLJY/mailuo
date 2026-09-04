@@ -6,6 +6,7 @@ import {
   findReviewAutoFollowScreenshotId,
   findCurrentPendingReviewCard,
   isReviewCardEditable,
+  normalizeMeetingParticipantsForConfirm,
   orderReviewCardSequence,
   orderReviewCards,
   type ReviewCardGroup,
@@ -205,4 +206,31 @@ test("review auto-follow stops when the batch has no pending cards", () => {
   }));
 
   assert.equal(findReviewAutoFollowScreenshotId(groups, 102), null);
+});
+
+test("normalizeMeetingParticipantsForConfirm drops a blanked-out related person and keeps the rest (fix12 goal 4)", () => {
+  assert.deepEqual(
+    normalizeMeetingParticipantsForConfirm([{ name: "柏贝" }, { name: "" }]),
+    [{ name: "柏贝" }],
+  );
+});
+
+test("normalizeMeetingParticipantsForConfirm returns an empty array when every related person was blanked out (fix12 goal 4)", () => {
+  assert.deepEqual(
+    normalizeMeetingParticipantsForConfirm([{ name: "" }, { name: "  " }]),
+    [],
+  );
+});
+
+test("normalizeMeetingParticipantsForConfirm leaves resolved contact_id and candidates entries untouched (fix12 goal 4)", () => {
+  const resolved = { contact_id: 7, name: "柏贝" };
+  const withCandidates = {
+    name: "沈青岚",
+    candidates: [{ contact_id: 9, name: "沈青岚" }],
+  };
+
+  assert.deepEqual(
+    normalizeMeetingParticipantsForConfirm([resolved, withCandidates]),
+    [resolved, withCandidates],
+  );
 });

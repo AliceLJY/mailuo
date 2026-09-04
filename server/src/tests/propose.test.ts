@@ -306,6 +306,10 @@ test('proposeCards proposes an alias-only confirmed update after an LLM same_as 
     source: 'llm',
   }];
 
+  // fix12 goal 2: "@王磊" at the head of this source_quote is someone else addressing him
+  // by his alias, not his own speech, and there are no quotes attributed to him — so no
+  // record_interaction card should be proposed from it (only the alias-merge update_contact
+  // survives). Before fix12 this fragment was wrongly treated as his own evidence.
   assert.deepEqual(proposeCards(extraction, resolutions, contacts), [{
     type: 'update_contact',
     payload: {
@@ -314,15 +318,6 @@ test('proposeCards proposes an alias-only confirmed update after an LLM same_as 
       changes: {
         aliases: { old: null, new: '王总' },
       },
-    },
-    confidence: 'high',
-    source_quote: '@王磊 王总，方案已经发你',
-  }, {
-    type: 'record_interaction',
-    payload: {
-      contact_id: 1,
-      contact_name: '王磊',
-      summary: '@王磊 王总，方案已经发你',
     },
     confidence: 'high',
     source_quote: '@王磊 王总，方案已经发你',
@@ -1084,6 +1079,246 @@ test('proposeCards leaves ordinary acknowledgement evidence without a name prefi
   }];
 
   assert.deepEqual(proposeCards(extraction, resolutions, contacts), []);
+});
+
+test('proposeCards omits an interaction when quoted evidence is a pure acknowledgement even though the OCR label has no separator before the name (fix12 goal 1)', () => {
+  const extraction = singleParticipantExtraction({
+    name: '小禾',
+    role: 'speaker',
+    source_quote: '集团濱艺事业部小禾',
+  });
+  extraction.quotes = [{
+    speaker_name: '小禾',
+    text: '收到',
+    source_quote: '集团濱艺事业部小禾',
+  }];
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '小禾',
+    normalized_name: '小禾',
+    status: 'same_as',
+    contact_id: 201,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 201,
+    canonical_name: '小禾',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+
+  assert.deepEqual(proposeCards(extraction, resolutions, contacts), []);
+});
+
+test('proposeCards keeps an interaction when quoted evidence has substantive content (fix12 goal 1)', () => {
+  const extraction = singleParticipantExtraction({
+    name: '小禾',
+    role: 'speaker',
+    source_quote: '集团濱艺事业部小禾',
+  });
+  extraction.quotes = [
+    { speaker_name: '小禾', text: '收到', source_quote: '集团濱艺事业部小禾' },
+    { speaker_name: '小禾', text: '明天上午10点开会，大家准时', source_quote: '明天上午10点开会，大家准时' },
+  ];
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '小禾',
+    normalized_name: '小禾',
+    status: 'same_as',
+    contact_id: 202,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 202,
+    canonical_name: '小禾',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+  const interactionCard = proposeCards(extraction, resolutions, contacts)
+    .find((card) => card.type === 'record_interaction');
+
+  assert.ok(interactionCard);
+});
+
+test('proposeCards still omits an interaction from a department-plus-name label when there are no quotes (fix12 goal 1 regression)', () => {
+  const extraction = singleParticipantExtraction({
+    name: '小禾',
+    role: 'speaker',
+    source_quote: '集团市场部 小禾 收到',
+  });
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '小禾',
+    normalized_name: '小禾',
+    status: 'same_as',
+    contact_id: 203,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 203,
+    canonical_name: '小禾',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+
+  assert.deepEqual(proposeCards(extraction, resolutions, contacts), []);
+});
+
+test('proposeCards keeps an interaction from a bare name-prefixed label when there are no quotes (fix12 goal 1)', () => {
+  const extraction = singleParticipantExtraction({
+    name: '小禾',
+    role: 'speaker',
+    source_quote: '小禾 明天上午10点开会',
+  });
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '小禾',
+    normalized_name: '小禾',
+    status: 'same_as',
+    contact_id: 204,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 204,
+    canonical_name: '小禾',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+  const interactionCard = proposeCards(extraction, resolutions, contacts)
+    .find((card) => card.type === 'record_interaction');
+
+  assert.ok(interactionCard);
+});
+
+test('proposeCards drops the interaction candidate when the only evidence is someone else at-mentioning the participant (fix12 goal 2)', () => {
+  const extraction = singleParticipantExtraction({
+    name: '柏贝',
+    role: 'speaker',
+    source_quote: '@柏贝@沈青岚明天28日的会议调整为10:30开。',
+  });
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '柏贝',
+    normalized_name: '柏贝',
+    status: 'same_as',
+    contact_id: 301,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 301,
+    canonical_name: '柏贝',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+
+  assert.deepEqual(proposeCards(extraction, resolutions, contacts), []);
+});
+
+test('proposeCards keeps the interaction and excludes the at-mention line from the summary when the participant has a real quote (fix12 goal 2)', () => {
+  const extraction = singleParticipantExtraction({
+    name: '柏贝',
+    role: 'speaker',
+    source_quote: '@柏贝@沈青岚明天28日的会议调整为10:30开。',
+  });
+  extraction.quotes = [{
+    speaker_name: '柏贝',
+    text: '稍等一下',
+    source_quote: '稍等一下',
+  }];
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '柏贝',
+    normalized_name: '柏贝',
+    status: 'same_as',
+    contact_id: 302,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 302,
+    canonical_name: '柏贝',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+  const interactionCard = proposeCards(extraction, resolutions, contacts)
+    .find((card) => card.type === 'record_interaction');
+
+  assert.ok(interactionCard);
+  assert.equal(interactionCard.payload.summary, '稍等一下');
+  assert.doesNotMatch(interactionCard.payload.summary, /@柏贝/u);
+});
+
+test('proposeCards also excludes an at-mention with a space after the @ symbol (fix12 goal 2)', () => {
+  const extraction = singleParticipantExtraction({
+    name: '柏贝',
+    role: 'speaker',
+    source_quote: '@ 柏贝 明天的会议时间有调整。',
+  });
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '柏贝',
+    normalized_name: '柏贝',
+    status: 'same_as',
+    contact_id: 303,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 303,
+    canonical_name: '柏贝',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+
+  assert.deepEqual(proposeCards(extraction, resolutions, contacts), []);
+});
+
+test('proposeCards leaves a fragment at-mentioning someone else unaffected (fix12 goal 2)', () => {
+  const extraction = singleParticipantExtraction({
+    name: '柏贝',
+    role: 'speaker',
+    source_quote: '柏贝：@王磊 麻烦你确认一下。',
+  });
+  const resolutions: ParticipantResolution[] = [{
+    participant_name: '柏贝',
+    normalized_name: '柏贝',
+    status: 'same_as',
+    contact_id: 304,
+    source: 'exact',
+  }];
+  const contacts: ResolvableContact[] = [{
+    id: 304,
+    canonical_name: '柏贝',
+    aliases: [],
+    company: null,
+    title: null,
+    phone: null,
+    wechat_id: null,
+    notes: null,
+  }];
+  const interactionCard = proposeCards(extraction, resolutions, contacts)
+    .find((card) => card.type === 'record_interaction');
+
+  assert.ok(interactionCard);
 });
 
 test('proposeCards skips generic mentioned contacts in the no-resolution branch but keeps item names', () => {
@@ -3219,6 +3454,37 @@ test('batch other dedup keeps two low-similarity other items with the same norma
 
   assert.deepEqual(result.cards, cards);
   assert.deepEqual(result.matches, []);
+});
+
+test('batch other dedup carries the cut card\'s own time_iso, time_text, and agenda onto the match for later merging (fix12 goal 3)', () => {
+  const cards = proposeCards(eventOnlyExtraction([{
+    kind: 'other',
+    title: '报损备车牌号及安排工作餐',
+    time_text: '明天上午',
+    time_iso: '2026-08-26T00:00:00+08:00',
+    has_time_signal: true,
+    participant_names: [],
+    confidence: 'high',
+    agenda: '联系隋导报备车牌号并安排工作餐',
+    source_quote: '联系隋导报备车牌号并安排工作餐',
+  }]), [], []);
+  const result = dedupeBatchOtherCards(cards, [{
+    card_id: 401,
+    source_quote: '联系隋导报备车牌号并安排工作餐',
+    time_text: '明天上午',
+    status: 'pending',
+  }]);
+
+  assert.deepEqual(result.cards, []);
+  assert.equal(result.matches.length, 1);
+  assert.deepEqual(result.matches[0], {
+    title: '报损备车牌号及安排工作餐',
+    matched_card_id: 401,
+    similarity: 1,
+    time_iso: '2026-08-26T00:00:00+08:00',
+    time_text: '明天上午',
+    agenda: '联系隋导报备车牌号并安排工作餐',
+  });
 });
 
 test('batch other dedup never filters a meeting even when source and time match an other item', () => {
