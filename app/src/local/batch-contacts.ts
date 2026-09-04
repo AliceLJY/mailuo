@@ -1341,17 +1341,12 @@ export class LocalBatchContactSession {
         throw new Error("Pending contact anchor must be a saved create_contact card");
       }
 
-      const temporaryId = this.nextTemporaryId;
-      this.nextTemporaryId -= 1;
-      this.pendingByTemporaryId.set(temporaryId, {
-        temporaryId,
-        contact: { id: temporaryId, ...pending.contact },
+      this.registerPendingContactForAnchor(
         anchorCard,
-        evidence: cloneEvidence(pending.evidence),
-        fieldBatchIndexes: { ...pending.fieldBatchIndexes },
-        realContactId: null,
-      });
-      this.temporaryIdByAnchorCardId.set(anchorCard.id, temporaryId);
+        pending.contact,
+        pending.evidence,
+        pending.fieldBatchIndexes,
+      );
       trackedCardIds.add(anchorCard.id);
     }
 
@@ -1517,10 +1512,62 @@ export class LocalBatchContactSession {
     }
   }
 
+  // Inverse of registerRejectedAnchor, called after a rejected card is reopened back to
+  // pending (card.status is already "pending" by the time this runs). A rejected
+  // create_contact anchor's pending-contact bookkeeping was deleted by
+  // registerRejectedAnchor, so it has to be rebuilt from the card's own payload rather than
+  // merely flipped back; a rejected batch-other card kept its map entry (just tagged
+  // "rejected"), so it only needs its status refreshed.
+  registerReopenedAnchor(card: ActionCardRecord) {
+    if (card.type === "create_contact") {
+      const contact = createResolvableContact(card.payload);
+      this.registerPendingContactForAnchor(
+        card,
+        contact,
+        [{
+          screenshot_id: card.screenshot_id,
+          source_quotes: dedupeStrings([card.source_quote]),
+          batchIndex: 0,
+        }],
+        fieldBatchIndexes(contact, 0),
+      );
+      return;
+    }
+
+    if (card.type === "create_meeting" && card.payload.kind === "other") {
+      const reference = toBatchOtherCardReference(card);
+      if (reference) {
+        this.batchOtherCardsById.set(card.id, reference);
+      }
+    }
+  }
+
   hasTrackedCard(cardId: number): boolean {
     return this.temporaryIdByAnchorCardId.has(cardId) ||
       this.dependenciesByCardId.has(cardId) ||
       this.batchOtherCardsById.has(cardId);
+  }
+
+  // Shared by commitScreenshot's newPendingContacts loop and registerReopenedAnchor: both
+  // need to mint a fresh temporary contact id for a create_contact anchor and wire it into
+  // pendingByTemporaryId / temporaryIdByAnchorCardId the same way.
+  private registerPendingContactForAnchor(
+    anchorCard: ActionCardRecord,
+    contact: Omit<ResolvableContact, "id">,
+    evidence: IndexedContactEvidence[],
+    fieldBatchIndexesInput: Partial<Record<ContactField, number>>,
+  ): void {
+    const temporaryId = this.nextTemporaryId;
+    this.nextTemporaryId -= 1;
+    this.pendingByTemporaryId.set(temporaryId, {
+      temporaryId,
+      contact: { id: temporaryId, ...contact },
+      anchorCard,
+      evidence: cloneEvidence(evidence),
+      fieldBatchIndexes: { ...fieldBatchIndexesInput },
+      realContactId: null,
+    });
+    this.temporaryIdByAnchorCardId.set(anchorCard.id, temporaryId);
   }
 
   private requireRealContactId(temporaryId: number): number {

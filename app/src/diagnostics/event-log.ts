@@ -19,6 +19,7 @@ export const EVENT_KINDS = [
   "confirm_error",
   "review_out_of_order",
   "reject",
+  "card_reopened",
   "clear_all",
   "app_background",
   "app_active",

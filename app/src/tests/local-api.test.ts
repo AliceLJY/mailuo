@@ -364,6 +364,23 @@ class FakeLocalStore implements LocalStore {
     return rejected;
   }
 
+  reopenActionCardIfRejected(cardId: number): StoredActionCardRecord | null {
+    const current = this.cards.get(cardId);
+
+    if (!current || current.status !== "rejected") {
+      return null;
+    }
+
+    const reopened = {
+      ...current,
+      status: "pending" as const,
+      resolved_contact_id: null,
+      resolved_at: null,
+    };
+    this.cards.set(cardId, reopened);
+    return reopened;
+  }
+
   createContact(input: Parameters<LocalStore["createContact"]>[0]): ContactRecord {
     const createdAt = input.createdAt ?? FIXED_NOW.toISOString();
     const contact: ContactRecord = {
@@ -1001,6 +1018,47 @@ test("a rejected local-batch other item remains a dedup tombstone after API recr
 
   assert.deepEqual(second.cards, []);
   assert.equal(session.listBatchOtherCards()[0]?.status, "rejected");
+  assert.equal(
+    harness.traces[1]?.batch_other_dedup?.[0]?.matched_card_id,
+    firstOther.id,
+  );
+});
+
+test("reopening a rejected local-batch other item restores it as an active dedup tombstone (fix15 goal 1 item 5)", async () => {
+  const harness = createBatchEventHarness([
+    vehicleOtherExtraction(damagedVehicleNotice, "报损备车及安排工作餐"),
+    vehicleOtherExtraction(correctedVehicleNotice, "报备邬导车辆信息及安排工作餐"),
+  ]);
+  const session = new LocalBatchContactSession();
+  // Deliberately kept on one api instance throughout (unlike the "API recreation" tombstone
+  // test above): rejectCard/reopenCard only look up a card's batch session via
+  // batchSessionByCardId, which only ever learns about a card from the uploadScreenshot call
+  // that originally saved it. Recreating the api here would make reopenCard's session lookup
+  // miss, and the status check below would then only prove reconcileBatchOtherCards' (already
+  // separately tested) safety net, not registerReopenedAnchor's own create_meeting branch.
+  const api = harness.createApi();
+  const first = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/reopened-vehicle-1.png", mimeType: "image/png" },
+    localBatch: { session, index: 0 },
+  });
+  const firstOther = first.cards.find((card) =>
+    card.type === "create_meeting" && card.payload.kind === "other");
+  assert.ok(firstOther);
+
+  await api.rejectCard(firstOther.id);
+  assert.equal(session.listBatchOtherCards()[0]?.status, "rejected");
+
+  const reopened = await api.reopenCard(firstOther.id);
+  assert.equal(reopened.card.status, "pending");
+  // Checked immediately, with no intervening uploadScreenshot call that could otherwise
+  // reconcile the session's stale view from a fresh store read.
+  assert.equal(session.listBatchOtherCards()[0]?.status, "pending");
+
+  const second = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/reopened-vehicle-2.png", mimeType: "image/png" },
+    localBatch: { session, index: 1 },
+  });
+  assert.deepEqual(second.cards, []);
   assert.equal(
     harness.traces[1]?.batch_other_dedup?.[0]?.matched_card_id,
     firstOther.id,
@@ -2447,6 +2505,181 @@ test("a persisted dependent interaction reports its named pending, rejected, and
       assert.equal(error.anchorCardStatus, "missing");
       return true;
     },
+  );
+});
+
+function createDependentInteractionHarness(
+  name: string,
+  summarySourceQuote: string,
+  extraExtractions: PerceptionResult[] = [],
+) {
+  const extractions: PerceptionResult[] = [
+    {
+      participants: [{
+        name,
+        is_self: false,
+        confidence: "high",
+        source_quote: `${name}：你好`,
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+    {
+      participants: [{
+        name,
+        is_self: false,
+        interaction_summary: summarySourceQuote,
+        confidence: "high",
+        source_quote: `${name}：${summarySourceQuote}`,
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+    ...extraExtractions,
+  ];
+  const qwen = new FakeStructuredOutputProvider(() => {
+    const extraction = extractions.shift();
+    if (!extraction) {
+      throw new Error("unexpected perception call");
+    }
+    return extraction;
+  });
+  const text = new FakeStructuredOutputProvider(() => ({ insights: [] }));
+  const store = new FakeLocalStore();
+  const createApi = () => createLocalApi({
+    store,
+    keys: fakeKeys,
+    loadImage: async (asset) => ({
+      image: { base64: "ZmFrZS1pbWFnZQ==", mimeType: "image/png" },
+      imagePath: asset.uri,
+    }),
+    providers: {
+      async createQwenProvider() {
+        return qwen;
+      },
+      async createTextProvider() {
+        return text;
+      },
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+
+  return { store, createApi };
+}
+
+test("reopening a rejected create_contact anchor flips its dependent interaction's message back to pending, and both confirm (fix15 goal 1 item 3, batch session alive)", async () => {
+  const { createApi } = createDependentInteractionHarness("魏雷", "合作细节我们再聊", [
+    {
+      participants: [{
+        name: "魏雷",
+        is_self: false,
+        confidence: "high",
+        source_quote: "魏雷：你好",
+      }],
+      events: [],
+      facts: [],
+      quotes: [],
+    },
+  ]);
+  const api = createApi();
+  const session = new LocalBatchContactSession();
+  const anchorUpload = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/zhao-anchor-1.png", mimeType: "image/png" },
+    localBatch: { session, index: 0 },
+  });
+  const anchor = anchorUpload.cards.find((card) => card.type === "create_contact");
+  assert.ok(anchor);
+  const upload = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/zhao-anchor-2.png", mimeType: "image/png" },
+    localBatch: { session, index: 1 },
+  });
+  const interaction = upload.cards.find((card) => card.type === "record_interaction");
+  assert.ok(interaction);
+
+  await api.rejectCard(anchor.id);
+  const detailAfterReject = await api.getScreenshotDetail(upload.screenshot_id);
+  assert.deepEqual(
+    detailAfterReject.cards.find((card) => card.id === interaction.id)
+      ?.disambiguation?.local_batch_anchor,
+    { anchor_card_id: anchor.id, name: "魏雷", status: "rejected" },
+  );
+
+  const reopened = await api.reopenCard(anchor.id);
+  assert.equal(reopened.card.status, "pending");
+  assert.equal(reopened.card.resolved_at, null);
+
+  // Same-session repeat mention: registerReopenedAnchor must have rebuilt the pending
+  // contact bookkeeping (pendingByTemporaryId/temporaryIdByAnchorCardId), or "魏雷" would
+  // look like a brand-new participant again and this upload would propose a duplicate
+  // create_contact card instead of resolving back to the reopened anchor.
+  const repeatUpload = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/zhao-anchor-3.png", mimeType: "image/png" },
+    localBatch: { session, index: 2 },
+  });
+  assert.deepEqual(repeatUpload.cards, []);
+  assert.deepEqual(
+    session.listPendingContacts().map((contact) => contact.canonical_name),
+    ["魏雷"],
+  );
+
+  const detailAfterReopen = await api.getScreenshotDetail(upload.screenshot_id);
+  assert.deepEqual(
+    detailAfterReopen.cards.find((card) => card.id === interaction.id)
+      ?.disambiguation?.local_batch_anchor,
+    { anchor_card_id: anchor.id, name: "魏雷", status: "pending" },
+  );
+  await assert.rejects(api.confirmCard(interaction.id), (error: unknown) => {
+    assert.ok(error instanceof LocalBatchContactMappingError);
+    assert.equal(error.message, "请先确认『新建联系人 魏雷』那张卡");
+    return true;
+  });
+
+  const confirmedAnchor = await api.confirmCard(anchor.id);
+  assert.equal(confirmedAnchor.card.status, "confirmed");
+  const confirmedInteraction = await api.confirmCard(interaction.id);
+  assert.equal(confirmedInteraction.card.status, "confirmed");
+  assert.equal(
+    confirmedInteraction.card.resolved_contact_id,
+    confirmedAnchor.card.resolved_contact_id,
+  );
+});
+
+test("reopening an anchor with no live batch session only rewrites the store, and its dependent interaction still confirms via the persisted anchor_card_id (fix15 goal 1 item 4)", async () => {
+  const { createApi } = createDependentInteractionHarness("钱多", "付款方式已经确认");
+  const api = createApi();
+  const session = new LocalBatchContactSession();
+  const anchorUpload = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/qian-anchor-1.png", mimeType: "image/png" },
+    localBatch: { session, index: 0 },
+  });
+  const anchor = anchorUpload.cards.find((card) => card.type === "create_contact");
+  assert.ok(anchor);
+  const upload = await api.uploadScreenshot({
+    asset: { uri: "file:///fake/qian-anchor-2.png", mimeType: "image/png" },
+    localBatch: { session, index: 1 },
+  });
+  const interaction = upload.cards.find((card) => card.type === "record_interaction");
+  assert.ok(interaction);
+
+  await api.rejectCard(anchor.id);
+
+  // Simulate an app restart: a freshly created api has an empty batchSessionByCardId, so
+  // reopenCard's session lookup misses and it can only rewrite the persisted card status.
+  const rebuiltApi = createApi();
+  const reopened = await rebuiltApi.reopenCard(anchor.id);
+  assert.equal(reopened.card.status, "pending");
+
+  const confirmedAnchor = await rebuiltApi.confirmCard(anchor.id);
+  assert.equal(confirmedAnchor.card.status, "confirmed");
+  assert.ok(confirmedAnchor.card.resolved_contact_id);
+
+  const confirmedInteraction = await rebuiltApi.confirmCard(interaction.id);
+  assert.equal(confirmedInteraction.card.status, "confirmed");
+  assert.equal(
+    confirmedInteraction.card.resolved_contact_id,
+    confirmedAnchor.card.resolved_contact_id,
   );
 });
 

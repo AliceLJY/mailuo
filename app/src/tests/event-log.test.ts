@@ -235,6 +235,10 @@ test("review out-of-order events survive the whitelist with ordinary detail limi
   assert.equal(readEventLog(memory.storage).at(-1)?.detail, entry?.detail);
 });
 
+test("the event kind whitelist includes card_reopened (fix15 goal 1 item 6)", () => {
+  assert.ok(EVENT_KINDS.includes("card_reopened"));
+});
+
 test("exit-reason events retain the complete 80-code-point description", () => {
   const memory = createMemoryStorage();
   const description = "字".repeat(80);

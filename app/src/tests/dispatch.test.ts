@@ -35,6 +35,9 @@ function fakeApi(label: string, calls: string[]): RoutedApi {
     async rejectCard() {
       throw new Error("unused");
     },
+    async reopenCard() {
+      throw new Error("unused");
+    },
     async countPendingLocalBatchInteractionCards() {
       calls.push(`${label}:dependent-count`);
       return 0;

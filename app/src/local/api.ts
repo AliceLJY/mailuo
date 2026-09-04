@@ -1,4 +1,8 @@
-import { executeCard, rejectCard as rejectActionCard } from "../../../shared/core/agent/execute.ts";
+import {
+  executeCard,
+  rejectCard as rejectActionCard,
+  reopenCard as reopenActionCard,
+} from "../../../shared/core/agent/execute.ts";
 import { generateInsights } from "../../../shared/core/agent/insight.ts";
 import {
   applySelfNames,
@@ -561,6 +565,14 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
       const batchSession = batchSessionByCardId.get(cardId);
       const card = rejectActionCard({ db: options.store, cardId });
       batchSession?.registerRejectedAnchor(cardId);
+      return {
+        card,
+      };
+    },
+    async reopenCard(cardId) {
+      const batchSession = batchSessionByCardId.get(cardId);
+      const card = reopenActionCard({ db: options.store, cardId });
+      batchSession?.registerReopenedAnchor(card);
       return {
         card,
       };

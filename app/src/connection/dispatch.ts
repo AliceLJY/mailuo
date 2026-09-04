@@ -1,4 +1,5 @@
 import type {
+  ActionCardRecord,
   ConfirmCardRequest,
   ConfirmCardResponse,
   ContactDetail,
@@ -39,6 +40,7 @@ export interface RoutedApi {
   uploadText: UploadTextFn;
   confirmCard(cardId: number, body?: ConfirmCardRequest): Promise<ConfirmCardResponse>;
   rejectCard(cardId: number): Promise<RejectCardResponse>;
+  reopenCard(cardId: number): Promise<{ card: ActionCardRecord }>;
   countPendingLocalBatchInteractionCards(anchorCardId: number): Promise<number>;
   readDiagnosticsSnapshot(): Promise<DiagnosticsSnapshot>;
   clearAllData(): Promise<void>;
@@ -134,6 +136,9 @@ export function createApiDispatcher(options: ApiDispatcherOptions): RoutedApi {
     },
     async rejectCard(cardId) {
       return (await selectedApi()).rejectCard(cardId);
+    },
+    async reopenCard(cardId) {
+      return (await selectedApi()).reopenCard(cardId);
     },
     async countPendingLocalBatchInteractionCards(anchorCardId) {
       return (await selectedApi()).countPendingLocalBatchInteractionCards(anchorCardId);

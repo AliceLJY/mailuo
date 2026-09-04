@@ -212,6 +212,9 @@ function createServerApi(serverUrl?: string): RoutedApi {
     uploadText: (input) => uploadTextFromServer(input, serverUrl),
     confirmCard: (cardId, body = {}) => confirmCardFromServer(cardId, body, serverUrl),
     rejectCard: (cardId) => rejectCardFromServer(cardId, serverUrl),
+    async reopenCard() {
+      throw new ApiError("服务器模式暂不支持恢复已跳过的卡片。", 501, "NOT_SUPPORTED");
+    },
     async countPendingLocalBatchInteractionCards() {
       return 0;
     },
@@ -252,6 +255,7 @@ export const uploadScreenshot = apiDispatcher.uploadScreenshot;
 export const uploadText = apiDispatcher.uploadText;
 export const confirmCard = apiDispatcher.confirmCard;
 export const rejectCard = apiDispatcher.rejectCard;
+export const reopenCard = apiDispatcher.reopenCard;
 export const countPendingLocalBatchInteractionCards =
   apiDispatcher.countPendingLocalBatchInteractionCards;
 export const readDiagnosticsSnapshot = apiDispatcher.readDiagnosticsSnapshot;

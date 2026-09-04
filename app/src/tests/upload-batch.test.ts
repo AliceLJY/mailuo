@@ -63,6 +63,9 @@ function apiWithUpload(
     async rejectCard() {
       throw new Error("unused");
     },
+    async reopenCard() {
+      throw new Error("unused");
+    },
     async countPendingLocalBatchInteractionCards() {
       return 0;
     },
