@@ -3406,9 +3406,13 @@ test("text upload proposes a linked meeting update for a high-confidence progres
       {
         name: "荀导",
         is_self: false,
-        interaction_summary: "荀导已到",
+        // fix14 goal 2 turns a bare "already there" report (the original "荀导已到") into an
+        // acknowledgement that never reaches an interaction card. This fixture uses a
+        // substantive remark instead so the test keeps exercising what it is actually about:
+        // a linked meeting-progress update coexisting with an interaction card.
+        interaction_summary: "材料已经交付",
         confidence: "high" as const,
-        source_quote: "荀导已到",
+        source_quote: "材料已经交付",
       },
     ],
     events: [],
@@ -3447,13 +3451,13 @@ test("text upload proposes a linked meeting update for a high-confidence progres
     now: () => new Date(FIXED_NOW),
   });
 
-  const upload = await api.uploadText({ text: "荀导已到" });
+  const upload = await api.uploadText({ text: "材料已经交付" });
   const meetingUpdate = upload.cards.find((card) => card.type === "create_meeting");
   const interaction = upload.cards.find((card) => card.type === "record_interaction");
 
   assert.ok(meetingUpdate);
   assert.equal(meetingUpdate.payload.duplicate_of_meeting_id, meeting.id);
-  assert.equal(meetingUpdate.payload.agenda_append, "荀导已到");
+  assert.equal(meetingUpdate.payload.agenda_append, "材料已经交付");
   assert.ok(interaction);
   assert.equal(interaction.payload.contact_id, contact.id);
   assert.equal(store.listMeetingCalls, 1);
@@ -3475,9 +3479,14 @@ test("medium meeting progress keeps the interaction card and confirmation persis
       {
         name: "荀导",
         is_self: false,
-        interaction_summary: "荀导已到",
+        // fix14 goal 2 turns a bare "already there" report (the original "荀导已到") into an
+        // acknowledgement that never reaches an interaction card. This fixture uses a
+        // substantive remark instead so the test keeps exercising what it is actually about:
+        // an interaction card surviving a medium-confidence progress match and persisting
+        // through confirmation.
+        interaction_summary: "材料已经交付",
         confidence: "high" as const,
-        source_quote: "荀导已到",
+        source_quote: "材料已经交付",
       },
     ],
     events: [],
@@ -3516,7 +3525,7 @@ test("medium meeting progress keeps the interaction card and confirmation persis
     now: () => new Date(FIXED_NOW),
   });
 
-  const upload = await api.uploadText({ text: "荀导已到" });
+  const upload = await api.uploadText({ text: "材料已经交付" });
   const interaction = upload.cards.find((card) => card.type === "record_interaction");
 
   assert.equal(upload.cards.some((card) => card.type === "create_meeting"), false);
@@ -3531,7 +3540,7 @@ test("medium meeting progress keeps the interaction card and confirmation persis
   assert.ok(detail.observations.some((observation) =>
     observation.kind === "interaction" &&
     observation.screenshot_id === upload.screenshot_id &&
-    observation.content.includes("荀导已到")));
+    observation.content.includes("材料已经交付")));
   assert.equal(text.calls, 1);
   assert.equal(store.listMeetingCalls, 1);
 });

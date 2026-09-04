@@ -79,6 +79,11 @@ export type NoticeRouting = {
   title: string;
   decision: 'stored' | 'batch' | 'dropped' | 'timeless_dropped';
   target_title?: string;
+  // fix14 goal 1: set only when `decision === 'dropped'` because the notice carried no
+  // change-signal wording at all (see `meetingChangeSignals` below) -- a notice dropped for
+  // lack of a matching stored/batch target keeps decision `dropped` with no reason, same as
+  // before.
+  reason?: 'no_change_signal';
 };
 
 export type ProposedCardsWithRouting = {
@@ -115,8 +120,11 @@ const pureAcknowledgementTexts = new Set([
 ]);
 // fix13 goal 1: waiting/stalling replies ("give me a second", "on my way") are not the
 // participant's own substantive speech any more than "OK"/"noted" is — they carry no
-// content that should surface as an interaction. Deliberately excludes "到了/已到" wording
-// (e.g. "荀导已到"), which fix11 protects as a status report, not a wait request.
+// content that should surface as an interaction. This originally excluded "到了/已到"
+// wording (e.g. "荀导已到"), which fix11 protected as a status report rather than a wait
+// request; fix14 goal 2 reverses that call after reviewing real screenshots -- a bare
+// arrival/status report is judged the same kind of noise once the meeting/event card
+// already carries the observation. See `isArrivalReport` near `isPureAcknowledgement`.
 const waitingReplyTexts = new Set([
   '稍等',
   '稍等一下',
@@ -1034,6 +1042,14 @@ const chineseYearDigitMap: Record<string, string> = {
 const meetingNoticePrefixes = ['通知', '告知', '转发', '提醒'] as const;
 const meetingNoticeSignals = ['会议时间', '时间调整', '时间变更', '改到', '改为'] as const;
 const timelessCommunicationSignals = ['确认', '对接', '沟通', '联系'] as const;
+// fix14 goal 1: being addressed to someone ("通知海棠塔和隋导这个时间") is not the same as
+// carrying an actual change -- only a notice whose title or source_quote names a concrete
+// change (time/place moved, cancelled, etc.) should ever be appended to or merged into a
+// meeting's agenda. `has_time_signal` cannot make this distinction: both the real "please
+// relay this time" instruction and a genuine time-change announcement report it as false.
+const meetingChangeSignals = [
+  '调整', '变更', '改到', '改为', '改成', '改期', '取消', '延期', '推迟', '提前', '换到', '地点',
+] as const;
 
 function isMeetingNoticeEvent(event: ProposeEvent): boolean {
   if (event.kind !== 'other') {
@@ -1046,6 +1062,12 @@ function isMeetingNoticeEvent(event: ProposeEvent): boolean {
     meetingNoticePrefixes.some((prefix) => value.startsWith(prefix)) ||
     meetingNoticeSignals.some((signal) => value.includes(signal))
   ));
+}
+
+function hasMeetingChangeSignal(event: ProposeEvent): boolean {
+  const values = [event.title, event.source_quote].map(normalizeMeetingTitle);
+
+  return values.some((value) => meetingChangeSignals.some((signal) => value.includes(signal)));
 }
 
 function isTimelessCommunicationEvent(event: ProposeEvent): boolean {
@@ -1261,6 +1283,16 @@ function routeSpecialOtherEvents(
 
     discardedIndexes.add(index);
     discardedSourceQuotes.add(event.source_quote.trim());
+
+    if (!hasMeetingChangeSignal(event)) {
+      noticeRouting.push({
+        title: event.title,
+        decision: 'dropped',
+        reason: 'no_change_signal',
+      });
+      continue;
+    }
+
     const storedTarget = findMeetingNoticeCandidate(
       event,
       storedMeetingCandidates,
@@ -1398,6 +1430,22 @@ function codePointLength(value: string): number {
   return Array.from(value).length;
 }
 
+// fix14 goal 2: a bare arrival/status report ("隋导己到", including the common OCR digit
+// swaps of "已" -> "己"/"巳") carries no content beyond confirming presence, the same as a
+// plain "OK"/"noted". Bounded to a short fragment (<=10 code points once noise-stripped) so
+// this never swallows a longer sentence that only mentions arrival in passing (e.g. "隋导
+// 已到，材料他带来了" stays real content). "到账"/"到期" are deliberately excluded via the
+// negative lookahead -- they are unrelated compound verbs (payment received / expiry), not
+// "arrived"; per Alice's 2026-09-04 review this is not meant to grow into a broader "到"
+// vocabulary.
+const arrivalReportPattern = /(?:已|己|巳)到(?!账|期)|到了|到啦|到位|到齐|人齐/u;
+
+function isArrivalReport(value: string): boolean {
+  const normalized = value.replace(acknowledgementNoisePattern, '');
+
+  return codePointLength(normalized) <= 10 && arrivalReportPattern.test(normalized);
+}
+
 function isPureAcknowledgement(value: string): boolean {
   const normalized = value.replace(acknowledgementNoisePattern, '');
   const normalizedLength = codePointLength(normalized);
@@ -1410,9 +1458,13 @@ function isPureAcknowledgement(value: string): boolean {
     return true;
   }
 
+  if (isArrivalReport(value)) {
+    return true;
+  }
+
   // fix13 goal 1: absorb OCR noise (e.g. "我一会ル出来") via a tight edit-distance match
-  // against both word lists. Gated to code-point length >= 4 so short real content (e.g.
-  // "荀导已到") is never close enough to collide.
+  // against both word lists. Gated to code-point length >= 4 so short real content is never
+  // close enough to collide.
   return normalizedLength >= 4 && acknowledgementAndWaitingTexts.some(
     (text) => editDistance(normalized, text) <= 1,
   );
@@ -1426,6 +1478,14 @@ function isPureAcknowledgement(value: string): boolean {
 // common substring, with a similarity fallback for near-identical OCR renderings of the
 // same sentence. Same shape as isDiscardedSourceQuote above, kept separate since that one
 // also matches on a stripped evidence label, which does not apply here.
+// fix14 goal 5: an event's own source_quote sometimes already elides a run of text with a
+// literal ellipsis (OCR or the model compresses e.g. "原定于8月24日(周一)上午9:30...会议开场
+// 时间调整为当日上午9:00" this way). Treating that whole string as one unit for containment
+// or edit-similarity rarely matches a same-content fragment, since the fragment need not
+// reproduce the exact ellipsis glyph or join point. `\.{3,}` covers the half-width "..." and
+// `…` the full-width single-character ellipsis.
+const ellipsisSplitPattern = /\.{3,}|…/u;
+
 function isEvidenceCoveredByEvents(
   fragment: string,
   events: ReadonlyArray<{ source_quote: string }>,
@@ -1441,6 +1501,20 @@ function isEvidenceCoveredByEvents(
 
     if (normalizedSourceQuote.length === 0) {
       return false;
+    }
+
+    if (ellipsisSplitPattern.test(event.source_quote)) {
+      // Split on the elision (before normalizing away the ellipsis punctuation itself) and
+      // require every meaningful segment (>=4 code points once normalized) to appear in the
+      // fragment; a segment shorter than that is too generic ("的"/"了" style connective
+      // debris) to mean anything on its own.
+      const segments = event.source_quote
+        .split(ellipsisSplitPattern)
+        .map((segment) => normalizeContactText(segment))
+        .filter((segment) => codePointLength(segment) >= 4);
+
+      return segments.length > 0 &&
+        segments.every((segment) => normalizedFragment.includes(segment));
     }
 
     const shorterLength = Math.min(
@@ -1468,6 +1542,27 @@ function stripParticipantPrefix(
   const identifiers = [participant.name, ...(participant.aliases ?? [])].filter(
     (identifier): identifier is string => Boolean(identifier),
   );
+
+  // fix14 goal 4: an OCR "department + display name" tag row (e.g. "集团市场部 小禾") is
+  // not the participant's own remark -- it is a nickname/label line the model mistakenly
+  // promoted to a quote. When an identifier occupies the *entire trailing segment* of the
+  // fragment (nothing follows it) and is itself preceded by a genuine separator, the whole
+  // fragment is just that label and there is nothing left once it is removed -- unlike the
+  // prefix case below, where "keep everything after" is the right outcome because real
+  // content follows the label.
+  const isBareTrailingLabel = identifiers.some((identifier) => {
+    const lastIndex = fragment.lastIndexOf(identifier);
+
+    if (lastIndex <= 0 || lastIndex + identifier.length !== fragment.length) {
+      return false;
+    }
+
+    return participantPrefixSeparatorPattern.test(fragment.charAt(lastIndex - 1));
+  });
+
+  if (isBareTrailingLabel) {
+    return '';
+  }
 
   let cutEnd = -1;
 
@@ -1759,6 +1854,26 @@ function cjkLetterRatio(value: string): number {
   ));
 
   return cjkLetters.length / letters.length;
+}
+
+// fix14 goal 6: logistics chatter around an already-surfaced meeting/appointment ("running
+// late", "which room", "let's wrap up") is not an independent interaction -- it is the same
+// event the meeting/appointment card already carries, just phrased as small talk instead of
+// a clean notice. Bounded to short fragments (<=60 code points) so a longer message that
+// merely mentions one of these words in passing (e.g. recapping a whole conversation) is
+// never mistaken for pure logistics.
+const meetingLogisticsSignals = [
+  '参会', '参加', '晚到', '晚点', '迟到', '过来', '过去', '到会', '开会',
+  '会议', '会议室', '办公室', '谈完', '等我', '准时', '散会', '结束后', '先谈',
+] as const;
+
+function hasMeetingOrAppointmentEvent(events: ReadonlyArray<{ kind: MeetingKind }>): boolean {
+  return events.some((event) => event.kind === 'meeting' || event.kind === 'appointment');
+}
+
+function isMeetingLogisticsFragment(fragment: string): boolean {
+  return codePointLength(fragment) <= 60 &&
+    meetingLogisticsSignals.some((signal) => fragment.includes(signal));
 }
 
 function buildInteractionPayload(
@@ -2066,9 +2181,12 @@ function proposeCardsInternal(
 
     // Quotes are the model's citation of what the participant actually said, so they take
     // priority over the raw OCR source-quote label line whenever any exist; the label line
-    // (participantSourceQuotes) is only a fallback, and still needs the fix11 prefix strip.
+    // (participantSourceQuotes) is only a fallback. Both branches need the fix11 prefix
+    // strip; fix14 goal 4 extends it to the quotes branch too, since a `quotes` entry can
+    // itself be an OCR nickname/department-tag row mistaken for a remark.
     const sourceEvidence = candidate.relatedQuotes.length > 0
-      ? dedupeStrings(candidate.relatedQuotes.map((quote) => quote.text))
+      ? dedupeStrings(candidate.relatedQuotes.map((quote) =>
+          stripParticipantPrefix(quote.text, { name: candidate.participantName })))
       : dedupeStrings(
           candidate.participantSourceQuotes.map((fragment) =>
             stripParticipantPrefix(fragment, { name: candidate.participantName })),
@@ -2078,31 +2196,49 @@ function proposeCardsInternal(
       continue;
     }
 
-    // fix13 goal 1: drop pure-acknowledgement/waiting fragments first, then (goal 2) check
-    // whether every fragment left is really just the source_quote of some event already
-    // surfaced on this screenshot — if so this participant has no independent interaction
-    // signal, the event card already carries it. Any single fragment surviving both filters
-    // is enough to keep the candidate, with the full original evidence set unchanged below.
+    // fix13 goal 1: drop pure-acknowledgement/waiting fragments first (fix14 goal 2 folds
+    // bare arrival/status reports like "隋导己到" into the same bucket), then (goal 2 of
+    // fix13) check whether every fragment left is really just the source_quote of some event
+    // already surfaced on this screenshot (fix14 goal 5 additionally splits an elided event
+    // source_quote on its "..."/"…" so each half can match independently) — if so this
+    // participant has no independent interaction signal, the event/meeting card already
+    // carries it.
     const nonAcknowledgementEvidence = sourceEvidence.filter(
       (fragment) => !isPureAcknowledgement(fragment),
     );
+    const survivingEvidence = nonAcknowledgementEvidence.filter(
+      (fragment) => !isEvidenceCoveredByEvents(fragment, extraction.events),
+    );
 
+    // fix14 goal 6: once every fragment still standing is nothing but meeting/appointment
+    // logistics chatter (running late, which room, wrapping up), it adds no interaction
+    // signal beyond the meeting/appointment card already on this screenshot. Only engages
+    // when this screenshot actually has a meeting/appointment event -- otherwise the same
+    // wording (e.g. "我要晚一点参会" with no meeting on screen) is the only record of it and
+    // stays a real interaction.
     if (
-      nonAcknowledgementEvidence.length === 0 ||
-      nonAcknowledgementEvidence.every(
-        (fragment) => isEvidenceCoveredByEvents(fragment, extraction.events),
+      survivingEvidence.length === 0 ||
+      (
+        hasMeetingOrAppointmentEvent(extraction.events) &&
+        survivingEvidence.every(isMeetingLogisticsFragment)
       )
     ) {
       continue;
     }
 
+    // fix14 goal 3: strip pure-acknowledgement fragments (again folding in goal 2's arrival
+    // reports) from what actually reaches the payload, so a real remark's summary/citation is
+    // never diluted by "收到" riding along beside it. The model's own `interaction_summary`
+    // still takes priority inside buildInteractionPayload when present.
     const interaction = buildInteractionPayload(
       candidate.participantName,
       candidate.contact,
-      dedupeStrings(candidate.participantSourceQuotes),
+      dedupeStrings(candidate.participantSourceQuotes.filter(
+        (fragment) => !isPureAcknowledgement(fragment),
+      )),
       dedupeStrings(candidate.interactionSummaries),
       candidate.relatedFacts,
-      candidate.relatedQuotes,
+      candidate.relatedQuotes.filter((quote) => !isPureAcknowledgement(quote.text)),
     );
 
     cards.push({
