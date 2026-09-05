@@ -165,7 +165,7 @@ bash scripts/build-web.sh
 - **通过「粘贴文本」入口提交的内容，会原样发送给所配置的文本模型**（DeepSeek，或未配置 DeepSeek 时的 DashScope Qwen 文本模型）用于抽取，不经过视觉模型。粘贴什么就发送什么，请自行判断内容敏感度。
 - DeepSeek 只接收文字整理、人物归并或有依据洞察所需的文本，例如 `source_quote`、`facts`、`quotes`、`events`，以及最小档案或 observation 上下文。未配置 DeepSeek 时，上述文本任务由 DashScope 的 Qwen 文本模型完成，数据不发往 DeepSeek。
 - **说白了**：数据存储在本地，但推理时，OCR 文字或粘贴文本会到达所配置的文本模型；只有视觉回退、强制云端视觉或 server 模式的视觉感知会把原始截图发往阿里云。模型服务商的数据政策仍然适用。
-- **全本地路线（架构已支持，改环境变量即可）**：两个 provider 均走 OpenAI 兼容接口，可直接指向本地推理服务（如 Ollama / vLLM）——设置 `DASHSCOPE_BASE_URL` / `DEEPSEEK_BASE_URL` 指向本机端点、`QWEN_MODEL` / `DEEPSEEK_MODEL` 换成本地模型（视觉可用开源 Qwen-VL 系列），即可实现数据全程不出本机。注意本地小模型的抽取与洞察质量会相应下降，请自行评估。
+- **全本地路线（仅 server 模式）**：server 模式下两个 provider 均走 OpenAI 兼容接口，可通过 `DASHSCOPE_BASE_URL` / `DEEPSEEK_BASE_URL` 指向本地推理服务（如 Ollama / vLLM）。**Android BYOK 装包目前固定连接 DashScope / DeepSeek 官方端点，暂不支持改地址**（见 `app/src/local/providers.ts`）。
 - 当前部署还是单用户，没有应用层鉴权。
 - 现在的实际访问边界取决于部署者选择的局域网或 Tailscale 暴露范围。
 - 面向多用户的鉴权和隔离仍是后续工作。
