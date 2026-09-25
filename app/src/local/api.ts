@@ -66,6 +66,7 @@ const OCR_LOW_CONFIDENCE_FALLBACK_NOTICE =
   "本地 OCR 识别结果置信度过低，已用云端模型重新处理。";
 const OCR_SPEAKER_NOTICE = "部分消息的发言人未能确定，已交由模型从文本判断。";
 const OCR_EXPORT_FAILURE_NOTICE = "截图已处理，但 OCR 原始结果没有导出，请再试一次。";
+const INSIGHT_FAILURE_MESSAGE = "洞察生成失败，请检查模型配置后重试。";
 
 export type OcrPerceiver = (uri: string) => Promise<OcrPerceptionResult>;
 
@@ -563,7 +564,29 @@ export function createLocalApi(options: CreateLocalApiOptions): RoutedApi {
           observation_ids: execution.observationIds,
           ...(execution.meetingId != null ? { meeting_id: execution.meetingId } : {}),
           insight_status: "failed",
-          insight_error: "洞察生成失败，请检查模型配置后重试。",
+          insight_error: INSIGHT_FAILURE_MESSAGE,
+          insights: [],
+        };
+      }
+    },
+    async retryInsights({ contactIds }) {
+      try {
+        const provider = await providerFactory.createTextProvider(options.keys);
+        const insightResult = await generateInsights({
+          db: options.store,
+          contactIds,
+          provider,
+          now: now(),
+        });
+
+        return {
+          insight_status: "ok",
+          insights: insightResult.generated,
+        };
+      } catch {
+        return {
+          insight_status: "failed",
+          insight_error: INSIGHT_FAILURE_MESSAGE,
           insights: [],
         };
       }

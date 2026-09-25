@@ -60,6 +60,9 @@ function apiWithUpload(
     async confirmCard() {
       throw new Error("unused");
     },
+    async retryInsights() {
+      throw new Error("unused");
+    },
     async rejectCard() {
       throw new Error("unused");
     },

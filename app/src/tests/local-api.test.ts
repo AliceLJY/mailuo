@@ -2993,6 +2993,128 @@ test("local orchestration reaches terminal contacts, observations, meetings, and
   assert.equal(deepSeek.calls, 3);
 });
 
+function createInsightRetryStore() {
+  const store = new FakeLocalStore();
+  const first = store.createContact({ canonicalName: "示例联系人甲" });
+  const second = store.createContact({ canonicalName: "示例联系人乙" });
+  const firstObservation = store.insertObservationIfAbsent({
+    contactId: first.id,
+    kind: "fact",
+    content: "示例联系人甲负责示例项目的排期",
+    sourceQuote: "排期我来跟",
+  });
+  const secondObservation = store.insertObservationIfAbsent({
+    contactId: second.id,
+    kind: "fact",
+    content: "示例联系人乙在跟进示例项目",
+    sourceQuote: "这个项目我也在看",
+  });
+  store.insertInsights([
+    {
+      contact_id: first.id,
+      kind: "conversation_hook",
+      content: "上次生成的旧洞察",
+      based_on: [firstObservation.id],
+      generated_at: "2026-08-26T00:00:00.000Z",
+    },
+  ]);
+
+  return { store, first, second, firstObservation, secondObservation };
+}
+
+function createInsightRetryApi(
+  store: FakeLocalStore,
+  createTextProvider: () => Promise<StructuredOutputProvider>,
+) {
+  return createLocalApi({
+    store,
+    keys: fakeKeys,
+    async loadImage() {
+      throw new Error("insight retry must not load an image");
+    },
+    providers: {
+      async createQwenProvider() {
+        throw new Error("insight retry must not create a Qwen-VL provider");
+      },
+      createTextProvider,
+    },
+    now: () => new Date(FIXED_NOW),
+  });
+}
+
+test("local retryInsights regenerates and stores insights for the given contacts", async () => {
+  const { store, first, second, firstObservation, secondObservation } = createInsightRetryStore();
+  const outputs = [
+    { insights: [{ kind: "suggested_action", content: "下周和示例联系人甲确认排期", based_on: [firstObservation.id] }] },
+    { insights: [{ kind: "relationship_read", content: "示例联系人乙在跟进同一个项目", based_on: [secondObservation.id] }] },
+  ];
+  const provider = new FakeStructuredOutputProvider(() => outputs.shift());
+  const api = createInsightRetryApi(store, async () => provider);
+
+  const result = await api.retryInsights({ contactIds: [first.id, second.id, first.id] });
+
+  assert.equal(result.insight_status, "ok");
+  assert.equal(result.insight_error, undefined);
+  assert.deepEqual(
+    result.insights.map((insight) => [insight.contact_id, insight.content, insight.generated_at]),
+    [
+      [first.id, "下周和示例联系人甲确认排期", FIXED_NOW.toISOString()],
+      [second.id, "示例联系人乙在跟进同一个项目", FIXED_NOW.toISOString()],
+    ],
+  );
+  // One model call per distinct contact, and the new set replaces the old insight.
+  assert.equal(provider.calls, 2);
+  assert.deepEqual(store.getContactDetail(first.id)?.insights, [result.insights[0]]);
+  assert.deepEqual(store.getContactDetail(second.id)?.insights, [result.insights[1]]);
+});
+
+test("local retryInsights reports a failed model call the way confirmCard does and stores nothing", async () => {
+  const { store, first, second, firstObservation } = createInsightRetryStore();
+  const insightsBefore = [
+    ...(store.getContactDetail(first.id)?.insights ?? []),
+    ...(store.getContactDetail(second.id)?.insights ?? []),
+  ];
+  let modelCalls = 0;
+  const failingSecondCall = new FakeStructuredOutputProvider(() => {
+    modelCalls += 1;
+    if (modelCalls === 2) {
+      throw new Error("model request failed");
+    }
+
+    return {
+      insights: [
+        { kind: "suggested_action", content: "不应写入的新洞察", based_on: [firstObservation.id] },
+      ],
+    };
+  });
+  const failed = {
+    insight_status: "failed",
+    insight_error: "洞察生成失败，请检查模型配置后重试。",
+    insights: [],
+  };
+
+  assert.deepEqual(
+    await createInsightRetryApi(store, async () => failingSecondCall)
+      .retryInsights({ contactIds: [first.id, second.id] }),
+    failed,
+  );
+  // A missing model key fails before any model call.
+  assert.deepEqual(
+    await createInsightRetryApi(store, async () => {
+      throw new Error("missing DeepSeek key");
+    }).retryInsights({ contactIds: [first.id] }),
+    failed,
+  );
+  assert.equal(modelCalls, 2);
+  assert.deepEqual(
+    [
+      ...(store.getContactDetail(first.id)?.insights ?? []),
+      ...(store.getContactDetail(second.id)?.insights ?? []),
+    ],
+    insightsBefore,
+  );
+});
+
 const emptyExtraction = {
   participants: [],
   events: [],

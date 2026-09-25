@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyConfirmInsightsToFlow,
+  applyInsightRetryResultToFlow,
   applyUploadResponseSources,
   applyUploadResponseToItems,
   createFlowItemFromScreenshotDetail,
@@ -16,6 +18,8 @@ import {
 } from "../flow-context";
 import type {
   ActionCardRecord,
+  ConfirmCardResponse,
+  InsightRecord,
   ScreenshotDetail,
   ScreenshotUploadResponse,
 } from "../types";
@@ -164,4 +168,117 @@ test("a merged contact stays in its anchor screenshot group and lists every evid
   assert.equal(mergedAnchor.payload.title, "产品总监");
   assert.deepEqual(nextItems.slice(1).flatMap((item) => item.cards), []);
   assert.deepEqual(sourceLabels[anchor.id], ["first.png", "third.png"]);
+});
+
+function insight(id: number, contactId: number, content: string): InsightRecord {
+  return {
+    id,
+    contact_id: contactId,
+    kind: "suggested_action",
+    content,
+    based_on: [id * 10],
+    generated_at: "2026-09-01T08:00:00+08:00",
+  };
+}
+
+test("a successful insight retry merges new insights by id and clears the failure notice", () => {
+  const state = {
+    insights: [insight(1, 5, "已有的洞察"), insight(2, 6, "旧版本的洞察")],
+    hasInsightFailure: true,
+  };
+
+  const next = applyInsightRetryResultToFlow(
+    state,
+    {
+      insight_status: "ok",
+      insights: [insight(2, 6, "重新生成后的洞察"), insight(3, 7, "新的洞察")],
+    },
+    true,
+  );
+
+  assert.equal(next.hasInsightFailure, false);
+  assert.deepEqual(
+    next.insights.map((item) => [item.id, item.content]),
+    [
+      [2, "重新生成后的洞察"],
+      [3, "新的洞察"],
+      [1, "已有的洞察"],
+    ],
+  );
+});
+
+test("a failed insight retry keeps the failure notice and the insights already shown", () => {
+  const state = {
+    insights: [insight(1, 5, "已有的洞察")],
+    hasInsightFailure: true,
+  };
+
+  const next = applyInsightRetryResultToFlow(
+    state,
+    { insight_status: "failed", insight_error: "模型暂时不可用", insights: [] },
+    true,
+  );
+
+  assert.equal(next, state);
+  assert.equal(next.hasInsightFailure, true);
+});
+
+test("an insight retry result that returns after the flow moved on is dropped", () => {
+  // A new batch or another screenshot replaced the flow while the retry was running.
+  const newFlow = { insights: [], hasInsightFailure: false };
+
+  assert.equal(
+    applyInsightRetryResultToFlow(
+      newFlow,
+      { insight_status: "ok", insights: [insight(3, 7, "上一个流程的洞察")] },
+      false,
+    ),
+    newFlow,
+  );
+  assert.equal(
+    applyInsightRetryResultToFlow(
+      { insights: [], hasInsightFailure: true },
+      { insight_status: "ok", insights: [insight(3, 7, "上一个流程的洞察")] },
+      false,
+    ).hasInsightFailure,
+    true,
+  );
+});
+
+test("confirm results merge insights the same way and keep a failure flagged until a retry", () => {
+  const confirmResult = (
+    status: ConfirmCardResponse["insight_status"],
+    insights: InsightRecord[],
+  ): ConfirmCardResponse => ({
+    executed: true,
+    card: createContactCard(40, 301),
+    affected_contact_ids: [5],
+    observation_ids: [50],
+    insight_status: status,
+    insights,
+  });
+
+  const failed = applyConfirmInsightsToFlow(
+    { insights: [insight(1, 5, "已有的洞察")], hasInsightFailure: false },
+    confirmResult("failed", []),
+  );
+  const laterOk = applyConfirmInsightsToFlow(
+    failed,
+    confirmResult("ok", [insight(1, 5, "更新后的洞察"), insight(2, 6, "新的洞察")]),
+  );
+
+  assert.equal(failed.hasInsightFailure, true);
+  assert.equal(laterOk.hasInsightFailure, true);
+  assert.deepEqual(
+    laterOk.insights.map((item) => [item.id, item.content]),
+    [
+      [1, "更新后的洞察"],
+      [2, "新的洞察"],
+    ],
+  );
+  assert.equal(
+    applyInsightRetryResultToFlow(laterOk, { insight_status: "ok", insights: [] }, true)
+      .hasInsightFailure,
+    false,
+  );
 });
