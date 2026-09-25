@@ -9,6 +9,7 @@ import {
   findFlowItemForScreenshot,
   getCardSourceLabels,
   hasPendingFlowCards,
+  hasUnopenedPendingDuplicate,
   type FlowBatchItem,
 } from "../flow-context";
 import type {
@@ -57,7 +58,7 @@ function pendingItem(index: number): FlowBatchItem {
     cards: [],
     detail: null,
     processingNotice: null,
-    duplicateOfScreenshotId: null,
+    duplicateOf: null,
     error: null,
   };
 }
@@ -128,7 +129,8 @@ test("a duplicate response adds no pending cards to the batch and keeps its noti
     screenshotId: null,
     cards: [],
     processingNotice: duplicateNotice,
-    duplicateOfScreenshotId: 55,
+    // The earlier screenshot still has one card waiting (551); it is counted, not added.
+    duplicateOf: { screenshotId: 55, pendingCardCount: 1 },
   });
   assert.deepEqual(cards, []);
   assert.equal(hasPendingFlowCards(cards), false);
@@ -174,10 +176,10 @@ test("in a larger batch only the re-uploaded image is marked and the others are 
   const { items, cards, sources } = applyResponses([first, duplicate, third]);
 
   assert.deepEqual(
-    items.map((item) => [item.screenshotId, item.duplicateOfScreenshotId, item.processingNotice]),
+    items.map((item) => [item.screenshotId, item.duplicateOf, item.processingNotice]),
     [
       [101, null, null],
-      [null, 55, duplicateNotice],
+      [null, { screenshotId: 55, pendingCardCount: 1 }, duplicateNotice],
       [103, null, null],
     ],
   );
@@ -195,6 +197,10 @@ test("in a larger batch only the re-uploaded image is marked and the others are 
   assert.equal(getUploadReviewScreenshotId(result), 101);
   assert.deepEqual(getDuplicateUploadItems(result).map((item) => item.index), [1]);
 
+  // Its earlier screenshot still has a pending card, so the batch must not leave for insights
+  // before that image is opened.
+  assert.equal(hasUnopenedPendingDuplicate(items), true);
+
   // Tapping the marked image loads the earlier screenshot into that item alone.
   const opened = applyScreenshotDetailToItems(items, earlierDetail(duplicate));
   assert.ok(opened);
@@ -202,6 +208,17 @@ test("in a larger batch only the re-uploaded image is marked and the others are 
   assert.equal(opened[2], items[2]);
   assert.equal(opened[1].screenshotId, 55);
   assert.deepEqual(opened[1].cards.map((card) => card.id), [550, 551]);
+  assert.equal(hasUnopenedPendingDuplicate(opened), false);
+
+  // Nothing left pending on the earlier upload: nothing to wait for.
+  const finishedEarlier: ScreenshotUploadResponse = {
+    ...duplicate,
+    cards: duplicate.cards.map((card) => ({ ...card, status: "confirmed" as const })),
+  };
+  assert.equal(
+    hasUnopenedPendingDuplicate(applyResponses([first, finishedEarlier, third]).items),
+    false,
+  );
 
   // A batch where every image was uploaded before opens nothing by itself; each stays marked.
   const allDuplicates = batchResult([duplicateResponse(55), duplicateResponse(56)]);
@@ -222,6 +239,8 @@ test("an image picked twice in one batch keeps the second copy pointing at the f
 
   assert.deepEqual(cards.map((card) => card.id), [1010]);
   assert.equal(findFlowItemForScreenshot(items, 101), items[0]);
+  // The first copy's own pending card is what the batch waits on, not a stale count here.
+  assert.equal(hasUnopenedPendingDuplicate(items), false);
 
   const refreshed = applyScreenshotDetailToItems(items, earlierDetail(first));
   assert.ok(refreshed);

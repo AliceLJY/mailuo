@@ -1007,6 +1007,55 @@ test('POST /api/screenshots does not remember a failed upload, so the same bytes
   }
 });
 
+test('POST /api/screenshots keeps a successful upload when recording its hash fails, and a restart backfills it', async () => {
+  const { db, screenshotDir, cleanup } = withTempAppDirectory();
+  let perceiveCalls = 0;
+  const options: Parameters<typeof buildApp>[0] = {
+    db,
+    async perceiveScreenshot() {
+      perceiveCalls += 1;
+      return emptyExtraction;
+    },
+    proposeCards() {
+      return [];
+    },
+  };
+  const originalRecordScreenshotSha256 = db.recordScreenshotSha256.bind(db);
+  db.recordScreenshotSha256 = () => {
+    throw new Error('database is locked');
+  };
+  const app = buildApp(options);
+  let restartedApp: ReturnType<typeof buildApp> | undefined;
+
+  try {
+    const uploaded = await postScreenshot(app, screenshotDir, syntheticImage);
+    const uploadedId = uploaded.json().data.screenshot_id;
+
+    assert.equal(uploaded.statusCode, 201);
+    assert.deepEqual(uploaded.json(), {
+      ok: true,
+      data: { screenshot_id: uploadedId, cards: [] },
+    });
+    assert.equal(countScreenshotRows(db), 1);
+    assert.equal(readdirSync(screenshotDir).length, 1);
+    assert.deepEqual(listScreenshotHashRows(db), []);
+
+    // The next process's backfill records the hash the failed write missed.
+    db.recordScreenshotSha256 = originalRecordScreenshotSha256;
+    restartedApp = buildApp(options);
+    const repeated = await postScreenshot(restartedApp, screenshotDir, syntheticImage);
+
+    assert.equal(repeated.statusCode, 200);
+    assert.equal(repeated.json().data.duplicate_of_screenshot_id, uploadedId);
+    assert.equal(perceiveCalls, 1);
+  } finally {
+    db.recordScreenshotSha256 = originalRecordScreenshotSha256;
+    await app.close();
+    await restartedApp?.close();
+    cleanup();
+  }
+});
+
 test('POST /api/screenshots recognizes an upload matching a screenshot saved before hashes existed', async () => {
   const { db, screenshotDir, cleanup } = withTempAppDirectory();
   mkdirSync(screenshotDir, { recursive: true });

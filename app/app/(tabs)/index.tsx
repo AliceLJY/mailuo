@@ -414,10 +414,15 @@ export default function UploadScreen() {
       return;
     }
 
-    const reviewScreenshotId = getUploadReviewScreenshotId(result);
+    // An earlier upload opened from this batch can still hold pending cards to return to.
+    const reviewScreenshotId =
+      getUploadReviewScreenshotId(result) ??
+      cards.find((card) => card.status === "pending")?.screenshot_id ??
+      null;
     if (reviewScreenshotId == null) {
+      const duplicateCount = getDuplicateUploadItems(result).length;
       showToast(
-        getDuplicateUploadItems(result).length > 0
+        duplicateCount > 0 && duplicateCount === result.items.length
           ? "这批截图之前都上传过，没有重复处理；可以在“批次处理结果”里查看上次的结果。"
           : "这批截图还没有可确认的内容。",
         "info",
@@ -826,7 +831,7 @@ function buildFlowBatchResult(
 
   const resultItems: UploadBatchItem[] = items.map((item) => {
     // An unopened duplicate has no screenshotId of its own yet.
-    const screenshotId = item.screenshotId ?? item.duplicateOfScreenshotId;
+    const screenshotId = item.screenshotId ?? item.duplicateOf?.screenshotId;
     if (item.status === "success" && screenshotId != null) {
       return {
         asset: item.asset!,
@@ -837,8 +842,8 @@ function buildFlowBatchResult(
           screenshot_id: screenshotId,
           cards: item.cards,
           ...(item.processingNotice ? { processing_notice: item.processingNotice } : {}),
-          ...(item.duplicateOfScreenshotId != null
-            ? { duplicate_of_screenshot_id: item.duplicateOfScreenshotId }
+          ...(item.duplicateOf
+            ? { duplicate_of_screenshot_id: item.duplicateOf.screenshotId }
             : {}),
         },
       };

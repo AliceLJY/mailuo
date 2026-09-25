@@ -21,6 +21,14 @@ import type {
 
 export type FlowBatchItemStatus = "pending" | "processing" | "success" | "failure";
 
+// Server mode re-upload of an earlier image. The item brings no new cards and keeps screenshotId
+// null until the user opens that earlier screenshot; pendingCardCount is how many of its cards
+// still waited for confirmation when the server answered.
+export type FlowDuplicateOf = {
+  screenshotId: number;
+  pendingCardCount: number;
+};
+
 export type FlowBatchItem = {
   index: number;
   asset: UploadImageAsset | null;
@@ -30,9 +38,7 @@ export type FlowBatchItem = {
   cards: ActionCardRecord[];
   detail: ScreenshotDetail | null;
   processingNotice: string | null;
-  // Server mode re-upload of an earlier image: the item brings no new cards and keeps
-  // screenshotId null until the user opens that earlier screenshot.
-  duplicateOfScreenshotId: number | null;
+  duplicateOf: FlowDuplicateOf | null;
   error: string | null;
 };
 
@@ -210,7 +216,12 @@ export function applyUploadResponseToItems(
           cards: sortCards(newCardsFromUpload(payload)),
           detail: null,
           processingNotice: payload.processing_notice ?? null,
-          duplicateOfScreenshotId: payload.duplicate_of_screenshot_id ?? null,
+          duplicateOf: isDuplicate
+            ? {
+                screenshotId: payload.screenshot_id,
+                pendingCardCount: payload.cards.filter((card) => card.status === "pending").length,
+              }
+            : null,
           error: null,
         }
       : item,
@@ -332,7 +343,7 @@ export function createPendingPastedTextItem(): FlowBatchItem {
     cards: [],
     detail: null,
     processingNotice: null,
-    duplicateOfScreenshotId: null,
+    duplicateOf: null,
     error: null,
   };
 }
@@ -361,7 +372,7 @@ export function createFlowItemFromScreenshotDetail(
     cards: sortCards(detail.cards),
     detail,
     processingNotice: null,
-    duplicateOfScreenshotId: null,
+    duplicateOf: null,
     error: null,
   };
 }
@@ -371,9 +382,22 @@ export function findFlowItemForScreenshot(items: FlowBatchItem[], screenshotId: 
   return (
     items.find((item) => item.screenshotId === screenshotId) ??
     items.find(
-      (item) => item.screenshotId == null && item.duplicateOfScreenshotId === screenshotId,
+      (item) => item.screenshotId == null && item.duplicateOf?.screenshotId === screenshotId,
     ) ??
     null
+  );
+}
+
+// Cards left pending on an earlier upload that has not been opened in this batch yet. Leaving
+// for insights would skip them, e.g. an upload whose response was lost and was then retried.
+// An earlier screenshot already shown by another item of this batch is covered by that item.
+export function hasUnopenedPendingDuplicate(items: ReadonlyArray<FlowBatchItem>) {
+  return items.some(
+    (item) =>
+      item.screenshotId == null &&
+      item.duplicateOf != null &&
+      item.duplicateOf.pendingCardCount > 0 &&
+      !items.some((other) => other.screenshotId === item.duplicateOf?.screenshotId),
   );
 }
 
@@ -490,7 +514,7 @@ export function FlowProvider({ children }: PropsWithChildren) {
           cards: [],
           detail: null,
           processingNotice: null,
-          duplicateOfScreenshotId: null,
+          duplicateOf: null,
           error: null,
         })),
       });
@@ -550,7 +574,7 @@ export function FlowProvider({ children }: PropsWithChildren) {
                 cards: [],
                 detail: null,
                 processingNotice: null,
-                duplicateOfScreenshotId: null,
+                duplicateOf: null,
                 error: reason,
               }
             : item,
@@ -593,7 +617,7 @@ export function FlowProvider({ children }: PropsWithChildren) {
                     cards: [],
                     detail: null,
                     processingNotice: null,
-                    duplicateOfScreenshotId: null,
+                    duplicateOf: null,
                     error: resultItem.reason,
                   }
                 : item,
@@ -629,7 +653,7 @@ export function FlowProvider({ children }: PropsWithChildren) {
         cards: sortCards(payload.cards),
         detail: null,
         processingNotice: payload.processing_notice ?? null,
-        duplicateOfScreenshotId: null,
+        duplicateOf: null,
         error: null,
       };
       const items = applyUploadResponseToItems([item], 0, payload);

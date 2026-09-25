@@ -495,7 +495,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   // Runs once per process, before the first duplicate check; a failed run is retried next upload.
   function backfillScreenshotHashesOnce() {
-    screenshotHashBackfill ??= backfillScreenshotHashes(db).then(
+    screenshotHashBackfill ??= backfillScreenshotHashes(db, getScreenshotDirectory()).then(
       (count) => {
         if (count > 0) {
           app.log.info({ count }, "Backfilled hashes for earlier screenshot uploads");
@@ -572,7 +572,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         cards: await Promise.resolve(proposeCards(extraction, resolutions, contacts)),
       });
       // Recorded only once processing has fully succeeded, so a failed upload never blocks a retry.
-      db.recordScreenshotSha256(screenshot.id, imageSha256);
+      // Best effort: the upload already succeeded, and the next process's backfill records it.
+      try {
+        db.recordScreenshotSha256(screenshot.id, imageSha256);
+      } catch (hashError) {
+        request.log.error(
+          { err: hashError, screenshotId: screenshot.id },
+          "Failed to record screenshot hash",
+        );
+      }
 
       const payload: ApiSuccess<ScreenshotUploadResponse> = {
         ok: true,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -32,14 +32,19 @@ test('hashFileSha256 hashes the stored file bytes', async () => {
 
 test('backfillScreenshotHashes covers finished uploads whose file still exists and runs only once per row', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'mailuo-backfill-'));
+  const screenshotDir = join(directory, 'screenshots');
+  mkdirSync(screenshotDir);
   const db = new MailuoDb(join(directory, 'mailuo.sqlite'));
 
   try {
     const bytes = Buffer.from('mailuo synthetic screenshot bytes');
-    const earlierPath = join(directory, 'earlier.png');
-    const laterPath = join(directory, 'later.png');
+    const earlierPath = join(screenshotDir, 'earlier.png');
+    const laterPath = join(screenshotDir, 'later.png');
+    // A CLI run can point a row at any file; such a file may be rewritten later, so it is skipped.
+    const outsidePath = join(directory, 'outside.png');
     writeFileSync(earlierPath, bytes);
     writeFileSync(laterPath, bytes);
+    writeFileSync(outsidePath, bytes);
 
     function saveFinishedUpload(imagePath: string) {
       const screenshot = db.createScreenshot({ imagePath });
@@ -54,11 +59,12 @@ test('backfillScreenshotHashes covers finished uploads whose file still exists a
     // Before duplicate detection existed, the same file could be uploaded and processed twice.
     const earlier = saveFinishedUpload(earlierPath);
     const later = saveFinishedUpload(laterPath);
-    saveFinishedUpload(join(directory, 'deleted.png'));
+    saveFinishedUpload(join(screenshotDir, 'deleted.png'));
     saveFinishedUpload(createPastedTextSourceUri('示例粘贴文本'));
+    saveFinishedUpload(outsidePath);
     db.createScreenshot({ imagePath: earlierPath });
 
-    assert.equal(await backfillScreenshotHashes(db), 2);
+    assert.equal(await backfillScreenshotHashes(db, screenshotDir), 2);
     assert.deepEqual(
       db
         .getNativeDatabase()
@@ -70,7 +76,7 @@ test('backfillScreenshotHashes covers finished uploads whose file still exists a
       ],
     );
     assert.equal(db.findScreenshotIdBySha256(sha256Hex(bytes)), later.id);
-    assert.equal(await backfillScreenshotHashes(db), 0);
+    assert.equal(await backfillScreenshotHashes(db, screenshotDir), 0);
   } finally {
     db.close();
     rmSync(directory, { recursive: true, force: true });
