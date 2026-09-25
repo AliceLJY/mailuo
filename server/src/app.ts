@@ -69,10 +69,12 @@ import {
   UnsupportedImageTypeError,
 } from "./llm/qwen.ts";
 import { createTextProvider as defaultCreateTextProvider } from "./llm/text.ts";
+import { backfillScreenshotHashes, hashFileSha256 } from "./screenshot-hash.ts";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const defaultScreenshotDir = resolve(currentDir, "..", "data", "screenshots");
 const defaultWebRoot = resolve(currentDir, "..", "public");
+const DUPLICATE_SCREENSHOT_NOTICE = "这张截图之前上传过，没有重复处理，已为你显示上次的结果。";
 
 type PerceiveScreenshotInput = {
   imagePath: string;
@@ -489,6 +491,24 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const webRoot = resolveWebRoot(options.webRoot);
   const canServeSpaIndex = webRoot ? existsSync(resolve(webRoot, "index.html")) : false;
   const app = Fastify({ logger: true });
+  let screenshotHashBackfill: Promise<void> | undefined;
+
+  // Runs once per process, before the first duplicate check; a failed run is retried next upload.
+  function backfillScreenshotHashesOnce() {
+    screenshotHashBackfill ??= backfillScreenshotHashes(db, getScreenshotDirectory()).then(
+      (count) => {
+        if (count > 0) {
+          app.log.info({ count }, "Backfilled hashes for earlier screenshot uploads");
+        }
+      },
+      (error) => {
+        screenshotHashBackfill = undefined;
+        app.log.error({ err: error }, "Failed to backfill screenshot hashes");
+      },
+    );
+
+    return screenshotHashBackfill;
+  }
 
   // web 版（react-native-web）页面在 Metro 端口、API 在本端口，跨端口需 CORS；
   // 单用户工具部署在 tailnet 内，origin 放开可接受
@@ -520,6 +540,26 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       const upload = await readMultipartPayload(request);
       imagePath = upload.imagePath;
 
+      const imageSha256 = await hashFileSha256(imagePath);
+      await backfillScreenshotHashesOnce();
+      // simplified: no lock; concurrent identical uploads may both be processed
+      const duplicateOfScreenshotId = db.findScreenshotIdBySha256(imageSha256);
+
+      if (duplicateOfScreenshotId !== null) {
+        const payload: ApiSuccess<ScreenshotUploadResponse> = {
+          ok: true,
+          data: {
+            screenshot_id: duplicateOfScreenshotId,
+            cards: db.listStoredActionCardsByScreenshotId(duplicateOfScreenshotId),
+            duplicate_of_screenshot_id: duplicateOfScreenshotId,
+            processing_notice: DUPLICATE_SCREENSHOT_NOTICE,
+          },
+        };
+
+        await removeStoredFile(imagePath);
+        return reply.status(200).send(payload);
+      }
+
       const { imageMimeType, note } = upload;
       const screenshot = db.createScreenshot({ imagePath, userNote: note ?? null });
       screenshotId = screenshot.id;
@@ -531,6 +571,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         rawExtraction: extraction,
         cards: await Promise.resolve(proposeCards(extraction, resolutions, contacts)),
       });
+      // Recorded only once processing has fully succeeded, so a failed upload never blocks a retry.
+      // Best effort: the upload already succeeded, and the next process's backfill records it.
+      try {
+        db.recordScreenshotSha256(screenshot.id, imageSha256);
+      } catch (hashError) {
+        request.log.error(
+          { err: hashError, screenshotId: screenshot.id },
+          "Failed to record screenshot hash",
+        );
+      }
 
       const payload: ApiSuccess<ScreenshotUploadResponse> = {
         ok: true,

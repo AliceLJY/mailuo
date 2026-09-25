@@ -278,6 +278,9 @@ export type ScreenshotUploadResponse = {
   cards: ActionCardRecord[];
   processing_notice?: string;
   local_batch_contact_merges?: LocalBatchContactMerge[];
+  // Server mode only: this image was uploaded before, so screenshot_id and cards are that
+  // earlier upload's current state rather than new cards to confirm.
+  duplicate_of_screenshot_id?: number;
 };
 
 export type LocalBatchContactEvidence = {

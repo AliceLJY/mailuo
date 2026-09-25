@@ -24,6 +24,18 @@ import { initializeMailuoSchema } from "../../shared/core/migrations.ts";
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const defaultDatabasePath = resolve(currentDir, "..", "data", "mailuo.sqlite");
 
+// Server-only: lets POST /api/screenshots recognize a byte-identical re-upload. It stays out of
+// the shared schema and PRAGMA user_version, so the phone's local database never has it.
+const SERVER_SCREENSHOT_HASHES_SQL = `
+CREATE TABLE IF NOT EXISTS server_screenshot_hashes (
+  screenshot_id INTEGER PRIMARY KEY REFERENCES screenshots(id) ON DELETE CASCADE,
+  sha256 TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS server_screenshot_hashes_sha256
+  ON server_screenshot_hashes (sha256);
+`;
+
 export const CONTACT_EDITABLE_FIELDS = [
   "company",
   "title",
@@ -321,6 +333,7 @@ export class MailuoDb implements InsightGenerationDb, ExecuteStore {
     this.db.prepare = ((sql: string) => this.normalizeStatement(originalPrepare(sql))) as DatabaseSync["prepare"];
     this.db.exec("PRAGMA foreign_keys = ON");
     this.initializeSchema();
+    this.db.exec(SERVER_SCREENSHOT_HASHES_SQL);
   }
 
   private initializeSchema() {
@@ -661,6 +674,52 @@ export class MailuoDb implements InsightGenerationDb, ExecuteStore {
       ...screenshot,
       cards: this.listStoredActionCardsByScreenshotId(screenshotId),
     };
+  }
+
+  findScreenshotIdBySha256(sha256: string): number | null {
+    const row = this.db
+      .prepare(
+        `SELECT h.screenshot_id
+         FROM server_screenshot_hashes h
+         JOIN screenshots s ON s.id = h.screenshot_id
+         WHERE h.sha256 = ?
+         ORDER BY h.screenshot_id DESC
+         LIMIT 1`,
+      )
+      .get(sha256) as { screenshot_id: number | bigint } | undefined;
+
+    return row
+      ? this.toSafeInteger(row.screenshot_id, "server_screenshot_hashes.screenshot_id")
+      : null;
+  }
+
+  recordScreenshotSha256(screenshotId: number, sha256: string) {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO server_screenshot_hashes (screenshot_id, sha256)
+         VALUES (?, ?)`,
+      )
+      .run(screenshotId, sha256);
+  }
+
+  listScreenshotsMissingSha256(): Array<Pick<ScreenshotRecord, "id" | "image_path">> {
+    // raw_extraction is written by the final analysis save, so uploads that never finished
+    // processing are left out.
+    const rows = this.db
+      .prepare(
+        `SELECT s.id, s.image_path
+         FROM screenshots s
+         LEFT JOIN server_screenshot_hashes h ON h.screenshot_id = s.id
+         WHERE h.screenshot_id IS NULL
+           AND s.raw_extraction IS NOT NULL
+         ORDER BY s.id ASC`,
+      )
+      .all() as Array<{ id: number | bigint; image_path: string }>;
+
+    return rows.map((row) => ({
+      id: this.toSafeInteger(row.id, "screenshots.id"),
+      image_path: row.image_path,
+    }));
   }
 
   getStoredActionCardById(cardId: number): StoredActionCardRecord | null {
@@ -1586,6 +1645,11 @@ export class MailuoDb implements InsightGenerationDb, ExecuteStore {
       `DELETE FROM action_cards
        WHERE screenshot_id = ?`,
     );
+    // The foreign key also cascades; deleting explicitly keeps this path correct without it.
+    const deleteHash = this.db.prepare(
+      `DELETE FROM server_screenshot_hashes
+       WHERE screenshot_id = ?`,
+    );
     const deleteScreenshot = this.db.prepare(
       `DELETE FROM screenshots
        WHERE id = ?`,
@@ -1596,6 +1660,7 @@ export class MailuoDb implements InsightGenerationDb, ExecuteStore {
       // pending cards first and then the screenshot row synchronously. M2 should retain failed
       // uploads in an explicit processing/retry state instead of removing them.
       const deletedCardCount = this.toSafeInteger(deleteCards.run(screenshotId).changes, "changes");
+      deleteHash.run(screenshotId);
       const deletedScreenshotCount = this.toSafeInteger(
         deleteScreenshot.run(screenshotId).changes,
         "changes",

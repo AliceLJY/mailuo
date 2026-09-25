@@ -6,6 +6,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 
+import {
+  initializeMailuoSchema,
+  MAILUO_SCHEMA_VERSION,
+} from "../../../shared/core/migrations.ts";
 import { MAILUO_SCHEMA_SQL } from "../../../shared/core/schema.ts";
 import type { ActionCard } from "../../../shared/types.ts";
 import { MailuoDb } from "../db.ts";
@@ -174,6 +178,7 @@ test("initializes the full M1 schema", () => {
         "meetings",
         "observations",
         "screenshots",
+        "server_screenshot_hashes",
       ],
     );
   } finally {
@@ -338,6 +343,107 @@ test("deleteScreenshotUploadArtifacts removes only the targeted upload records",
     assert.deepEqual(db.listActionCardsByScreenshotId(failedScreenshot.id), []);
     assert.equal(db.getScreenshotById(preservedScreenshot.id)?.image_path, "/tmp/preserved-shot.png");
     assert.equal(db.listActionCardsByScreenshotId(preservedScreenshot.id).length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test("the server-only screenshot hash table can be created twice without touching PRAGMA user_version", () => {
+  const directory = mkdtempSync(join(tmpdir(), "mailuo-hash-table-"));
+  const databasePath = join(directory, "mailuo.sqlite");
+  const sharedOnlyDb = new DatabaseSync(databasePath);
+  let sharedOnlyOpen = true;
+  let db: MailuoDb | undefined;
+
+  try {
+    const readSharedOnlyVersion = () =>
+      (sharedOnlyDb.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+    initializeMailuoSchema({
+      exec: (sql) => sharedOnlyDb.exec(sql),
+      getUserVersion: readSharedOnlyVersion,
+    });
+    const versionBefore = readSharedOnlyVersion();
+    const sharedOnlyHashTable = sharedOnlyDb
+      .prepare("SELECT name FROM sqlite_master WHERE name = 'server_screenshot_hashes'")
+      .get();
+    sharedOnlyDb.close();
+    sharedOnlyOpen = false;
+
+    assert.equal(versionBefore, MAILUO_SCHEMA_VERSION);
+    assert.equal(sharedOnlyHashTable, undefined);
+
+    db = new MailuoDb(databasePath);
+    assert.equal(readUserVersion(db), versionBefore);
+    db.close();
+    db = new MailuoDb(databasePath);
+
+    assert.equal(readUserVersion(db), versionBefore);
+    assert.deepEqual(
+      db
+        .getNativeDatabase()
+        .prepare(
+          `SELECT type, name
+           FROM sqlite_master
+           WHERE tbl_name = 'server_screenshot_hashes'
+           ORDER BY type, name`,
+        )
+        .all(),
+      [
+        { type: "index", name: "server_screenshot_hashes_sha256" },
+        { type: "table", name: "server_screenshot_hashes" },
+      ],
+    );
+  } finally {
+    if (sharedOnlyOpen) {
+      sharedOnlyDb.close();
+    }
+    db?.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("screenshot hashes are removed together with their screenshot rows", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const failedUpload = db.createScreenshot({ imagePath: "/tmp/failed-upload.png" });
+    const keptUpload = db.createScreenshot({ imagePath: "/tmp/kept-upload.png" });
+    const deletedElsewhere = db.createScreenshot({ imagePath: "/tmp/deleted-elsewhere.png" });
+    db.recordScreenshotSha256(failedUpload.id, "a".repeat(64));
+    db.recordScreenshotSha256(keptUpload.id, "b".repeat(64));
+    db.recordScreenshotSha256(deletedElsewhere.id, "c".repeat(64));
+
+    // The upload cleanup shared by the API route and the CLI e2e flow.
+    db.deleteScreenshotUploadArtifacts(failedUpload.id);
+    // Any other delete of a screenshot row is covered by the foreign key cascade.
+    db.getNativeDatabase().prepare("DELETE FROM screenshots WHERE id = ?").run(deletedElsewhere.id);
+
+    assert.deepEqual(
+      db
+        .getNativeDatabase()
+        .prepare("SELECT screenshot_id, sha256 FROM server_screenshot_hashes ORDER BY screenshot_id")
+        .all(),
+      [{ screenshot_id: keptUpload.id, sha256: "b".repeat(64) }],
+    );
+    assert.equal(db.findScreenshotIdBySha256("a".repeat(64)), null);
+    assert.equal(db.findScreenshotIdBySha256("b".repeat(64)), keptUpload.id);
+    assert.equal(db.findScreenshotIdBySha256("c".repeat(64)), null);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a hash shared by several earlier uploads resolves to the most recent one", () => {
+  const { db, cleanup } = withTempDb();
+
+  try {
+    const earlier = db.createScreenshot({ imagePath: "/tmp/same-bytes-earlier.png" });
+    const later = db.createScreenshot({ imagePath: "/tmp/same-bytes-later.png" });
+    db.recordScreenshotSha256(later.id, "d".repeat(64));
+    db.recordScreenshotSha256(earlier.id, "d".repeat(64));
+
+    assert.equal(db.findScreenshotIdBySha256("d".repeat(64)), later.id);
+    assert.equal(db.findScreenshotIdBySha256("e".repeat(64)), null);
   } finally {
     cleanup();
   }
