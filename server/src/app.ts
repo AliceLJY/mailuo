@@ -75,6 +75,9 @@ const currentDir = dirname(fileURLToPath(import.meta.url));
 const defaultScreenshotDir = resolve(currentDir, "..", "data", "screenshots");
 const defaultWebRoot = resolve(currentDir, "..", "public");
 const DUPLICATE_SCREENSHOT_NOTICE = "这张截图之前上传过，没有重复处理，已为你显示上次的结果。";
+// Each contact is one model call. The cap bounds a single request while staying above what one
+// upload batch (up to 20 screenshots) realistically touches.
+const MAX_INSIGHT_RETRY_CONTACTS = 100;
 
 type PerceiveScreenshotInput = {
   imagePath: string;
@@ -118,6 +121,11 @@ type RejectCardResponse = {
     ? Exclude<T, null>
     : never;
 };
+
+type InsightRetryResponse = Pick<
+  ConfirmCardResponse,
+  "insight_status" | "insight_error" | "insights"
+>;
 
 class HttpError extends Error {
   statusCode: number;
@@ -247,6 +255,39 @@ function parseConfirmCardBody(body: unknown): ConfirmCardBody {
   }
 
   return parsed.data;
+}
+
+function parseInsightRetryContactIds(body: unknown): number[] {
+  const contactIds =
+    typeof body === "object" && body !== null && !Array.isArray(body)
+      ? (body as Record<string, unknown>).contact_ids
+      : undefined;
+
+  if (!Array.isArray(contactIds) || contactIds.length === 0) {
+    throw new HttpError(400, "contact_ids must be a non-empty array", "INVALID_REQUEST_BODY");
+  }
+
+  const uniqueContactIds = [
+    ...new Set(
+      contactIds.map((value) => {
+        if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+          throw new HttpError(400, "Invalid contact id", "INVALID_ID");
+        }
+
+        return value;
+      }),
+    ),
+  ];
+
+  if (uniqueContactIds.length > MAX_INSIGHT_RETRY_CONTACTS) {
+    throw new HttpError(
+      400,
+      `At most ${MAX_INSIGHT_RETRY_CONTACTS} contacts can be retried at once`,
+      "TOO_MANY_CONTACTS",
+    );
+  }
+
+  return uniqueContactIds;
 }
 
 type TextUploadBody = {
@@ -687,6 +728,48 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
       }
     } catch (error) {
       request.log.error({ err: error }, "Failed to confirm action card");
+      return sendError(reply, error);
+    }
+  });
+
+  // Same insight step as confirm, for when it failed there: a model failure is still a 200 with
+  // insight_status "failed", and nothing is written unless every contact's generation succeeds.
+  app.post("/api/insights/retry", async (request, reply) => {
+    try {
+      const contactIds = parseInsightRetryContactIds(request.body);
+
+      for (const contactId of contactIds) {
+        if (!db.getContactById(contactId)) {
+          throw new HttpError(404, `Contact ${contactId} not found`, "NOT_FOUND");
+        }
+      }
+
+      try {
+        const insightResult = await generateInsights({ db, contactIds });
+        const payload: ApiSuccess<InsightRetryResponse> = {
+          ok: true,
+          data: {
+            insight_status: "ok",
+            insights: insightResult.generated,
+          },
+        };
+
+        return reply.send(payload);
+      } catch (error) {
+        request.log.error({ err: error, contactIds }, "Failed to regenerate insights");
+        const payload: ApiSuccess<InsightRetryResponse> = {
+          ok: true,
+          data: {
+            insight_status: "failed",
+            insight_error: getPublicErrorMessage(error, "Unexpected insight generation error"),
+            insights: [],
+          },
+        };
+
+        return reply.send(payload);
+      }
+    } catch (error) {
+      request.log.error({ err: error }, "Failed to retry insights");
       return sendError(reply, error);
     }
   });

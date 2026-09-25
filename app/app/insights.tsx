@@ -2,7 +2,7 @@ import { router } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Platform, StyleSheet, View } from "react-native";
 
-import { getConfiguredApiUrl, getContactDetail, getErrorMessage } from "@/api";
+import { getConfiguredApiUrl, getContactDetail, getErrorMessage, retryInsights } from "@/api";
 import { AppButton } from "@/components/button";
 import { InsightCard } from "@/components/insight/insight-card";
 import { EmptyHint, Page, SectionCard } from "@/components/page";
@@ -21,8 +21,10 @@ function uniqueIds(values: number[]) {
 
 export default function InsightsScreen() {
   const [pageError, setPageError] = useState<string | null>(null);
+  const [retryingInsights, setRetryingInsights] = useState(false);
   const {
     affectedContactIds,
+    applyInsightRetryResult,
     batchMode,
     batchServerUrl,
     contactDetailsById,
@@ -49,10 +51,65 @@ export default function InsightsScreen() {
   });
   const loadRunTokenRef = useRef(0);
   const representedLoadKeysRef = useRef(new Set<string>());
+  const mountedRef = useRef(true);
+  const retryRunningRef = useRef(false);
   const targetContactIds = useMemo(
     () => uniqueIds([...affectedContactIds, ...insights.map((item) => item.contact_id)]),
     [affectedContactIds, insights],
   );
+  const canRetryInsights = !targetMismatch && affectedContactIds.length > 0;
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // New insights refer to observations of contacts this page already loads, and the effect
+  // below fetches any contact detail that is still missing once the insight list changes.
+  async function regenerateInsights() {
+    if (retryRunningRef.current || !canRetryInsights) {
+      return;
+    }
+
+    retryRunningRef.current = true;
+    setRetryingInsights(true);
+    const requestGeneration = flowGeneration;
+    logEvent("insights_start", `retry contacts=${affectedContactIds.length}`);
+
+    try {
+      const result = await retryInsights({ contactIds: affectedContactIds });
+      if (!isFlowGenerationCurrent(requestGeneration)) {
+        return;
+      }
+
+      applyInsightRetryResult(result, requestGeneration);
+      if (result.insight_status === "ok") {
+        logEvent("insights_ok", `retry insights=${result.insights.length}`);
+        return;
+      }
+
+      logEvent("insights_error", "retry failed");
+      showError(
+        result.insight_error ? new Error(result.insight_error) : undefined,
+        "洞察还是没生成，请稍后再试。",
+      );
+    } catch (error) {
+      if (!isFlowGenerationCurrent(requestGeneration)) {
+        return;
+      }
+
+      logEvent("insights_error", "retry request failed");
+      showError(error, "洞察还是没生成，请稍后再试。");
+    } finally {
+      retryRunningRef.current = false;
+      if (mountedRef.current) {
+        setRetryingInsights(false);
+      }
+    }
+  }
 
   useEffect(() => {
     const requestGeneration = flowGeneration;
@@ -174,6 +231,14 @@ export default function InsightsScreen() {
       {hasInsightFailure ? (
         <SectionCard title="提示">
           <EmptyHint text="这次洞察暂时没生成，但档案已经保存。" />
+          {canRetryInsights ? (
+            <AppButton
+              disabled={retryingInsights}
+              label={retryingInsights ? "正在重新生成…" : "重新生成洞察"}
+              onPress={() => void regenerateInsights()}
+              tone="secondary"
+            />
+          ) : null}
         </SectionCard>
       ) : null}
 

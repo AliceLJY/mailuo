@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import type { ActionCard } from '../../../shared/types.ts';
+import { generateInsights as generateInsightsWithProvider } from '../../../shared/core/agent/insight.ts';
 import { createPastedTextSourceUri } from '../../../shared/core/agent/perceive-text.ts';
 import type {
   ChatCompletionRequest,
@@ -1523,6 +1524,295 @@ test('POST /api/cards/:id/reject returns the rejected card and 409 on repeat rej
         code: 'ACTION_CARD_NOT_PENDING',
       },
     });
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
+function createInsightSubject(db: MailuoDb, name: string) {
+  const contact = db.createContact({ canonicalName: name });
+  const observation = db.insertObservationIfAbsent({
+    contactId: contact.id,
+    kind: 'fact',
+    content: `${name}负责示例项目的排期`,
+    sourceQuote: `${name}：排期我来跟`,
+    observedAt: '2026-09-01T02:00:00.000Z',
+  });
+
+  return { contact, observation };
+}
+
+function insightProvider(outputs: Array<unknown | Error>) {
+  const queue = [...outputs];
+  const calls: number[] = [];
+  const provider = structuredProvider(async <T>(request: StructuredOutputRequest<T>) => {
+    calls.push(calls.length + 1);
+    const next = queue.shift();
+
+    if (next instanceof Error) {
+      throw next;
+    }
+
+    return request.schema.parse(next);
+  });
+
+  return { provider, calls };
+}
+
+function postInsightRetry(app: ReturnType<typeof buildApp>, body: unknown) {
+  return app.inject({
+    method: 'POST',
+    url: '/api/insights/retry',
+    headers: { 'content-type': 'application/json' },
+    payload: JSON.stringify(body),
+  });
+}
+
+function listInsightRows(db: MailuoDb) {
+  return db
+    .getNativeDatabase()
+    .prepare('SELECT contact_id, kind, content, based_on FROM insights ORDER BY id')
+    .all();
+}
+
+test('POST /api/insights/retry regenerates insights for the given contacts and stores them', async () => {
+  const { db, cleanup } = withTempAppDirectory();
+  const first = createInsightSubject(db, '示例联系人甲');
+  const second = createInsightSubject(db, '示例联系人乙');
+  db.insertInsights([
+    {
+      contactId: first.contact.id,
+      kind: 'conversation_hook',
+      content: '上次生成的旧洞察',
+      basedOn: [first.observation.id],
+      generatedAt: '2026-09-01T03:00:00.000Z',
+    },
+  ]);
+  const { provider, calls } = insightProvider([
+    {
+      insights: [
+        {
+          kind: 'suggested_action',
+          content: '下周和示例联系人甲确认排期',
+          based_on: [first.observation.id],
+        },
+      ],
+    },
+    {
+      insights: [
+        {
+          kind: 'relationship_read',
+          content: '示例联系人乙在跟进同一个项目',
+          based_on: [second.observation.id],
+        },
+      ],
+    },
+  ]);
+  const app = buildApp({
+    db,
+    generateInsights: (options) =>
+      generateInsightsWithProvider({
+        ...options,
+        provider,
+        now: new Date('2026-09-02T00:00:00.000Z'),
+      }),
+  });
+
+  try {
+    const response = await postInsightRetry(app, {
+      contact_ids: [first.contact.id, second.contact.id, first.contact.id],
+    });
+
+    assert.equal(response.statusCode, 200);
+    const payload = response.json();
+    assert.equal(payload.ok, true);
+    assert.deepEqual(Object.keys(payload.data).sort(), ['insight_status', 'insights']);
+    assert.equal(payload.data.insight_status, 'ok');
+    assert.deepEqual(
+      payload.data.insights.map((insight: { contact_id: number; content: string }) => [
+        insight.contact_id,
+        insight.content,
+      ]),
+      [
+        [first.contact.id, '下周和示例联系人甲确认排期'],
+        [second.contact.id, '示例联系人乙在跟进同一个项目'],
+      ],
+    );
+    // One model call per distinct contact, and the regenerated set replaces the old one.
+    assert.equal(calls.length, 2);
+    assert.deepEqual(db.getContactDetail(first.contact.id)?.insights, [payload.data.insights[0]]);
+    assert.deepEqual(db.getContactDetail(second.contact.id)?.insights, [payload.data.insights[1]]);
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
+test('POST /api/insights/retry reports a model failure as failed and leaves stored insights untouched', async () => {
+  const { db, cleanup } = withTempAppDirectory();
+  const first = createInsightSubject(db, '示例联系人甲');
+  const second = createInsightSubject(db, '示例联系人乙');
+  db.insertInsights([
+    {
+      contactId: first.contact.id,
+      kind: 'conversation_hook',
+      content: '上次生成的旧洞察',
+      basedOn: [first.observation.id],
+      generatedAt: '2026-09-01T03:00:00.000Z',
+    },
+  ]);
+  const insightsBefore = listInsightRows(db);
+  let providerFailure: Error = new ProviderRequestError({
+    message: 'Insight model request failed',
+    provider: 'fake-text',
+    model: 'fake-text-model',
+    statusCode: 503,
+  });
+  const app = buildApp({
+    db,
+    generateInsights: (options) =>
+      generateInsightsWithProvider({
+        ...options,
+        // The first contact succeeds and the second fails, so nothing may be half-written.
+        provider: insightProvider([
+          {
+            insights: [
+              {
+                kind: 'suggested_action',
+                content: '不应写入的新洞察',
+                based_on: [first.observation.id],
+              },
+            ],
+          },
+          providerFailure,
+        ]).provider,
+      }),
+  });
+
+  try {
+    const response = await postInsightRetry(app, {
+      contact_ids: [first.contact.id, second.contact.id],
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), {
+      ok: true,
+      data: {
+        insight_status: 'failed',
+        insight_error: 'Insight model request failed',
+        insights: [],
+      },
+    });
+    assert.deepEqual(listInsightRows(db), insightsBefore);
+
+    // Errors without a public message fall back the same way the confirm route does.
+    providerFailure = new Error('socket hang up');
+    const unexpected = await postInsightRetry(app, {
+      contact_ids: [first.contact.id, second.contact.id],
+    });
+
+    assert.equal(unexpected.statusCode, 200);
+    assert.equal(unexpected.json().data.insight_error, 'Unexpected insight generation error');
+    assert.deepEqual(listInsightRows(db), insightsBefore);
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
+test('POST /api/insights/retry rejects an invalid body with 400 before generating anything', async () => {
+  const { db, cleanup } = withTempAppDirectory();
+  const { contact } = createInsightSubject(db, '示例联系人甲');
+  let generateCalls = 0;
+  const app = buildApp({
+    db,
+    async generateInsights() {
+      generateCalls += 1;
+      return {
+        requested_contact_ids: [],
+        processed_contact_ids: [],
+        skipped_contact_ids: [],
+        generated: [],
+      };
+    },
+  });
+  const invalidBody = {
+    ok: false,
+    error: { message: 'contact_ids must be a non-empty array', code: 'INVALID_REQUEST_BODY' },
+  };
+  const invalidId = {
+    ok: false,
+    error: { message: 'Invalid contact id', code: 'INVALID_ID' },
+  };
+
+  try {
+    for (const [body, expected] of [
+      [{}, invalidBody],
+      [{ contact_ids: [] }, invalidBody],
+      [{ contact_ids: String(contact.id) }, invalidBody],
+      [[contact.id], invalidBody],
+      [{ contact_ids: [contact.id, 0] }, invalidId],
+      [{ contact_ids: [-1] }, invalidId],
+      [{ contact_ids: [1.5] }, invalidId],
+      [{ contact_ids: [String(contact.id)] }, invalidId],
+      [{ contact_ids: [true] }, invalidId],
+      [{ contact_ids: [null] }, invalidId],
+    ] as const) {
+      const response = await postInsightRetry(app, body);
+
+      assert.equal(response.statusCode, 400, JSON.stringify(body));
+      assert.deepEqual(response.json(), expected, JSON.stringify(body));
+    }
+
+    const tooMany = await postInsightRetry(app, {
+      contact_ids: Array.from({ length: 101 }, (_value, index) => index + 1),
+    });
+    assert.equal(tooMany.statusCode, 400);
+    assert.deepEqual(tooMany.json(), {
+      ok: false,
+      error: {
+        message: 'At most 100 contacts can be retried at once',
+        code: 'TOO_MANY_CONTACTS',
+      },
+    });
+
+    // Duplicates count once toward the cap.
+    const repeated = await postInsightRetry(app, {
+      contact_ids: Array.from({ length: 150 }, () => contact.id),
+    });
+    assert.equal(repeated.statusCode, 200);
+    assert.equal(generateCalls, 1);
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
+test('POST /api/insights/retry answers an unknown contact like GET /api/contacts/:id and generates nothing', async () => {
+  const { db, cleanup } = withTempAppDirectory();
+  const { contact } = createInsightSubject(db, '示例联系人甲');
+  let generateCalls = 0;
+  const app = buildApp({
+    db,
+    async generateInsights() {
+      generateCalls += 1;
+      throw new Error('generation must not run for an unknown contact');
+    },
+  });
+
+  try {
+    const response = await postInsightRetry(app, { contact_ids: [contact.id, 999] });
+    const contactResponse = await app.inject({ method: 'GET', url: '/api/contacts/999' });
+
+    assert.equal(response.statusCode, 404);
+    assert.deepEqual(response.json(), {
+      ok: false,
+      error: { message: 'Contact 999 not found', code: 'NOT_FOUND' },
+    });
+    assert.equal(contactResponse.statusCode, 404);
+    assert.deepEqual(response.json(), contactResponse.json());
+    assert.equal(generateCalls, 0);
   } finally {
     await app.close();
     cleanup();
