@@ -314,6 +314,16 @@ export type ConfirmCardResponse = {
   insights: InsightRecord[];
 };
 
+export type InsightRetryRequest = {
+  contactIds: number[];
+};
+
+// Same meaning as the insight part of a confirm response, for regenerating after it failed.
+export type InsightRetryResponse = Pick<
+  ConfirmCardResponse,
+  "insight_status" | "insight_error" | "insights"
+>;
+
 export type RejectCardResponse = {
   card: ActionCardRecord;
 };

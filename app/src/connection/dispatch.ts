@@ -4,6 +4,8 @@ import type {
   ConfirmCardResponse,
   ContactDetail,
   ContactListItem,
+  InsightRetryRequest,
+  InsightRetryResponse,
   MeetingRecord,
   RejectCardResponse,
   ScreenshotDetail,
@@ -63,6 +65,7 @@ export interface RoutedApi {
   }): Promise<ScreenshotUploadResponse>;
   uploadText: UploadTextFn;
   confirmCard(cardId: number, body?: ConfirmCardRequest): Promise<ConfirmCardResponse>;
+  retryInsights(input: InsightRetryRequest): Promise<InsightRetryResponse>;
   rejectCard(cardId: number): Promise<RejectCardResponse>;
   reopenCard(cardId: number): Promise<{ card: ActionCardRecord }>;
   countPendingLocalBatchInteractionCards(anchorCardId: number): Promise<number>;
@@ -161,6 +164,9 @@ export function createApiDispatcher(options: ApiDispatcherOptions): RoutedApi {
     },
     async confirmCard(cardId, body = {}) {
       return (await selectedApi()).confirmCard(cardId, body);
+    },
+    async retryInsights(input) {
+      return (await selectedApi()).retryInsights(input);
     },
     async rejectCard(cardId) {
       return (await selectedApi()).rejectCard(cardId);

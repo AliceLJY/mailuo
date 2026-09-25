@@ -13,6 +13,7 @@ import type {
   ConfirmCardResponse,
   ContactDetail,
   InsightRecord,
+  InsightRetryResponse,
   ObservationRecord,
   ScreenshotDetail,
   ScreenshotUploadResponse,
@@ -116,6 +117,7 @@ type FlowContextValue = {
   ) => void;
   setScreenshotDetail: (detail: ScreenshotDetail) => void;
   applyConfirmResult: (payload: ConfirmCardResponse) => void;
+  applyInsightRetryResult: (result: InsightRetryResponse, generation: number) => void;
   markRejected: (card: ActionCardRecord) => void;
   mergeContactDetail: (detail: ContactDetail) => void;
   resetFlow: (options?: ResetFlowOptions) => void;
@@ -441,6 +443,50 @@ export function getCardSourceLabels(
   return labels;
 }
 
+export type FlowInsightState = {
+  insights: InsightRecord[];
+  hasInsightFailure: boolean;
+};
+
+const EMPTY_INSIGHT_STATE: FlowInsightState = {
+  insights: [],
+  hasInsightFailure: false,
+};
+
+// Newer insights come first; an id seen again keeps its newest record.
+export function mergeInsightRecords(current: InsightRecord[], incoming: InsightRecord[]) {
+  return [...incoming, ...current].filter(
+    (item, index, list) => list.findIndex((entry) => entry.id === item.id) === index,
+  );
+}
+
+// A failed insight step stays flagged through later confirmations until a retry succeeds.
+export function applyConfirmInsightsToFlow(
+  state: FlowInsightState,
+  payload: ConfirmCardResponse,
+): FlowInsightState {
+  return {
+    insights: mergeInsightRecords(state.insights, payload.insights),
+    hasInsightFailure: state.hasInsightFailure || payload.insight_status === "failed",
+  };
+}
+
+// A retry result only lands in the flow that started it; a failed retry keeps the notice.
+export function applyInsightRetryResultToFlow(
+  state: FlowInsightState,
+  result: InsightRetryResponse,
+  isCurrentFlow: boolean,
+): FlowInsightState {
+  if (!isCurrentFlow || result.insight_status !== "ok") {
+    return state;
+  }
+
+  return {
+    insights: mergeInsightRecords(state.insights, result.insights),
+    hasInsightFailure: false,
+  };
+}
+
 export function FlowProvider({ children }: PropsWithChildren) {
   const generationRef = useRef(0);
   const [flowGeneration, setFlowGeneration] = useState(0);
@@ -448,11 +494,10 @@ export function FlowProvider({ children }: PropsWithChildren) {
   const [cards, setCards] = useState<ActionCardRecord[]>([]);
   const [screenshotDetail, setScreenshotDetailState] = useState<ScreenshotDetail | null>(null);
   const [batch, setBatch] = useState<BatchFlowState>(EMPTY_BATCH);
-  const [insights, setInsights] = useState<InsightRecord[]>([]);
+  const [insightState, setInsightState] = useState<FlowInsightState>(EMPTY_INSIGHT_STATE);
   const [evidenceById, setEvidenceById] = useState<Record<number, ObservationRecord>>({});
   const [contactDetailsById, setContactDetailsById] = useState<Record<number, ContactDetail>>({});
   const [affectedContactIds, setAffectedContactIds] = useState<number[]>([]);
-  const [hasInsightFailure, setHasInsightFailure] = useState(false);
   const processingNotice = getBatchProcessingNotice(batch.items);
   const cardSourceLabelsById = getCardSourceLabels(
     batch.items,
@@ -463,11 +508,10 @@ export function FlowProvider({ children }: PropsWithChildren) {
     setScreenshotId(null);
     setCards([]);
     setScreenshotDetailState(null);
-    setInsights([]);
+    setInsightState(EMPTY_INSIGHT_STATE);
     setEvidenceById({});
     setContactDetailsById({});
     setAffectedContactIds([]);
-    setHasInsightFailure(false);
   }
 
   function advanceFlowGeneration() {
@@ -489,11 +533,11 @@ export function FlowProvider({ children }: PropsWithChildren) {
     localBatchSession: batch.localBatchSession,
     flowGeneration,
     cardSourceLabelsById,
-    insights,
+    insights: insightState.insights,
     evidenceById,
     contactDetailsById,
     affectedContactIds,
-    hasInsightFailure,
+    hasInsightFailure: insightState.hasInsightFailure,
     processingNotice,
     beginBatch({ assets, localBatchSession = null, mode, note = "", serverUrl = null }) {
       const nextGeneration = advanceFlowGeneration();
@@ -710,11 +754,10 @@ export function FlowProvider({ children }: PropsWithChildren) {
       });
 
       if (!belongsToCurrentBatch) {
-        setInsights([]);
+        setInsightState(EMPTY_INSIGHT_STATE);
         setEvidenceById({});
         setContactDetailsById({});
         setAffectedContactIds([]);
-        setHasInsightFailure(false);
       }
     },
     applyConfirmResult(payload) {
@@ -723,13 +766,8 @@ export function FlowProvider({ children }: PropsWithChildren) {
         ...current,
         items: updateCardInBatchItems(current.items, payload.card),
       }));
-      setInsights((current) => [...payload.insights, ...current].filter((item, index, list) => {
-        return list.findIndex((entry) => entry.id === item.id) === index;
-      }));
+      setInsightState((current) => applyConfirmInsightsToFlow(current, payload));
       setAffectedContactIds((current) => mergeUniqueIds(current, payload.affected_contact_ids));
-      if (payload.insight_status === "failed") {
-        setHasInsightFailure(true);
-      }
       setScreenshotDetailState((current) => {
         if (!current || current.id !== payload.card.screenshot_id) {
           return current;
@@ -740,6 +778,10 @@ export function FlowProvider({ children }: PropsWithChildren) {
           cards: upsertCard(current.cards, payload.card),
         };
       });
+    },
+    applyInsightRetryResult(result, generation) {
+      const isCurrentFlow = generationRef.current === generation;
+      setInsightState((current) => applyInsightRetryResultToFlow(current, result, isCurrentFlow));
     },
     markRejected(card) {
       setCards((current) => upsertCard(current, card));

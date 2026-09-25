@@ -17,6 +17,8 @@ import type {
   ContactDetail,
   ContactListItem,
   HealthResponse,
+  InsightRetryRequest,
+  InsightRetryResponse,
   MeetingRecord,
   RejectCardResponse,
   ScreenshotDetail,
@@ -184,6 +186,16 @@ async function confirmCardFromServer(
   }, serverUrl);
 }
 
+async function retryInsightsFromServer(input: InsightRetryRequest, serverUrl?: string) {
+  return request<InsightRetryResponse>("/api/insights/retry", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ contact_ids: input.contactIds }),
+  }, serverUrl);
+}
+
 async function rejectCardFromServer(cardId: number, serverUrl?: string) {
   return request<RejectCardResponse>(`/api/cards/${cardId}/reject`, {
     method: "POST",
@@ -211,6 +223,7 @@ function createServerApi(serverUrl?: string): RoutedApi {
     uploadScreenshot: (input) => uploadScreenshotFromServer(input, serverUrl),
     uploadText: (input) => uploadTextFromServer(input, serverUrl),
     confirmCard: (cardId, body = {}) => confirmCardFromServer(cardId, body, serverUrl),
+    retryInsights: (input) => retryInsightsFromServer(input, serverUrl),
     rejectCard: (cardId) => rejectCardFromServer(cardId, serverUrl),
     async reopenCard() {
       throw new ApiError("服务器模式暂不支持恢复已跳过的卡片。", 501, "NOT_SUPPORTED");
@@ -266,6 +279,7 @@ const apiDispatcher = createApiDispatcher({
 export const uploadScreenshot = apiDispatcher.uploadScreenshot;
 export const uploadText = apiDispatcher.uploadText;
 export const confirmCard = apiDispatcher.confirmCard;
+export const retryInsights = apiDispatcher.retryInsights;
 export const rejectCard = apiDispatcher.rejectCard;
 export const reopenCard = apiDispatcher.reopenCard;
 export const countPendingLocalBatchInteractionCards =

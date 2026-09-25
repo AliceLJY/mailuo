@@ -53,7 +53,7 @@ In the healthy Android local path, the raw screenshot stays on the phone: the co
 4. Proposal: create editable cards for contact changes, meetings, appointments, independent items, item updates, and interactions. Similar existing items prompt a user-confirmed update instead of automatic deduplication. Interaction cards record only what a person actually initiated: pure acknowledgements, being @-mentioned by others, arrival notices, and logistics around a meeting that already has a card are not recorded.
 5. Human confirmation: let the user edit fields, resolve ambiguities, confirm, skip, or reject each card. A batch can be reviewed in any order, skipped cards can be restored, and skipping a new contact warns about the interaction cards that depend on it.
 6. Execution: write confirmed contacts, meetings and items, aliases, and observations back to SQLite. Confirmed meetings and contacts stay editable and deletable afterwards; deleting a contact also removes its observations and insights and detaches it from cards and meetings.
-7. Grounded insights: generate relationship reads, suggested actions, and conversation hooks that must cite `based_on` observation evidence.
+7. Grounded insights: generate relationship reads, suggested actions, and conversation hooks that must cite `based_on` observation evidence. If insight generation fails, the profile updates are still saved and the insights can be regenerated with one tap on the insights screen.
 
 Three signals that this is not a thin wrapper:
 
@@ -186,7 +186,6 @@ One package offers (1) **BYOK local mode**, where users enter their own model ke
 
 - iOS native distribution: when the target region's App Store does not offer Expo Go, native iOS distribution needs an Apple Developer account plus EAS and TestFlight.
 - Whole-screenshot duplicate detection and merge: duplicate recognition in phone local mode, plus recognizing and merging near-duplicates such as re-taken or differently compressed screenshots (server mode already recognizes byte-identical re-uploads).
-- Insight retry endpoint.
 - Scheduled proactive insight delivery.
 - System calendar integration.
 - Direct messaging app integration.

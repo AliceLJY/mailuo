@@ -32,6 +32,10 @@ function fakeApi(label: string, calls: string[]): RoutedApi {
     async confirmCard() {
       throw new Error("unused");
     },
+    async retryInsights(input) {
+      calls.push(`${label}:retry-insights:${input.contactIds.join(",")}`);
+      return { insight_status: "ok", insights: [] };
+    },
     async rejectCard() {
       throw new Error("unused");
     },
@@ -145,6 +149,53 @@ test("local utility operations route through the selected API", async () => {
     "local:clear",
     "local:delete-meeting:7",
     "local:delete-contact:9",
+  ]);
+});
+
+test("insight retries route to native local, native server, and web server targets", async () => {
+  const calls: string[] = [];
+  const localApi = createApiDispatcher({
+    configStore: configStore({ mode: "local" }),
+    platform: "android",
+    publicApiUrl: "https://env.example.test/",
+    createServerApi: () => fakeApi("unexpected-server", calls),
+    async getLocalApi() {
+      return fakeApi("local", calls);
+    },
+  });
+  const serverApi = createApiDispatcher({
+    configStore: configStore({
+      mode: "server",
+      serverUrl: "https://chosen.example.test/",
+    }),
+    platform: "ios",
+    publicApiUrl: "https://env.example.test/",
+    createServerApi: (serverUrl) => fakeApi(`server:${serverUrl}`, calls),
+    async getLocalApi() {
+      throw new Error("server mode must not load local API");
+    },
+  });
+  const webApi = createApiDispatcher({
+    configStore: configStore({ mode: "local" }),
+    platform: "web",
+    publicApiUrl: "https://web.example.test/",
+    createServerApi: (serverUrl) => fakeApi(`web-server:${serverUrl}`, calls),
+    async getLocalApi() {
+      throw new Error("web must not load local API");
+    },
+  });
+
+  assert.deepEqual(await localApi.retryInsights({ contactIds: [3, 5] }), {
+    insight_status: "ok",
+    insights: [],
+  });
+  await serverApi.retryInsights({ contactIds: [7] });
+  await webApi.retryInsights({ contactIds: [9] });
+
+  assert.deepEqual(calls, [
+    "local:retry-insights:3,5",
+    "server:https://chosen.example.test:retry-insights:7",
+    "web-server:https://web.example.test:retry-insights:9",
   ]);
 });
 
