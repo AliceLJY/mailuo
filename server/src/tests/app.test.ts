@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import type { ActionCard } from '../../../shared/types.ts';
+import { createPastedTextSourceUri } from '../../../shared/core/agent/perceive-text.ts';
 import type {
   ChatCompletionRequest,
   StructuredOutputProvider,
@@ -12,7 +14,7 @@ import type {
 } from '../../../shared/core/llm/provider.ts';
 import { MailuoDb } from '../db.ts';
 import { buildApp } from '../app.ts';
-import { ConfigurationError } from '../llm/provider.ts';
+import { ConfigurationError, ProviderRequestError } from '../llm/provider.ts';
 
 function withTempAppDirectory() {
   const directory = mkdtempSync(join(tmpdir(), 'mailuo-app-'));
@@ -100,6 +102,7 @@ async function withScreenshotDir<T>(
 }
 
 const fakeImage = readFileSync(new URL('../../../fixtures/screenshot-1.png', import.meta.url));
+const otherFakeImage = readFileSync(new URL('../../../fixtures/screenshot-2.png', import.meta.url));
 const seedSql = readFileSync(new URL('../../../fixtures/seed.sql', import.meta.url), 'utf8');
 
 function seedDb(db: MailuoDb) {
@@ -127,6 +130,54 @@ function createPendingCard(args: {
     card: args.card,
     createdAt: '2026-08-26T00:01:00.000Z',
   });
+}
+
+// Synthetic stand-ins for screenshots: the route stores and hashes bytes, perception is stubbed.
+const syntheticImage = Buffer.from('mailuo synthetic screenshot bytes A');
+const otherSyntheticImage = Buffer.from('mailuo synthetic screenshot bytes B');
+const emptyExtraction = { participants: [], events: [], facts: [], quotes: [] };
+const duplicateNotice = '这张截图之前上传过，没有重复处理，已为你显示上次的结果。';
+
+function postScreenshot(app: ReturnType<typeof buildApp>, screenshotDir: string, image: Buffer) {
+  const { boundary, body } = buildMultipartBody([
+    {
+      type: 'file',
+      name: 'image',
+      contentType: 'image/png',
+      value: image,
+    },
+  ]);
+
+  return withScreenshotDir(screenshotDir, () =>
+    app.inject({
+      method: 'POST',
+      url: '/api/screenshots',
+      headers: {
+        'content-type': `multipart/form-data; boundary=${boundary}`,
+      },
+      payload: body,
+    }),
+  );
+}
+
+function countScreenshotRows(db: MailuoDb) {
+  const row = db
+    .getNativeDatabase()
+    .prepare('SELECT COUNT(*) AS count FROM screenshots')
+    .get() as { count: number };
+
+  return row.count;
+}
+
+function listScreenshotHashRows(db: MailuoDb) {
+  return db
+    .getNativeDatabase()
+    .prepare('SELECT screenshot_id, sha256 FROM server_screenshot_hashes ORDER BY screenshot_id')
+    .all() as Array<{ screenshot_id: number; sha256: string }>;
+}
+
+function sha256Hex(bytes: Buffer) {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 function structuredProvider(
@@ -797,6 +848,230 @@ test('POST /api/screenshots cleans partial uploads when screenshot analysis pers
   }
 });
 
+test('POST /api/screenshots answers a byte-identical re-upload with the earlier result without processing it again', async () => {
+  const { db, screenshotDir, cleanup } = withTempAppDirectory();
+  const calls = { perceive: 0, resolve: 0, meetingProgress: 0, propose: 0 };
+  const app = buildApp({
+    db,
+    async perceiveScreenshot() {
+      calls.perceive += 1;
+      return emptyExtraction;
+    },
+    async resolveParticipants() {
+      calls.resolve += 1;
+      return [];
+    },
+    async resolveMeetingProgress() {
+      calls.meetingProgress += 1;
+      return [];
+    },
+    proposeCards() {
+      calls.propose += 1;
+      return [
+        {
+          type: 'create_contact',
+          payload: { name: '示例联系人' },
+          confidence: 'high',
+          source_quote: '我是示例联系人',
+        },
+      ];
+    },
+  });
+
+  try {
+    const first = await postScreenshot(app, screenshotDir, syntheticImage);
+    assert.equal(first.statusCode, 201);
+    const firstData = first.json().data;
+    const storedFiles = readdirSync(screenshotDir);
+    assert.equal(storedFiles.length, 1);
+    // A re-upload shows the cards as they are now; it does not reset what the user already did.
+    db.rejectActionCardIfPending(firstData.cards[0].id);
+
+    const second = await postScreenshot(app, screenshotDir, syntheticImage);
+
+    assert.equal(second.statusCode, 200);
+    assert.deepEqual(second.json(), {
+      ok: true,
+      data: {
+        screenshot_id: firstData.screenshot_id,
+        cards: db.listStoredActionCardsByScreenshotId(firstData.screenshot_id),
+        duplicate_of_screenshot_id: firstData.screenshot_id,
+        processing_notice: duplicateNotice,
+      },
+    });
+    assert.equal(second.json().data.cards[0].status, 'rejected');
+    assert.deepEqual(calls, { perceive: 1, resolve: 1, meetingProgress: 1, propose: 1 });
+    assert.equal(countScreenshotRows(db), 1);
+    assert.deepEqual(readdirSync(screenshotDir), storedFiles);
+    assert.equal(
+      db.getScreenshotById(firstData.screenshot_id)?.image_path,
+      join(screenshotDir, storedFiles[0]!),
+    );
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
+test('POST /api/screenshots still processes different bytes as a new 201 upload', async () => {
+  const { db, screenshotDir, cleanup } = withTempAppDirectory();
+  let perceiveCalls = 0;
+  const app = buildApp({
+    db,
+    async perceiveScreenshot() {
+      perceiveCalls += 1;
+      return emptyExtraction;
+    },
+    proposeCards() {
+      return [];
+    },
+  });
+
+  try {
+    const first = await postScreenshot(app, screenshotDir, syntheticImage);
+    const second = await postScreenshot(app, screenshotDir, otherSyntheticImage);
+    const firstId = first.json().data.screenshot_id;
+    const secondId = second.json().data.screenshot_id;
+
+    assert.equal(first.statusCode, 201);
+    assert.equal(second.statusCode, 201);
+    assert.notEqual(secondId, firstId);
+    assert.deepEqual(second.json(), {
+      ok: true,
+      data: {
+        screenshot_id: secondId,
+        cards: [],
+      },
+    });
+    assert.equal(perceiveCalls, 2);
+    assert.equal(countScreenshotRows(db), 2);
+    assert.equal(readdirSync(screenshotDir).length, 2);
+    assert.deepEqual(listScreenshotHashRows(db), [
+      { screenshot_id: firstId, sha256: sha256Hex(syntheticImage) },
+      { screenshot_id: secondId, sha256: sha256Hex(otherSyntheticImage) },
+    ]);
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
+test('POST /api/screenshots does not remember a failed upload, so the same bytes are processed again', async () => {
+  const { db, screenshotDir, cleanup } = withTempAppDirectory();
+  let perceiveCalls = 0;
+  const hashRowsSeenWhileProcessing: number[] = [];
+  const app = buildApp({
+    db,
+    async perceiveScreenshot() {
+      perceiveCalls += 1;
+      hashRowsSeenWhileProcessing.push(listScreenshotHashRows(db).length);
+
+      if (perceiveCalls === 1) {
+        throw new ProviderRequestError({
+          message: 'Vision model request failed',
+          provider: 'fake-vision',
+          model: 'fake-vision-model',
+          statusCode: 503,
+        });
+      }
+
+      return emptyExtraction;
+    },
+    proposeCards() {
+      return [];
+    },
+  });
+
+  try {
+    const failed = await postScreenshot(app, screenshotDir, syntheticImage);
+    assert.equal(failed.statusCode, 502);
+    assert.deepEqual(listScreenshotHashRows(db), []);
+    assert.equal(countScreenshotRows(db), 0);
+    assert.deepEqual(readdirSync(screenshotDir), []);
+
+    const retried = await postScreenshot(app, screenshotDir, syntheticImage);
+    const retriedId = retried.json().data.screenshot_id;
+    assert.equal(retried.statusCode, 201);
+    assert.equal(retried.json().data.duplicate_of_screenshot_id, undefined);
+    assert.equal(perceiveCalls, 2);
+
+    const repeated = await postScreenshot(app, screenshotDir, syntheticImage);
+    assert.equal(repeated.statusCode, 200);
+    assert.equal(repeated.json().data.duplicate_of_screenshot_id, retriedId);
+    assert.equal(perceiveCalls, 2);
+    // The hash is written only after the whole pipeline succeeded, never while it runs.
+    assert.deepEqual(hashRowsSeenWhileProcessing, [0, 0]);
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
+test('POST /api/screenshots recognizes an upload matching a screenshot saved before hashes existed', async () => {
+  const { db, screenshotDir, cleanup } = withTempAppDirectory();
+  mkdirSync(screenshotDir, { recursive: true });
+  const legacyPath = join(screenshotDir, 'legacy-upload.png');
+  writeFileSync(legacyPath, syntheticImage);
+  const legacy = db.createScreenshot({ imagePath: legacyPath });
+  db.saveScreenshotAnalysis({
+    screenshotId: legacy.id,
+    rawExtraction: emptyExtraction,
+    cards: [
+      {
+        type: 'create_contact',
+        payload: { name: '示例联系人' },
+        confidence: 'high',
+        source_quote: '我是示例联系人',
+      },
+    ],
+  });
+  const fileGone = db.createScreenshot({ imagePath: join(screenshotDir, 'deleted-upload.png') });
+  db.saveScreenshotAnalysis({ screenshotId: fileGone.id, rawExtraction: emptyExtraction, cards: [] });
+  const pastedText = db.createScreenshot({ imagePath: createPastedTextSourceUri('示例粘贴文本') });
+  db.saveScreenshotAnalysis({ screenshotId: pastedText.id, rawExtraction: emptyExtraction, cards: [] });
+  // A row whose analysis was never saved did not finish processing, so it is not a match.
+  const unfinishedPath = join(screenshotDir, 'unfinished-upload.png');
+  writeFileSync(unfinishedPath, otherSyntheticImage);
+  db.createScreenshot({ imagePath: unfinishedPath });
+  assert.deepEqual(listScreenshotHashRows(db), []);
+
+  let perceiveCalls = 0;
+  const app = buildApp({
+    db,
+    async perceiveScreenshot() {
+      perceiveCalls += 1;
+      return emptyExtraction;
+    },
+    proposeCards() {
+      return [];
+    },
+  });
+
+  try {
+    const duplicate = await postScreenshot(app, screenshotDir, syntheticImage);
+
+    assert.equal(duplicate.statusCode, 200);
+    assert.deepEqual(duplicate.json().data, {
+      screenshot_id: legacy.id,
+      cards: db.listStoredActionCardsByScreenshotId(legacy.id),
+      duplicate_of_screenshot_id: legacy.id,
+      processing_notice: duplicateNotice,
+    });
+    assert.equal(perceiveCalls, 0);
+    assert.deepEqual(listScreenshotHashRows(db), [
+      { screenshot_id: legacy.id, sha256: sha256Hex(syntheticImage) },
+    ]);
+    assert.deepEqual(readdirSync(screenshotDir).sort(), ['legacy-upload.png', 'unfinished-upload.png']);
+
+    const unfinishedMatch = await postScreenshot(app, screenshotDir, otherSyntheticImage);
+    assert.equal(unfinishedMatch.statusCode, 201);
+    assert.equal(perceiveCalls, 1);
+  } finally {
+    await app.close();
+    cleanup();
+  }
+});
+
 test('POST /api/screenshots passes complete meetings and progress resolutions through the outer proposal adapter', async () => {
   const { db, screenshotDir, cleanup } = withTempAppDirectory();
   seedDb(db);
@@ -1019,13 +1294,15 @@ test('POST /api/screenshots keeps interaction cards while only high-confidence p
     },
   });
 
-  async function upload() {
+  // Each call sends different bytes: an identical file would now be answered as a duplicate
+  // instead of being processed a second time.
+  async function upload(image: Buffer) {
     const { boundary, body } = buildMultipartBody([
       {
         type: 'file',
         name: 'image',
         contentType: 'image/png',
-        value: fakeImage,
+        value: image,
       },
     ]);
 
@@ -1038,7 +1315,7 @@ test('POST /api/screenshots keeps interaction cards while only high-confidence p
   }
 
   try {
-    const highResponse = await upload();
+    const highResponse = await upload(fakeImage);
     assert.equal(highResponse.statusCode, 201);
     const highCards = highResponse.json().data.cards as ActionCard[];
     const progressCard = highCards.find((card) => card.type === 'create_meeting');
@@ -1051,7 +1328,7 @@ test('POST /api/screenshots keeps interaction cards while only high-confidence p
     assert.equal(highInteraction.payload.contact_id, contact.id);
     assert.equal(highInteraction.payload.summary, '材料已经交付');
 
-    const mediumResponse = await upload();
+    const mediumResponse = await upload(otherFakeImage);
     assert.equal(mediumResponse.statusCode, 201);
     const mediumCards = mediumResponse.json().data.cards as ActionCard[];
     const mediumInteraction = mediumCards.find((card) => card.type === 'record_interaction');

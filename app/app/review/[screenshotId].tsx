@@ -24,7 +24,7 @@ import {
 import { useConnection } from "@/connection/context";
 import { setCrashContext } from "@/diagnostics/crash-record";
 import { logEvent } from "@/diagnostics/event-log";
-import { useFlow, type FlowBatchItem } from "@/flow-context";
+import { findFlowItemForScreenshot, useFlow, type FlowBatchItem } from "@/flow-context";
 import {
   buildOrderedReviewGroups,
   findCurrentPendingReviewCard,
@@ -142,6 +142,13 @@ export default function ReviewScreen() {
     () => orderedGroups.flatMap((group) => group.cards),
     [orderedGroups],
   );
+  const routeItem = useMemo(
+    () => findFlowItemForScreenshot(batchItems, id),
+    [batchItems, id],
+  );
+  // Routed to a re-uploaded image: this page shows its earlier screenshot as it is now, so an
+  // already-finished earlier result must not bounce straight on to insights.
+  const viewingPreviousUpload = routeItem?.duplicateOfScreenshotId != null;
   const renderedReviewGroups = reviewGroupsCleared ? [] : orderedGroups;
   const reviewCardGroups = useMemo(
     () => orderedGroups.map((group) => ({ index: group.item.index, cards: group.cards })),
@@ -320,6 +327,7 @@ export default function ReviewScreen() {
       !hasRouteSnapshot ||
       !batchSettled ||
       targetMismatch ||
+      viewingPreviousUpload ||
       currentPendingCard ||
       (batchSummary?.failureCount ?? 0) > 0
     ) {
@@ -334,6 +342,7 @@ export default function ReviewScreen() {
     hasRouteSnapshot,
     isValidId,
     targetMismatch,
+    viewingPreviousUpload,
   ]);
 
   useEffect(() => {
@@ -445,6 +454,64 @@ export default function ReviewScreen() {
     if (hasFailure) {
       showToast("补充资料加载失败。", "error");
     }
+  }
+
+  // Loads a re-uploaded image's earlier screenshot into its own group; the rest of the batch
+  // stays in place.
+  function openPreviousUpload(item: FlowBatchItem) {
+    if (item.duplicateOfScreenshotId == null || targetMismatch) {
+      return;
+    }
+
+    const requestGeneration = flowGeneration;
+    const runToken = loadRunTokenRef.current + 1;
+    loadRunTokenRef.current = runToken;
+    void refreshScreenshot(
+      item.duplicateOfScreenshotId,
+      requestGeneration,
+      loadRunTokenRef,
+      runToken,
+    ).catch((error) => {
+      if (
+        !canCommitReviewAsync(
+          mountedRef,
+          loadRunTokenRef,
+          runToken,
+          requestGeneration,
+          isFlowGenerationCurrent,
+        )
+      ) {
+        return;
+      }
+      showError(error, "上次的结果加载失败。");
+    });
+  }
+
+  function renderPreviousUploadEntry(item: FlowBatchItem) {
+    if (item.duplicateOfScreenshotId == null || item.screenshotId != null) {
+      return null;
+    }
+
+    // The same image picked twice in one batch: its earlier result is already a group here.
+    const earlierItem = batchItems.find(
+      (other) => other.screenshotId === item.duplicateOfScreenshotId,
+    );
+    if (earlierItem) {
+      return <EmptyHint text={`上次的结果就是本批的第 ${earlierItem.index + 1} 张。`} />;
+    }
+
+    if (item === routeItem) {
+      return <EmptyHint text="正在打开上次的结果…" />;
+    }
+
+    return (
+      <AppButton
+        disabled={targetMismatch}
+        label="查看上次的结果"
+        onPress={() => openPreviousUpload(item)}
+        tone="secondary"
+      />
+    );
   }
 
   async function handleConfirm(card: ActionCardRecord) {
@@ -897,7 +964,11 @@ export default function ReviewScreen() {
         <SectionCard
           key={item.index}
           kicker={`第 ${item.index + 1} ${item.asset ? "张" : "项"} · ${
-            item.screenshotId === screenshotId ? "当前查看" : ITEM_STATUS_LABEL[item.status]
+            item.duplicateOfScreenshotId != null
+              ? "之前传过"
+              : item.screenshotId === screenshotId
+                ? "当前查看"
+                : ITEM_STATUS_LABEL[item.status]
           }`}
           title={item.label}
         >
@@ -909,7 +980,8 @@ export default function ReviewScreen() {
             <EmptyHint text={item.error ?? (item.asset ? "这张截图处理失败。" : "这段文本处理失败。")} />
           ) : null}
           {item.processingNotice ? <EmptyHint text={item.processingNotice} /> : null}
-          {item.status === "success" && groupCards.length === 0 ? (
+          {renderPreviousUploadEntry(item)}
+          {item.status === "success" && item.screenshotId != null && groupCards.length === 0 ? (
             <EmptyHint text={item.asset ? "这张截图没有需要确认的内容。" : "这段文本没有需要确认的内容。"} />
           ) : null}
           {groupCards.map((card) => {

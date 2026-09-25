@@ -79,6 +79,7 @@ function pendingFlowItem(index: number): FlowBatchItem {
     cards: [],
     detail: null,
     processingNotice: null,
+    duplicateOfScreenshotId: null,
     error: null,
   };
 }

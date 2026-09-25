@@ -55,6 +55,7 @@ function batchItem(
     cards,
     detail: null,
     processingNotice: null,
+    duplicateOfScreenshotId: null,
     error: null,
   };
 }

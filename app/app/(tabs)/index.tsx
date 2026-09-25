@@ -34,15 +34,16 @@ import {
   shouldAutoOpenUploadReview,
 } from "@/upload-lifecycle";
 import {
+  getDuplicateUploadItems,
   getFailedUploadItems,
   getUploadAssetLabel,
+  getUploadReviewScreenshotId,
   mergeUploadBatchResults,
   normalizeUploadServerUrl,
   uploadBatchTargetMatches,
   uploadScreenshotBatch,
   type UploadBatchResult,
   type UploadBatchSourceItem,
-  type UploadBatchSuccessItem,
   type UploadBatchMode,
   type UploadBatchItem,
   type UploadBatchProgress,
@@ -413,15 +414,27 @@ export default function UploadScreen() {
       return;
     }
 
-    const firstSuccess = result.items.find(
-      (item): item is UploadBatchSuccessItem => item.status === "success",
-    );
-    if (!firstSuccess) {
-      showToast("这批截图还没有可确认的内容。", "info");
+    const reviewScreenshotId = getUploadReviewScreenshotId(result);
+    if (reviewScreenshotId == null) {
+      showToast(
+        getDuplicateUploadItems(result).length > 0
+          ? "这批截图之前都上传过，没有重复处理；可以在“批次处理结果”里查看上次的结果。"
+          : "这批截图还没有可确认的内容。",
+        "info",
+      );
       return;
     }
 
-    scheduleReviewPush(firstSuccess.response.screenshot_id);
+    scheduleReviewPush(reviewScreenshotId);
+  }
+
+  function openPreviousUpload(screenshotId: number) {
+    if (targetMismatch) {
+      showToast("请先切回这批截图使用的处理模式与服务地址，再查看上次的结果。", "info");
+      return;
+    }
+
+    scheduleReviewPush(screenshotId);
   }
 
   function openCompletedTextReview() {
@@ -767,6 +780,20 @@ export default function UploadScreen() {
                 <Text style={styles.failureReason}>{item.reason}</Text>
               </View>
             ))}
+            {getDuplicateUploadItems(displayResult).map((item) => (
+              <View key={`${item.index}-${item.fileName}`} style={styles.failureRow}>
+                <Text style={styles.failureName}>{item.fileName} · 之前传过</Text>
+                {item.response.processing_notice ? (
+                  <Text style={styles.failureReason}>{item.response.processing_notice}</Text>
+                ) : null}
+                <AppButton
+                  disabled={loading || targetMismatch}
+                  label="查看上次的结果"
+                  onPress={() => openPreviousUpload(item.response.screenshot_id)}
+                  tone="secondary"
+                />
+              </View>
+            ))}
           </SectionCard>
         ) : null}
 
@@ -798,16 +825,21 @@ function buildFlowBatchResult(
   }
 
   const resultItems: UploadBatchItem[] = items.map((item) => {
-    if (item.status === "success" && item.screenshotId != null) {
+    // An unopened duplicate has no screenshotId of its own yet.
+    const screenshotId = item.screenshotId ?? item.duplicateOfScreenshotId;
+    if (item.status === "success" && screenshotId != null) {
       return {
         asset: item.asset!,
         fileName: item.label,
         index: item.index,
         status: "success",
         response: {
-          screenshot_id: item.screenshotId,
+          screenshot_id: screenshotId,
           cards: item.cards,
           ...(item.processingNotice ? { processing_notice: item.processingNotice } : {}),
+          ...(item.duplicateOfScreenshotId != null
+            ? { duplicate_of_screenshot_id: item.duplicateOfScreenshotId }
+            : {}),
         },
       };
     }
