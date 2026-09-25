@@ -34,7 +34,7 @@ export function isSelfName(value: string, selfNames: readonly string[] = []): bo
   );
 }
 
-export const PerceptionParticipantSchema = z.object({
+const PerceptionParticipantObjectSchema = z.object({
   name: z.string().min(1),
   is_self: z.boolean(),
   role: z.enum(['speaker', 'mentioned']).optional(),
@@ -49,6 +49,22 @@ export const PerceptionParticipantSchema = z.object({
   confidence: ConfidenceSchema,
   source_quote: z.string().min(1),
 }).strict();
+
+// Models can leave out confidence for the self participant, and there is no identification
+// doubt about who "我" is, so only that omission is filled in. Every other participant must
+// still state its confidence.
+function fillSelfParticipantConfidence(value: unknown): unknown {
+  if (!isRecord(value) || value.is_self !== true || value.confidence !== undefined) {
+    return value;
+  }
+
+  return { ...value, confidence: 'high' };
+}
+
+export const PerceptionParticipantSchema = z.preprocess(
+  fillSelfParticipantConfidence,
+  PerceptionParticipantObjectSchema,
+);
 
 export const PerceptionEventSchema = z.object({
   kind: z.enum(MEETING_KINDS),

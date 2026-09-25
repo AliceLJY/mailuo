@@ -5,13 +5,54 @@ import {
   applySelfNames,
   PerceptionEventSchema,
   PerceptionParticipantSchema,
+  PerceptionResultSchema,
   parseStoredPerceptionResult,
+  perceiveScreenshot,
   type PerceptionResult,
 } from '../../../shared/core/agent/perceive.ts';
 import {
   buildPerceptionSystemPrompt,
   buildPerceptionTextSystemPrompt,
 } from '../../../shared/core/llm/prompts.ts';
+import { OpenAICompatibleProvider } from '../../../shared/core/llm/provider.ts';
+
+// Verbatim `participants` captured from a real Qwen run on fixtures/screenshot-1.png (fictional
+// content). The model gave no confidence for the self participant.
+const SCREENSHOT_1_SELF_WITHOUT_CONFIDENCE =
+  '[{"name":"我","is_self":true,"role":"speaker","speech_act":"initiate","source_quote":"上次你提的联名方案，我们这边已经把方向梳理好了。"},{"name":"林岚","is_self":false,"role":"speaker","speech_act":"initiate","interaction_summary":"林岚确认了下周三下午3点的会议安排，并告知会议室已预留，公司地址为云栖路88号A座7层。","confidence":"high","source_quote":"收到，我是栖川数据的林岚，下周三下午 3 点来我们公司聊合作。"}]';
+
+const INVALID_CONFIDENCE_MESSAGE = 'Invalid option: expected one of "high"|"medium"|"low"';
+
+class CannedResponseProvider extends OpenAICompatibleProvider {
+  calls = 0;
+  private readonly responses: string[];
+
+  constructor(responses: string[]) {
+    super({
+      name: 'MockProvider',
+      model: 'mock-model',
+      apiKeyEnv: 'MOCK_API_KEY',
+      apiKey: 'test-key',
+      baseUrl: 'https://example.test',
+    });
+    this.responses = [...responses];
+  }
+
+  override async complete(): Promise<string> {
+    this.calls += 1;
+    const next = this.responses.shift();
+
+    if (next === undefined) {
+      throw new Error('No canned response available');
+    }
+
+    return next;
+  }
+}
+
+function listIssues(result: { error?: { issues: Array<{ path: PropertyKey[]; message: string }> } }) {
+  return result.error?.issues.map((issue) => [issue.path.join('.'), issue.message]);
+}
 
 function extractTimeRules(prompt: string): string {
   const match = prompt.match(
@@ -151,6 +192,65 @@ test('PerceptionParticipantSchema trims non-empty interaction_summary and reject
   assert.equal(blankResult.success, false);
   assert.equal(blankResult.error.issues[0]?.path.join('.'), 'interaction_summary');
   assert.equal(missingResult.success, true);
+});
+
+test('PerceptionResultSchema fills in high confidence for the captured self participant that omits it', () => {
+  const participants = JSON.parse(SCREENSHOT_1_SELF_WITHOUT_CONFIDENCE);
+  const result = PerceptionResultSchema.safeParse({ participants });
+
+  assert.equal(result.success, true);
+  assert.deepEqual(
+    result.data.participants.map((participant) => [participant.name, participant.confidence]),
+    [['我', 'high'], ['林岚', 'high']],
+  );
+  // Downstream code sees exactly what it would if the model had said "high" itself.
+  assert.deepEqual(
+    result.data,
+    PerceptionResultSchema.parse({
+      participants: [{ ...participants[0], confidence: 'high' }, participants[1]],
+    }),
+  );
+});
+
+test('PerceptionResultSchema still rejects a non-self participant without confidence at the same path', () => {
+  const [self, other] = JSON.parse(SCREENSHOT_1_SELF_WITHOUT_CONFIDENCE);
+  delete other.confidence;
+
+  assert.deepEqual(listIssues(PerceptionResultSchema.safeParse({ participants: [other] })), [
+    ['participants.0.confidence', INVALID_CONFIDENCE_MESSAGE],
+  ]);
+  assert.deepEqual(listIssues(PerceptionResultSchema.safeParse({ participants: [self, other] })), [
+    ['participants.1.confidence', INVALID_CONFIDENCE_MESSAGE],
+  ]);
+});
+
+test('PerceptionParticipantSchema only fills in a missing confidence, and only for is_self true', () => {
+  const self = { name: '我', is_self: true, source_quote: '可以，我提前十分钟到。' };
+
+  assert.equal(PerceptionParticipantSchema.parse(self).confidence, 'high');
+  assert.equal(PerceptionParticipantSchema.parse({ ...self, confidence: 'low' }).confidence, 'low');
+  assert.deepEqual(listIssues(PerceptionParticipantSchema.safeParse({ ...self, confidence: 'certain' })), [
+    ['confidence', INVALID_CONFIDENCE_MESSAGE],
+  ]);
+  assert.deepEqual(listIssues(PerceptionParticipantSchema.safeParse({ ...self, is_self: false })), [
+    ['confidence', INVALID_CONFIDENCE_MESSAGE],
+  ]);
+});
+
+test('perceiveScreenshot accepts the captured screenshot-1 output on the first attempt', async () => {
+  // The model repeated the same answer when retried with the validation error.
+  const rawText = `{"participants":${SCREENSHOT_1_SELF_WITHOUT_CONFIDENCE}}`;
+  const provider = new CannedResponseProvider([rawText, rawText]);
+  const result = await perceiveScreenshot({
+    image: { base64: 'iVBORw0KGgo=', mimeType: 'image/png' },
+    provider,
+  });
+
+  assert.equal(provider.calls, 1);
+  assert.deepEqual(
+    result.participants.map((participant) => participant.confidence),
+    ['high', 'high'],
+  );
 });
 
 test('PerceptionEventSchema rejects relative text in time_iso', () => {
