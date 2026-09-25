@@ -157,6 +157,32 @@ export async function uploadScreenshotBatch({
   };
 }
 
+export function isDuplicateUploadResponse(response: ScreenshotUploadResponse) {
+  return response.duplicate_of_screenshot_id != null;
+}
+
+export function getDuplicateUploadItems(result: UploadBatchResult): UploadBatchSuccessItem[] {
+  return result.items.filter(
+    (item): item is UploadBatchSuccessItem =>
+      item.status === "success" && isDuplicateUploadResponse(item.response),
+  );
+}
+
+// Review opens on the first freshly processed image. A batch of one image that turned out to be
+// a duplicate opens that earlier screenshot instead; in a larger batch duplicates are only marked.
+export function getUploadReviewScreenshotId(result: UploadBatchResult): number | null {
+  const successItems = result.items.filter(
+    (item): item is UploadBatchSuccessItem => item.status === "success",
+  );
+  const processed = successItems.find((item) => !isDuplicateUploadResponse(item.response));
+
+  if (processed) {
+    return processed.response.screenshot_id;
+  }
+
+  return result.items.length === 1 ? successItems[0]?.response.screenshot_id ?? null : null;
+}
+
 export function getFailedUploadAssets(result: UploadBatchResult): UploadImageAsset[] {
   return getFailedUploadItems(result).map((item) => item.asset);
 }

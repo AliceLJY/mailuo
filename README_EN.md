@@ -173,7 +173,8 @@ Build and deployment assets live in [deploy/README.md](deploy/README.md) and [sc
 ## Known Limitations
 
 - On-device OCR can still misread characters, so important fields should be checked on the confirmation cards.
-- Item duplicate detection is deliberately conservative and may miss matches. Whole-screenshot deduplication is not implemented, so repeated uploads may still duplicate observations.
+- Item duplicate detection is deliberately conservative and may miss matches.
+- Whole-screenshot re-uploads: server mode now recognizes a byte-identical re-upload, skips the model call and the duplicate observations, and shows the earlier result instead. Phone local mode does not support this yet, so repeated uploads there may still duplicate observations. Near-duplicates are not recognized either: re-taking a screenshot of the same content, or the same screenshot compressed differently by the web and phone apps, produces a different file and is processed as new.
 - Names that OCR reads as look-alike characters are not auto-corrected; register the variants as aliases, or as your own group nicknames in Settings.
 - Splitting and merging of items across screenshots is not fully deterministic. Same-batch duplicates are merged conservatively by source-quote similarity, keeping the first card and carrying over the other card's date.
 
@@ -184,7 +185,7 @@ One package offers (1) **BYOK local mode**, where users enter their own model ke
 ## Future Work
 
 - iOS native distribution: when the target region's App Store does not offer Expo Go, native iOS distribution needs an Apple Developer account plus EAS and TestFlight.
-- Whole-screenshot duplicate detection and merge.
+- Whole-screenshot duplicate detection and merge: duplicate recognition in phone local mode, plus recognizing and merging near-duplicates such as re-taken or differently compressed screenshots (server mode already recognizes byte-identical re-uploads).
 - Insight retry endpoint.
 - Scheduled proactive insight delivery.
 - System calendar integration.

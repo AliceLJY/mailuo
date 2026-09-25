@@ -159,6 +159,7 @@ test("upload clears its thumbnail draft one frame before every review push", () 
     "    } catch (error) {",
   );
   assert.match(textCompletion, /scheduleReviewPush\(response\.screenshot_id\);/u);
+  // openReview, openPreviousUpload (a re-uploaded image's earlier result), openCompletedTextReview.
   const reviewEntryPoints = sourceSection(
     uploadSource,
     "  function openReview(result: UploadBatchResult)",
@@ -166,7 +167,7 @@ test("upload clears its thumbnail draft one frame before every review push", () 
   );
   assert.equal(
     reviewEntryPoints.match(/scheduleReviewPush\(/gu)?.length ?? 0,
-    2,
+    3,
   );
   assert.equal(
     uploadSource.match(/router\.push\(`\/review\/\$\{[^}]+\}`\);/gu)?.length ?? 0,

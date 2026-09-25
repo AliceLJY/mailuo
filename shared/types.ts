@@ -145,4 +145,7 @@ export type HealthResponse = {
 export type ScreenshotUploadResponse = {
   screenshot_id: number;
   cards: ActionCardRecord[];
+  processing_notice?: string;
+  // Set only when the server recognized a byte-identical earlier upload and skipped processing.
+  duplicate_of_screenshot_id?: number;
 };

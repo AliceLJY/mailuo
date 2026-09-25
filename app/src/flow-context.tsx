@@ -2,6 +2,7 @@ import { createContext, useContext, useRef, useState, type PropsWithChildren } f
 
 import {
   getUploadAssetLabel,
+  isDuplicateUploadResponse,
   type UploadBatchMode,
   type UploadBatchResult,
   type UploadBatchStatus,
@@ -20,6 +21,14 @@ import type {
 
 export type FlowBatchItemStatus = "pending" | "processing" | "success" | "failure";
 
+// Server mode re-upload of an earlier image. The item brings no new cards and keeps screenshotId
+// null until the user opens that earlier screenshot; pendingCardCount is how many of its cards
+// still waited for confirmation when the server answered.
+export type FlowDuplicateOf = {
+  screenshotId: number;
+  pendingCardCount: number;
+};
+
 export type FlowBatchItem = {
   index: number;
   asset: UploadImageAsset | null;
@@ -29,6 +38,7 @@ export type FlowBatchItem = {
   cards: ActionCardRecord[];
   detail: ScreenshotDetail | null;
   processingNotice: string | null;
+  duplicateOf: FlowDuplicateOf | null;
   error: string | null;
 };
 
@@ -186,20 +196,32 @@ function updateCardInBatchItems(items: FlowBatchItem[], card: ActionCardRecord) 
   });
 }
 
+// A duplicate's cards belong to the earlier upload, so they are not new cards for this batch.
+function newCardsFromUpload(payload: ScreenshotUploadResponse) {
+  return isDuplicateUploadResponse(payload) ? [] : payload.cards;
+}
+
 export function applyUploadResponseToItems(
   items: FlowBatchItem[],
   index: number,
   payload: ScreenshotUploadResponse,
 ) {
+  const isDuplicate = isDuplicateUploadResponse(payload);
   let next = items.map((item) =>
     item.index === index
       ? {
           ...item,
           status: "success" as const,
-          screenshotId: payload.screenshot_id,
-          cards: sortCards(payload.cards),
+          screenshotId: isDuplicate ? null : payload.screenshot_id,
+          cards: sortCards(newCardsFromUpload(payload)),
           detail: null,
           processingNotice: payload.processing_notice ?? null,
+          duplicateOf: isDuplicate
+            ? {
+                screenshotId: payload.screenshot_id,
+                pendingCardCount: payload.cards.filter((card) => card.status === "pending").length,
+              }
+            : null,
           error: null,
         }
       : item,
@@ -212,13 +234,24 @@ export function applyUploadResponseToItems(
   return next;
 }
 
+export function applyUploadResponseCards(
+  cards: ActionCardRecord[],
+  payload: ScreenshotUploadResponse,
+) {
+  let next = upsertCards(cards, newCardsFromUpload(payload));
+  for (const merge of payload.local_batch_contact_merges ?? []) {
+    next = upsertCard(next, merge.anchor_card);
+  }
+  return next;
+}
+
 export function applyUploadResponseSources(
   current: Record<number, number[]>,
   payload: ScreenshotUploadResponse,
 ) {
   const next = { ...current };
 
-  for (const card of payload.cards) {
+  for (const card of newCardsFromUpload(payload)) {
     next[card.id] ??= [card.screenshot_id];
   }
 
@@ -310,6 +343,7 @@ export function createPendingPastedTextItem(): FlowBatchItem {
     cards: [],
     detail: null,
     processingNotice: null,
+    duplicateOf: null,
     error: null,
   };
 }
@@ -338,8 +372,49 @@ export function createFlowItemFromScreenshotDetail(
     cards: sortCards(detail.cards),
     detail,
     processingNotice: null,
+    duplicateOf: null,
     error: null,
   };
+}
+
+// An unopened duplicate has no screenshot of its own yet; it answers for the earlier one.
+export function findFlowItemForScreenshot(items: FlowBatchItem[], screenshotId: number) {
+  return (
+    items.find((item) => item.screenshotId === screenshotId) ??
+    items.find(
+      (item) => item.screenshotId == null && item.duplicateOf?.screenshotId === screenshotId,
+    ) ??
+    null
+  );
+}
+
+// Cards left pending on an earlier upload that has not been opened in this batch yet. Leaving
+// for insights would skip them, e.g. an upload whose response was lost and was then retried.
+// An earlier screenshot already shown by another item of this batch is covered by that item.
+export function hasUnopenedPendingDuplicate(items: ReadonlyArray<FlowBatchItem>) {
+  return items.some(
+    (item) =>
+      item.screenshotId == null &&
+      item.duplicateOf != null &&
+      item.duplicateOf.pendingCardCount > 0 &&
+      !items.some((other) => other.screenshotId === item.duplicateOf?.screenshotId),
+  );
+}
+
+// Returns null when the detail is not part of this batch. Opening a duplicate's earlier
+// screenshot fills in that item, so the rest of the batch stays as it was.
+export function applyScreenshotDetailToItems(items: FlowBatchItem[], detail: ScreenshotDetail) {
+  const target = findFlowItemForScreenshot(items, detail.id);
+
+  if (!target) {
+    return null;
+  }
+
+  return items.map((item) =>
+    item === target || item.screenshotId === detail.id
+      ? { ...item, screenshotId: detail.id, cards: sortCards(detail.cards), detail }
+      : item,
+  );
 }
 
 export function getCardSourceLabels(
@@ -439,6 +514,7 @@ export function FlowProvider({ children }: PropsWithChildren) {
           cards: [],
           detail: null,
           processingNotice: null,
+          duplicateOf: null,
           error: null,
         })),
       });
@@ -481,14 +557,10 @@ export function FlowProvider({ children }: PropsWithChildren) {
           payload,
         ),
       }));
-      setCards((current) => {
-        let next = upsertCards(current, payload.cards);
-        for (const merge of payload.local_batch_contact_merges ?? []) {
-          next = upsertCard(next, merge.anchor_card);
-        }
-        return next;
-      });
-      setScreenshotId((current) => current ?? payload.screenshot_id);
+      setCards((current) => applyUploadResponseCards(current, payload));
+      if (!isDuplicateUploadResponse(payload)) {
+        setScreenshotId((current) => current ?? payload.screenshot_id);
+      }
     },
     recordBatchItemFailure(index, reason) {
       setBatch((current) => ({
@@ -502,6 +574,7 @@ export function FlowProvider({ children }: PropsWithChildren) {
                 cards: [],
                 detail: null,
                 processingNotice: null,
+                duplicateOf: null,
                 error: reason,
               }
             : item,
@@ -516,14 +589,13 @@ export function FlowProvider({ children }: PropsWithChildren) {
       setCards((current) => {
         let next = current;
         for (const response of successfulResponses) {
-          next = upsertCards(next, response.cards);
-          for (const merge of response.local_batch_contact_merges ?? []) {
-            next = upsertCard(next, merge.anchor_card);
-          }
+          next = applyUploadResponseCards(next, response);
         }
         return next;
       });
-      const firstSuccessfulScreenshotId = successfulResponses[0]?.screenshot_id;
+      const firstSuccessfulScreenshotId = successfulResponses.find(
+        (response) => !isDuplicateUploadResponse(response),
+      )?.screenshot_id;
       if (firstSuccessfulScreenshotId != null) {
         setScreenshotId((current) => current ?? firstSuccessfulScreenshotId);
       }
@@ -545,6 +617,7 @@ export function FlowProvider({ children }: PropsWithChildren) {
                     cards: [],
                     detail: null,
                     processingNotice: null,
+                    duplicateOf: null,
                     error: resultItem.reason,
                   }
                 : item,
@@ -580,6 +653,7 @@ export function FlowProvider({ children }: PropsWithChildren) {
         cards: sortCards(payload.cards),
         detail: null,
         processingNotice: payload.processing_notice ?? null,
+        duplicateOf: null,
         error: null,
       };
       const items = applyUploadResponseToItems([item], 0, payload);
@@ -601,9 +675,7 @@ export function FlowProvider({ children }: PropsWithChildren) {
       });
     },
     setScreenshotDetail(detail) {
-      const belongsToCurrentBatch = batch.items.some(
-        (item) => item.screenshotId === detail.id,
-      );
+      const belongsToCurrentBatch = findFlowItemForScreenshot(batch.items, detail.id) != null;
 
       if (!belongsToCurrentBatch) {
         advanceFlowGeneration();
@@ -617,16 +689,9 @@ export function FlowProvider({ children }: PropsWithChildren) {
           : sortCards(detail.cards),
       );
       setBatch((current) => {
-        const hasItem = current.items.some((item) => item.screenshotId === detail.id);
-        if (hasItem) {
-          return {
-            ...current,
-            items: current.items.map((item) =>
-              item.screenshotId === detail.id
-                ? { ...item, cards: sortCards(detail.cards), detail }
-                : item,
-            ),
-          };
+        const items = applyScreenshotDetailToItems(current.items, detail);
+        if (items) {
+          return { ...current, items };
         }
 
         const item = createFlowItemFromScreenshotDetail(detail);
