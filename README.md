@@ -108,6 +108,10 @@ npm install
 2. 准备环境变量文件。
 
 ```bash
+cp server/.env.example server/.env
+```
+
+```bash
 # server/.env
 DASHSCOPE_API_KEY=
 QWEN_MODEL=qwen-vl-max
@@ -118,7 +122,7 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 PORT=3000
 ```
 
-只有 DashScope Key 是必填项。填写 DeepSeek Key 后，归并与洞察会改用 DeepSeek；不填则继续使用 Qwen。
+只有 DashScope Key 是必填项。填写 DeepSeek Key 后，归并与洞察会改用 DeepSeek；不填则继续使用 Qwen。在 `server/` 下执行 `npm run dev` 或 `npm start` 时，会通过 Node 自带的 `--env-file-if-exists=.env` 自动加载 `server/.env`（文件不存在时也不报错）；已在当前 shell 中导出的同名环境变量优先于 `.env`。
 
 ```bash
 cp app/.env.example app/.env

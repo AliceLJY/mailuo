@@ -106,6 +106,10 @@ npm install
 2. Create the environment files.
 
 ```bash
+cp server/.env.example server/.env
+```
+
+```bash
 # server/.env
 DASHSCOPE_API_KEY=
 QWEN_MODEL=qwen-vl-max
@@ -116,7 +120,7 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 PORT=3000
 ```
 
-Only the DashScope key is required. Add a DeepSeek key if you want resolution and insight generation to use DeepSeek instead of Qwen.
+Only the DashScope key is required. Add a DeepSeek key if you want resolution and insight generation to use DeepSeek instead of Qwen. Running `npm run dev` or `npm start` inside `server/` automatically loads `server/.env` via Node's built-in `--env-file-if-exists=.env` (ignored when absent); environment variables already exported in the shell take precedence over `.env`.
 
 ```bash
 cp app/.env.example app/.env

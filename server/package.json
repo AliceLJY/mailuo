@@ -7,8 +7,8 @@
     "node": ">=26"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "node --import tsx src/index.ts",
+    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
     "cli": "node --import tsx src/cli.ts",
     "test": "node --import tsx --test src/tests/**/*.test.ts",
     "typecheck": "tsc --noEmit"
