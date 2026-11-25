@@ -91,18 +91,22 @@ Android 本地健康路径中，原始截图留在手机上；所配置的文本
 
 ## 快速开始
 
-前提是 Node 26 或更高版本。
+前提是 Node 26 或更高版本。先用 `node -v` 确认版本，不够的话从 [nodejs.org](https://nodejs.org/en/download) 装一个 26.x。
+
+下面每一段命令都从仓库根目录开始执行。
 
 1. 安装依赖。
 
 ```bash
 cd server
 npm install
+cd ..
 ```
 
 ```bash
 cd app
 npm install
+cd ..
 ```
 
 2. 准备环境变量文件。
@@ -124,6 +128,8 @@ PORT=3000
 
 只有 DashScope Key 是必填项。填写 DeepSeek Key 后，归并与洞察会改用 DeepSeek；不填则继续使用 Qwen。在 `server/` 下执行 `npm run dev` 或 `npm start` 时，会通过 Node 自带的 `--env-file-if-exists=.env` 自动加载 `server/.env`（文件不存在时也不报错）；已在当前 shell 中导出的同名环境变量优先于 `.env`。
 
+不填 DashScope Key 时服务端照样能启动，健康检查和联系人列表都能用，但上传截图或文字会返回 500：`Missing required environment variable DASHSCOPE_API_KEY`。
+
 ```bash
 cp app/.env.example app/.env
 ```
@@ -142,6 +148,15 @@ EXPO_PUBLIC_API_URL=http://<你的局域网 IP>:3000
 cd server
 npm run dev
 ```
+
+服务端启动后会打印 `mailuo server listening`。在另一个终端确认（不需要任何 Key）：
+
+```bash
+curl http://localhost:3000/api/health
+# → {"ok":true,"data":{"status":"ok","now":"…"}}
+```
+
+直接打开根路径 `http://localhost:3000/` 会返回 404 `Route not found`，这不代表服务没起来，以上面的健康检查为准。
 
 ```bash
 # 终端 2
