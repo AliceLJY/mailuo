@@ -89,18 +89,22 @@ The project is hardened through automated suites, live-provider checks, and devi
 
 ## Quickstart
 
-Use Node 26 or newer.
+Use Node 26 or newer. Check with `node -v`; if it is older, install a 26.x release from [nodejs.org](https://nodejs.org/en/download).
+
+Run every block below starting from the repo root.
 
 1. Install dependencies.
 
 ```bash
 cd server
 npm install
+cd ..
 ```
 
 ```bash
 cd app
 npm install
+cd ..
 ```
 
 2. Create the environment files.
@@ -122,6 +126,8 @@ PORT=3000
 
 Only the DashScope key is required. Add a DeepSeek key if you want resolution and insight generation to use DeepSeek instead of Qwen. Running `npm run dev` or `npm start` inside `server/` automatically loads `server/.env` via Node's built-in `--env-file-if-exists=.env` (ignored when absent); environment variables already exported in the shell take precedence over `.env`.
 
+Without a DashScope key the server still starts, and the health check and contact list work, but screenshot and text uploads return 500: `Missing required environment variable DASHSCOPE_API_KEY`.
+
 ```bash
 cp app/.env.example app/.env
 ```
@@ -140,6 +146,15 @@ For same-origin web serving, `bash scripts/build-web.sh` forces `EXPO_PUBLIC_API
 cd server
 npm run dev
 ```
+
+The server prints `mailuo server listening` once it is up. Check it from another terminal (no key needed):
+
+```bash
+curl http://localhost:3000/api/health
+# → {"ok":true,"data":{"status":"ok","now":"…"}}
+```
+
+Opening the root path `http://localhost:3000/` returns 404 `Route not found`; that does not mean the server is down, so go by the health check above.
 
 ```bash
 # Terminal 2
